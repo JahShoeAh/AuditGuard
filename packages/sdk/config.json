@@ -18,6 +18,18 @@
     "auctionContract": {
       "id": "0.0.95a0a0e78a32c849526d6ac32e98c6829fb2cd88",
       "evmAddress": "0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88"
+    },
+    "subAuction": {
+      "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
+      "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+    },
+    "dataMarketplace": {
+      "id": "0.0.e7f1725e7734ce288f8367e1bb143e90bb3f0512",
+      "evmAddress": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+    },
+    "paymentSettlement": {
+      "id": "0.0.9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+      "evmAddress": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
     }
   },
   "seededAgents": {},
@@ -27,5 +39,9 @@
     "weeklyMonitoring": 10,
     "criticalBounty": 50,
     "funded": false
+  },
+  "day2": {
+    "settlementPreFunded": 500,
+    "deployedAt": "2026-02-15T20:03:45.941Z"
   }
 }

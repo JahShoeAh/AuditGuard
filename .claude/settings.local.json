@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx hardhat compile:*)"
+      "Bash(npx hardhat compile:*)",
+      "Bash(xargs -I {} sh -c 'echo \"\"=== {} ===\"\" && head -30 {}')"
     ]
   }
 }
