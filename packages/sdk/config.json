@@ -1,4 +1,31 @@
 {
   "guardTokenId": "0.0.7936262",
-  "guardTokenEvmAddress": "0x0000000000000000000000000000000000791906"
+  "guardTokenEvmAddress": "0x0000000000000000000000000000000000791906",
+  "hcsTopics": {
+    "discovery": "0.0.7940144",
+    "auditLog": "0.0.7940145",
+    "agentComms": "0.0.7940146"
+  },
+  "contracts": {
+    "agentRegistry": {
+      "id": "0.0.e86218b5bf5c21ca7a69cba04c5be0d3c2be2303",
+      "evmAddress": "0xe86218b5Bf5C21CA7a69cba04C5be0D3c2Be2303"
+    },
+    "budgetVault": {
+      "id": "0.0.68780a12b36f3ed04cef937efc38b593683c5fcd",
+      "evmAddress": "0x68780A12b36f3ed04CEF937EFc38b593683c5fCd"
+    },
+    "auctionContract": {
+      "id": "0.0.95a0a0e78a32c849526d6ac32e98c6829fb2cd88",
+      "evmAddress": "0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88"
+    }
+  },
+  "seededAgents": {},
+  "demoVault": {
+    "contractAddress": "0x000000000000000000000000000000000000dEaD",
+    "budget": 0,
+    "weeklyMonitoring": 10,
+    "criticalBounty": 50,
+    "funded": false
+  }
 }

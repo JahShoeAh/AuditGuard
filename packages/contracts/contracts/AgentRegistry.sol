@@ -111,6 +111,9 @@ contract AgentRegistry is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when an agent exits and receives remaining stake.
     event AgentDeregistered(address indexed agent, uint256 returnedStake);
+    
+    /// @notice Emitted when registry is successfully associated to GUARD on HTS.
+    event GuardTokenAssociated(address indexed token);
 
     /// @dev Restricts a function to orchestrator only.
     modifier onlyOrchestrator() {
@@ -127,17 +130,22 @@ contract AgentRegistry is Ownable, ReentrancyGuard, Pausable {
         _;
     }
 
-    /// @notice Deploys the registry and associates it to GUARD token via HTS precompile.
+    /// @notice Deploys the registry.
     /// @param _guardToken GUARD token EVM address used for all staking/slashing flows.
     constructor(address _guardToken) Ownable(msg.sender) {
         require(_guardToken != address(0), "AgentRegistry: guard token is zero");
         guardToken = _guardToken;
+    }
 
-        int64 responseCode = HTS.tokenAssociate(address(this), _guardToken);
+    /// @notice Associates this contract with GUARD token through HTS precompile.
+    /// @dev Call post-deployment on Hedera JSON-RPC flows where constructor precompile calls can revert.
+    function associateGuardToken() external onlyOwner nonReentrant {
+        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
         require(
             responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
             "AgentRegistry: token association failed"
         );
+        emit GuardTokenAssociated(guardToken);
     }
 
     /// @notice Registers any external OpenClaw-compatible agent into AuditGuard's open marketplace.

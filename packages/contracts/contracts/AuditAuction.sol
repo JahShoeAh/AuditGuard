@@ -153,6 +153,9 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
 
     /// @notice Emitted when an open job is cancelled.
     event JobCancelled(uint256 indexed jobId);
+    
+    /// @notice Emitted when auction contract is successfully associated to GUARD on HTS.
+    event GuardTokenAssociated(address indexed token);
 
     /// @dev Restricts execution to the configured orchestrator.
     modifier onlyOrchestrator() {
@@ -160,7 +163,7 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
         _;
     }
 
-    /// @notice Deploys the auction contract and associates it with GUARD through HTS.
+    /// @notice Deploys the auction contract.
     /// @param _guardToken GUARD token EVM address.
     /// @param _agentRegistry AgentRegistry contract address.
     /// @param _orchestrator Authorized orchestrator address.
@@ -180,12 +183,6 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
         orchestrator = _orchestrator;
         treasury = _treasury;
         nextJobId = 1;
-
-        int64 responseCode = HTS.tokenAssociate(address(this), _guardToken);
-        require(
-            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
-            "AuditAuction: token association failed"
-        );
     }
 
     /// @notice Creates a new audit job and opens the auction window.
@@ -653,6 +650,17 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
     function setPlatformFeePercent(uint256 feePercent) external onlyOwner {
         require(feePercent <= 10, "AuditAuction: fee exceeds maximum");
         platformFeePercent = feePercent;
+    }
+
+    /// @notice Associates this contract with GUARD token through HTS precompile.
+    /// @dev Call post-deployment on Hedera JSON-RPC flows where constructor precompile calls can revert.
+    function associateGuardToken() external onlyOwner nonReentrant {
+        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
+        require(
+            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
+            "AuditAuction: token association failed"
+        );
+        emit GuardTokenAssociated(guardToken);
     }
 
     /// @notice Pauses mutating functions in emergency scenarios.

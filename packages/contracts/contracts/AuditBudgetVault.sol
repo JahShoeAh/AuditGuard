@@ -75,6 +75,9 @@ contract AuditBudgetVault is ReentrancyGuard, Ownable {
 
     /// @notice Emitted when a vault's policy parameters are changed.
     event VaultRulesUpdated(address indexed contractAddress);
+    
+    /// @notice Emitted when vault contract is successfully associated to GUARD on HTS.
+    event GuardTokenAssociated(address indexed token);
 
     /// @dev Restricts execution to the configured drawer contract.
     modifier onlyAuthorizedDrawer() {
@@ -82,17 +85,11 @@ contract AuditBudgetVault is ReentrancyGuard, Ownable {
         _;
     }
 
-    /// @notice Deploys vault contract and associates it to GUARD via HTS.
+    /// @notice Deploys vault contract.
     /// @param _guardToken GUARD token EVM address.
     constructor(address _guardToken) Ownable(msg.sender) {
         require(_guardToken != address(0), "AuditBudgetVault: guard token is zero");
         guardToken = _guardToken;
-
-        int64 responseCode = HTS.tokenAssociate(address(this), _guardToken);
-        require(
-            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
-            "AuditBudgetVault: token association failed"
-        );
     }
 
     /// @notice Creates a vault for a covered smart contract.
@@ -264,6 +261,17 @@ contract AuditBudgetVault is ReentrancyGuard, Ownable {
     function setAuthorizedDrawer(address _auctionContract) external onlyOwner {
         require(_auctionContract != address(0), "AuditBudgetVault: drawer is zero");
         authorizedDrawer = _auctionContract;
+    }
+
+    /// @notice Associates this contract with GUARD token through HTS precompile.
+    /// @dev Call post-deployment on Hedera JSON-RPC flows where constructor precompile calls can revert.
+    function associateGuardToken() external onlyOwner nonReentrant {
+        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
+        require(
+            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
+            "AuditBudgetVault: token association failed"
+        );
+        emit GuardTokenAssociated(guardToken);
     }
 
     /// @notice Returns the currently available vault balance.
