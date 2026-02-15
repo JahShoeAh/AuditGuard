@@ -26,4 +26,16 @@ interface IAgentRegistry {
     /// @param agent Agent wallet address.
     /// @return reputation Reputation basis points (0..10000).
     function getAgentReputation(address agent) external view returns (uint256 reputation);
+
+    /// @notice Records finalized job outcomes and updates agent metrics/reputation.
+    /// @param agent Agent wallet that completed the job.
+    /// @param validFindings Count of validated vulnerabilities.
+    /// @param falsePos Count of false positives.
+    /// @param falseNeg Count of false negatives.
+    function recordJobCompletion(address agent, uint256 validFindings, uint256 falsePos, uint256 falseNeg) external;
+
+    /// @notice Slashes registry stake for policy violations.
+    /// @param agent Agent wallet to slash.
+    /// @param slashBasisPoints Slash magnitude in basis points.
+    function slashAgent(address agent, uint256 slashBasisPoints) external;
 }
