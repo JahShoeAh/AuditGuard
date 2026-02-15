@@ -40,4 +40,8 @@ interface IAuditAuction {
     /// @param jobId Job id.
     /// @return status Current job status.
     function getJobStatus(uint256 jobId) external view returns (JobStatus status);
+
+    /// @notice Marks a job as COMPLETED after settlement.
+    /// @param jobId Job id.
+    function completeJob(uint256 jobId) external;
 }
