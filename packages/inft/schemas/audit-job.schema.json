@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auditguard.io/schemas/inft/audit-job.json",
+  "title": "AuditGuard Audit Job iNFT",
+  "description": "Evolving iNFT representing an autonomous audit job lifecycle. References on-chain AuditAuction job data and extends it with historical state tracking, report storage, and autonomous re-audit intelligence.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "tokenId",
+    "jobId",
+    "target",
+    "discovery",
+    "state",
+    "participants",
+    "reports",
+    "payments",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Schema version for forward-compatible evolution."
+    },
+    "tokenId": {
+      "type": "string",
+      "description": "Hedera NFT serial number or token ID for this iNFT."
+    },
+    "jobId": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "On-chain AuditAuction job ID. Primary link to contract state."
+    },
+    "target": {
+      "type": "object",
+      "description": "The smart contract being audited.",
+      "required": ["contractAddress", "chain"],
+      "properties": {
+        "contractAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "EVM address of the audited contract."
+        },
+        "chain": {
+          "type": "string",
+          "enum": ["hedera", "ethereum", "polygon", "arbitrum", "optimism", "bsc"],
+          "description": "Chain where the target contract is deployed."
+        },
+        "contractType": {
+          "type": "string",
+          "description": "Protocol archetype (lending, dex, staking, etc.)."
+        },
+        "lineCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated lines of Solidity code."
+        },
+        "codeHash": {
+          "type": "string",
+          "description": "SHA-256 hash of the contract bytecode at discovery time."
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "description": "Scanner agent discovery metadata.",
+      "required": ["scannerAgentId", "timestamp", "initialRiskScore"],
+      "properties": {
+        "scannerAgentId": {
+          "type": "string",
+          "description": "Agent ID of the scanner that discovered the contract."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 discovery timestamp."
+        },
+        "initialRiskScore": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Scanner-computed initial risk assessment (0-100)."
+        },
+        "hcsMessageId": {
+          "type": "string",
+          "description": "HCS message sequence number for the discovery event."
+        },
+        "discoveryTrigger": {
+          "type": "string",
+          "enum": ["new_deployment", "code_update", "tvl_threshold", "manual_request", "re_audit_schedule"],
+          "description": "What triggered the discovery."
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "description": "Current and historical iNFT state.",
+      "required": ["current", "history"],
+      "properties": {
+        "current": {
+          "type": "string",
+          "enum": [
+            "DISCOVERED",
+            "AUCTION_OPEN",
+            "BIDDING_CLOSED",
+            "AUDITING_IN_PROGRESS",
+            "REPORT_PENDING",
+            "COMPLETED",
+            "VULNERABILITIES_ACTIVE",
+            "REMEDIATION_VERIFIED",
+            "MONITORING_ACTIVE",
+            "CANCELLED"
+          ],
+          "description": "Current lifecycle state of the audit job."
+        },
+        "history": {
+          "type": "array",
+          "description": "Ordered log of all state transitions.",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "timestamp", "trigger"],
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "trigger": {
+                "type": "string",
+                "description": "What caused the transition (agent action, timeout, contract event)."
+              },
+              "txHash": {
+                "type": "string",
+                "description": "On-chain transaction hash that triggered the transition."
+              }
+            }
+          }
+        }
+      }
+    },
+    "auction": {
+      "type": "object",
+      "description": "Auction-phase summary. Detailed bid data lives on-chain in AuditAuction.",
+      "properties": {
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Auction close timestamp."
+        },
+        "budgetGuard": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total GUARD budget allocated for this job."
+        },
+        "totalBids": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of bids received."
+        },
+        "winningAgents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Agent IDs selected as winners."
+        },
+        "platformFeePaid": {
+          "type": "number",
+          "description": "GUARD paid as platform fee (5%)."
+        }
+      }
+    },
+    "participants": {
+      "type": "array",
+      "description": "All agents that participated in this audit job.",
+      "items": {
+        "type": "object",
+        "required": ["agentAddress", "role"],
+        "properties": {
+          "agentAddress": {
+            "type": "string",
+            "pattern": "^0x[a-fA-F0-9]{40}$"
+          },
+          "agentId": {
+            "type": "string",
+            "description": "Human-readable agent ID from AgentRegistry."
+          },
+          "role": {
+            "type": "string",
+            "enum": ["primary_auditor", "sub_contractor", "data_seller", "scanner", "report_aggregator"],
+            "description": "Role in this specific audit job."
+          },
+          "specialization": {
+            "type": "string",
+            "description": "Specialization used for this job (static_analysis, fuzzing, llm_contextual, etc.)."
+          },
+          "bidAmount": {
+            "type": "number",
+            "description": "GUARD amount bid."
+          },
+          "reputationAtBid": {
+            "type": "integer",
+            "description": "Reputation basis points at time of bidding."
+          },
+          "findingsSubmitted": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of findings this agent submitted."
+          },
+          "paymentReceived": {
+            "type": "number",
+            "description": "Total GUARD received (bid + bonus)."
+          }
+        }
+      }
+    },
+    "reports": {
+      "type": "object",
+      "description": "Audit report references. Full reports stored on 0g Labs DA layer.",
+      "required": ["findings"],
+      "properties": {
+        "finalReportHash": {
+          "type": "string",
+          "description": "SHA-256 hash of the aggregated final report."
+        },
+        "reportStorageRef": {
+          "type": "string",
+          "description": "0g Labs DA layer reference for the full report data."
+        },
+        "hcsReportMessageId": {
+          "type": "string",
+          "description": "HCS message ID where the report hash was published."
+        },
+        "findings": {
+          "type": "object",
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0, "default": 0 },
+            "high": { "type": "integer", "minimum": 0, "default": 0 },
+            "medium": { "type": "integer", "minimum": 0, "default": 0 },
+            "low": { "type": "integer", "minimum": 0, "default": 0 },
+            "informational": { "type": "integer", "minimum": 0, "default": 0 },
+            "total": { "type": "integer", "minimum": 0, "default": 0 },
+            "duplicatesDetected": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        },
+        "agentReports": {
+          "type": "array",
+          "description": "Per-agent report submissions.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "agentAddress": { "type": "string" },
+              "reportHash": { "type": "string" },
+              "storageRef": { "type": "string" },
+              "submittedAt": { "type": "string", "format": "date-time" },
+              "validFindings": { "type": "integer", "minimum": 0 },
+              "falsePositives": { "type": "integer", "minimum": 0 },
+              "falseNegatives": { "type": "integer", "minimum": 0 },
+              "accuracyScore": { "type": "number", "minimum": 0, "maximum": 100 }
+            }
+          }
+        }
+      }
+    },
+    "payments": {
+      "type": "object",
+      "description": "Payment settlement summary for this job.",
+      "properties": {
+        "totalPaid": { "type": "number", "description": "Total GUARD distributed." },
+        "platformFee": { "type": "number" },
+        "settlementTxHash": { "type": "string", "description": "On-chain settlement transaction hash." },
+        "settledAt": { "type": "string", "format": "date-time" },
+        "breakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "recipient": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["main_audit", "sub_contract", "data_purchase", "bonus_speed", "bonus_unique_finding", "platform_fee"]
+              },
+              "amount": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "reaudit": {
+      "type": "object",
+      "description": "Autonomous re-audit intelligence. Computed by iNFT logic.",
+      "properties": {
+        "previousAuditJobIds": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "Job IDs of previous audits on the same target contract."
+        },
+        "codeChangeDetected": {
+          "type": "boolean",
+          "description": "Whether the target contract code changed since last audit."
+        },
+        "recommendedReauditDate": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Computed next recommended audit date."
+        },
+        "estimatedBudget": {
+          "type": "number",
+          "description": "Estimated GUARD budget for re-audit (incremental vs full)."
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

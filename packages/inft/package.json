@@ -1,0 +1,23 @@
+{
+  "name": "@auditguard/inft",
+  "version": "0.1.0",
+  "description": "iNFT schema definitions, minting, and state management for AuditGuard",
+  "main": "src/inft-service.js",
+  "types": "types.ts",
+  "files": [
+    "index.ts",
+    "types.ts",
+    "schemas/",
+    "src/",
+    "scripts/"
+  ],
+  "scripts": {
+    "create-collections": "node scripts/create-nft-collections.js",
+    "listen": "node src/discovery-listener.js"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.46.0",
+    "dotenv": "^16.4.0"
+  },
+  "keywords": ["inft", "nft", "auditguard", "hedera", "0g-labs"]
+}

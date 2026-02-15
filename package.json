@@ -17,7 +17,9 @@
     "deploy:contracts": "npx hardhat run scripts/deploy-auction.js --config packages/contracts/hardhat.config.js --network hedera_testnet",
     "setup:hcs": "node scripts/setup-hcs-topics.js",
     "scanner": "node packages/agents/scanner-agent.js",
-    "agents": "node packages/agents/run-all-agents.js"
+    "agents": "node packages/agents/run-all-agents.js",
+    "inft:create-collections": "node packages/inft/scripts/create-nft-collections.js",
+    "inft:listen": "node packages/inft/src/discovery-listener.js"
   },
   "repository": {
     "type": "git",

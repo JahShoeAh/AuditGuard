@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auditguard.io/schemas/inft/agent-profile.json",
+  "title": "AuditGuard Auditor Agent Profile iNFT",
+  "description": "Evolving iNFT representing an autonomous auditor agent's on-chain identity, reputation history, and embedded business strategy. References AgentRegistry for live on-chain state; extends it with historical tracking and autonomous intelligence parameters.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "tokenId",
+    "agentAddress",
+    "agentId",
+    "identity",
+    "reputation",
+    "performance",
+    "economics",
+    "state",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "tokenId": {
+      "type": "string",
+      "description": "Hedera NFT serial number or token ID for this profile iNFT."
+    },
+    "agentAddress": {
+      "type": "string",
+      "pattern": "^0x[a-fA-F0-9]{40}$",
+      "description": "EVM wallet address. Primary key linking to AgentRegistry on-chain."
+    },
+    "agentId": {
+      "type": "string",
+      "description": "Human-readable UCP agent identifier from AgentRegistry."
+    },
+    "identity": {
+      "type": "object",
+      "description": "Static and semi-static agent identity metadata.",
+      "required": ["ucpEndpoint", "specializations", "tier"],
+      "properties": {
+        "ucpEndpoint": {
+          "type": "string",
+          "description": "OpenClaw UCP endpoint for orchestrator dispatch."
+        },
+        "specializations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Capability tags (static_analysis, fuzzing, llm_contextual, dependency_analysis, monitoring)."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["COMMODITY", "SPECIALIZED", "PREMIUM"],
+          "description": "Current marketplace tier. Mirrors AgentRegistry on-chain value."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "INACTIVE", "SUSPENDED", "SLASHED"],
+          "description": "Current operational status. Mirrors AgentRegistry."
+        },
+        "registeredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the agent first registered in the marketplace."
+        }
+      }
+    },
+    "reputation": {
+      "type": "object",
+      "description": "Reputation tracking with full history for trust and auction weighting.",
+      "required": ["current", "history"],
+      "properties": {
+        "current": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Current reputation in basis points (0-10000). Mirrors AgentRegistry.reputationScore."
+        },
+        "history": {
+          "type": "array",
+          "description": "Chronological reputation change log.",
+          "items": {
+            "type": "object",
+            "required": ["timestamp", "delta", "newScore", "reason"],
+            "properties": {
+              "timestamp": { "type": "string", "format": "date-time" },
+              "delta": {
+                "type": "integer",
+                "description": "Reputation change in basis points (positive or negative)."
+              },
+              "newScore": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "job_completion",
+                  "valid_findings_bonus",
+                  "false_positive_penalty",
+                  "false_negative_penalty",
+                  "slash_penalty",
+                  "sub_contract_completion",
+                  "sub_contract_expired",
+                  "seed_initial"
+                ],
+                "description": "Categorized reason for reputation change."
+              },
+              "jobId": {
+                "type": "integer",
+                "description": "Related job ID if applicable."
+              },
+              "txHash": {
+                "type": "string",
+                "description": "On-chain transaction hash of the reputation update."
+              }
+            }
+          }
+        },
+        "trend": {
+          "type": "string",
+          "enum": ["rising", "stable", "declining"],
+          "description": "Computed trend based on recent history (last 10 changes)."
+        },
+        "peakScore": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "All-time highest reputation score."
+        },
+        "specialtyScores": {
+          "type": "object",
+          "description": "Per-specialization accuracy scores for nuanced auction matching.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "score": { "type": "number", "minimum": 0, "maximum": 100 },
+              "jobsCompleted": { "type": "integer", "minimum": 0 },
+              "lastUpdated": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "description": "Cumulative performance metrics. Complements AgentRegistry on-chain counters with richer breakdowns.",
+      "properties": {
+        "completedJobs": { "type": "integer", "minimum": 0 },
+        "successfulFindings": { "type": "integer", "minimum": 0 },
+        "falsePositives": { "type": "integer", "minimum": 0 },
+        "falseNegatives": { "type": "integer", "minimum": 0 },
+        "accuracyRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Computed: successfulFindings / (successfulFindings + falsePositives + falseNegatives) * 100."
+        },
+        "averageCompletionTime": {
+          "type": "number",
+          "description": "Average job completion time in seconds."
+        },
+        "auctionsWon": { "type": "integer", "minimum": 0 },
+        "auctionsParticipated": { "type": "integer", "minimum": 0 },
+        "winRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Computed auction win percentage."
+        },
+        "subContractsCompleted": { "type": "integer", "minimum": 0 },
+        "dataListingsSold": { "type": "integer", "minimum": 0 },
+        "jobHistory": {
+          "type": "array",
+          "description": "Recent job participation records.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": { "type": "integer" },
+              "role": { "type": "string", "enum": ["primary_auditor", "sub_contractor", "data_seller"] },
+              "completedAt": { "type": "string", "format": "date-time" },
+              "payment": { "type": "number" },
+              "validFindings": { "type": "integer", "minimum": 0 },
+              "reputationDelta": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "economics": {
+      "type": "object",
+      "description": "Financial state and autonomous pricing intelligence.",
+      "properties": {
+        "stakedAmount": {
+          "type": "number",
+          "description": "Current GUARD staked. Mirrors AgentRegistry on-chain."
+        },
+        "totalEarned": {
+          "type": "number",
+          "description": "Lifetime GUARD earned from all activities."
+        },
+        "totalSlashed": {
+          "type": "number",
+          "description": "Lifetime GUARD lost to slashing."
+        },
+        "pricing": {
+          "type": "object",
+          "description": "Autonomous pricing strategy parameters (iNFT intelligence).",
+          "properties": {
+            "baseBidMultiplier": {
+              "type": "number",
+              "minimum": 0.1,
+              "maximum": 5.0,
+              "description": "Multiplier applied to base bid calculation. Auto-adjusts based on reputation trajectory."
+            },
+            "reputationDiscountThreshold": {
+              "type": "integer",
+              "description": "If reputation drops below this, reduce bids by discountPercent to win more jobs."
+            },
+            "discountPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50,
+              "description": "Bid reduction percentage when reputation is below threshold."
+            },
+            "premiumMarkup": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Extra markup for premium-tier jobs where agent has high specialty score."
+            },
+            "maxConcurrentJobs": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum jobs to bid on simultaneously (portfolio optimization)."
+            }
+          }
+        },
+        "portfolio": {
+          "type": "object",
+          "description": "Portfolio optimization state (iNFT intelligence).",
+          "properties": {
+            "activeJobs": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "Currently active job IDs this agent is working on."
+            },
+            "pendingBids": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "Job IDs with pending bids."
+            },
+            "preferredContractTypes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Contract types where this agent has highest ROI."
+            }
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "description": "iNFT state evolution tracking.",
+      "required": ["current"],
+      "properties": {
+        "current": {
+          "type": "string",
+          "enum": ["REGISTERED", "ACTIVE", "BUSY", "COOLDOWN", "SUSPENDED", "SLASHED", "DEREGISTERED"],
+          "description": "Current iNFT lifecycle state."
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "timestamp", "trigger"],
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "trigger": { "type": "string" },
+              "txHash": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

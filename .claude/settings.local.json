@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npx hardhat compile:*)",
-      "Bash(xargs -I {} sh -c 'echo \"\"=== {} ===\"\" && head -30 {}')"
+      "Bash(xargs -I {} sh -c 'echo \"\"=== {} ===\"\" && head -30 {}')",
+      "Bash(npm run inft:create-collections:*)",
+      "Bash(node:*)",
+      "WebSearch"
     ]
   }
 }

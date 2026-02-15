@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auditguard.io/schemas/inft/contract-health.json",
+  "title": "AuditGuard Contract Health iNFT",
+  "description": "Evolving iNFT bound to each audited smart contract. Aggregates security scores across audit cycles, tracks vulnerability history, and provides autonomous threat intelligence via 0g Labs compute.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "tokenId",
+    "contract",
+    "health",
+    "vulnerabilities",
+    "auditHistory",
+    "monitoring",
+    "state",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "tokenId": {
+      "type": "string",
+      "description": "Hedera NFT serial number or token ID for this contract health iNFT."
+    },
+    "contract": {
+      "type": "object",
+      "description": "Target contract identity.",
+      "required": ["contractAddress", "chain"],
+      "properties": {
+        "contractAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$"
+        },
+        "chain": {
+          "type": "string",
+          "enum": ["hedera", "ethereum", "polygon", "arbitrum", "optimism", "bsc"]
+        },
+        "contractType": {
+          "type": "string",
+          "description": "Protocol archetype (lending, dex, staking, etc.)."
+        },
+        "deployer": {
+          "type": "string",
+          "description": "Deployer address if known."
+        },
+        "deployedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "currentCodeHash": {
+          "type": "string",
+          "description": "SHA-256 hash of the current bytecode."
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "description": "Aggregate security health scores.",
+      "required": ["securityScore"],
+      "properties": {
+        "securityScore": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Weighted aggregate security score (0=critical risk, 100=clean)."
+        },
+        "scoreHistory": {
+          "type": "array",
+          "description": "Security score over time, updated after each audit cycle.",
+          "items": {
+            "type": "object",
+            "required": ["score", "timestamp", "jobId"],
+            "properties": {
+              "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "jobId": { "type": "integer", "description": "Audit job that produced this score." },
+              "delta": { "type": "integer", "description": "Change from previous score." }
+            }
+          }
+        },
+        "riskLevel": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "minimal"],
+          "description": "Derived risk classification."
+        },
+        "lastAuditTimestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "totalAuditsCompleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "vulnerabilities": {
+      "type": "object",
+      "description": "Vulnerability catalog across all audit cycles.",
+      "properties": {
+        "summary": {
+          "type": "object",
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0, "default": 0 },
+            "high": { "type": "integer", "minimum": 0, "default": 0 },
+            "medium": { "type": "integer", "minimum": 0, "default": 0 },
+            "low": { "type": "integer", "minimum": 0, "default": 0 },
+            "informational": { "type": "integer", "minimum": 0, "default": 0 },
+            "total": { "type": "integer", "minimum": 0, "default": 0 },
+            "remediated": { "type": "integer", "minimum": 0, "default": 0 },
+            "open": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        },
+        "catalog": {
+          "type": "array",
+          "description": "Individual vulnerability records.",
+          "items": {
+            "type": "object",
+            "required": ["id", "severity", "category", "status", "discoveredAt"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique vulnerability identifier (e.g., AG-VULN-001)."
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["critical", "high", "medium", "low", "informational"]
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "reentrancy",
+                  "access_control",
+                  "integer_overflow",
+                  "logic_error",
+                  "oracle_manipulation",
+                  "front_running",
+                  "denial_of_service",
+                  "flash_loan",
+                  "storage_collision",
+                  "uninitialized_proxy",
+                  "other"
+                ],
+                "description": "Vulnerability classification."
+              },
+              "title": {
+                "type": "string",
+                "description": "Short description of the vulnerability."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["open", "acknowledged", "remediated", "accepted_risk", "false_positive"],
+                "description": "Current remediation status."
+              },
+              "discoveredAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "discoveredByAgent": {
+                "type": "string",
+                "description": "Agent address that first identified this vulnerability."
+              },
+              "discoveredInJobId": {
+                "type": "integer"
+              },
+              "remediatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "detailsStorageRef": {
+                "type": "string",
+                "description": "0g Labs DA reference for full vulnerability details."
+              }
+            }
+          }
+        }
+      }
+    },
+    "auditHistory": {
+      "type": "array",
+      "description": "Summary of all completed audit cycles on this contract.",
+      "items": {
+        "type": "object",
+        "required": ["jobId", "completedAt", "securityScoreAfter"],
+        "properties": {
+          "jobId": { "type": "integer" },
+          "auditJobTokenId": {
+            "type": "string",
+            "description": "Token ID of the corresponding Audit Job iNFT."
+          },
+          "completedAt": { "type": "string", "format": "date-time" },
+          "agentsInvolved": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Agent addresses that participated."
+          },
+          "findingsCount": { "type": "integer", "minimum": 0 },
+          "criticalFindings": { "type": "integer", "minimum": 0 },
+          "securityScoreBefore": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "securityScoreAfter": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "totalCostGuard": { "type": "number" },
+          "reportHash": { "type": "string" }
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "description": "Continuous monitoring status.",
+      "properties": {
+        "isActive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether a monitoring agent is actively watching this contract."
+        },
+        "monitoringAgent": {
+          "type": "string",
+          "description": "Agent address of the active monitoring agent."
+        },
+        "weeklyBudgetGuard": {
+          "type": "number",
+          "description": "GUARD budget allocated per week for monitoring."
+        },
+        "monitoringSince": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastCheckIn": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last heartbeat from the monitoring agent."
+        }
+      }
+    },
+    "intelligence": {
+      "type": "object",
+      "description": "Autonomous threat intelligence computed by iNFT logic (0g Labs compute).",
+      "properties": {
+        "predictedRiskChange": {
+          "type": "number",
+          "description": "Predicted risk score change percentage over next 7 days."
+        },
+        "riskFactors": {
+          "type": "array",
+          "description": "Contributing factors to current risk assessment.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "factor": {
+                "type": "string",
+                "enum": [
+                  "code_change_velocity",
+                  "time_since_audit",
+                  "tvl_increase",
+                  "ecosystem_exploit_trend",
+                  "dependency_vulnerability",
+                  "unresolved_critical_vuln"
+                ]
+              },
+              "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+              "value": { "type": "string", "description": "Current factor value." }
+            }
+          }
+        },
+        "autoReauditTriggered": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether autonomous intelligence has triggered a re-audit auction."
+        },
+        "nextRecommendedAudit": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "description": "References to the on-chain AuditBudgetVault for this contract.",
+      "properties": {
+        "vaultAddress": {
+          "type": "string",
+          "description": "AuditBudgetVault contract address."
+        },
+        "currentBalance": {
+          "type": "number",
+          "description": "Current GUARD balance in the vault."
+        },
+        "totalDeposited": {
+          "type": "number",
+          "description": "Lifetime GUARD deposited into this vault."
+        },
+        "totalSpent": {
+          "type": "number",
+          "description": "Lifetime GUARD spent on audits and monitoring."
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "description": "iNFT state tracking.",
+      "required": ["current"],
+      "properties": {
+        "current": {
+          "type": "string",
+          "enum": ["UNAUDITED", "AUDIT_IN_PROGRESS", "AUDITED", "MONITORING_ACTIVE", "AT_RISK", "COMPROMISED"],
+          "description": "Current health iNFT lifecycle state."
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "timestamp", "trigger"],
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "trigger": { "type": "string" },
+              "txHash": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
