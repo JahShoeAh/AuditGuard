@@ -28,7 +28,7 @@ const DEFAULT_ZG_KV_RPC = "http://3.101.147.150:6789";
 
 // Stream ID for AuditGuard iNFT KV namespace
 const STREAM_DOMAIN = "0x";
-const AUDITGUARD_STREAM_ID = "0xAUD17GUARD1NFT00000000000000000000000000000000000000000000000000";
+const AUDITGUARD_STREAM_ID = "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 class StorageAdapter {
   /**
@@ -39,7 +39,11 @@ class StorageAdapter {
    * @param {string} [options.zgKvRpc] - 0g KV client endpoint
    */
   constructor(options = {}) {
-    this.zgPrivateKey = options.zgPrivateKey || process.env.ZG_PRIVATE_KEY;
+    let key = options.zgPrivateKey || process.env.ZG_PRIVATE_KEY;
+    if (key && !key.startsWith("0x")) {
+      key = `0x${key}`;
+    }
+    this.zgPrivateKey = key;
     this.zgEvmRpc = options.zgEvmRpc || process.env.ZG_EVM_RPC || DEFAULT_ZG_EVM_RPC;
     this.zgIndexerRpc = options.zgIndexerRpc || process.env.ZG_INDEXER_RPC || DEFAULT_ZG_INDEXER_RPC;
     this.zgKvRpc = options.zgKvRpc || process.env.ZG_KV_RPC || DEFAULT_ZG_KV_RPC;
@@ -294,18 +298,23 @@ class StorageAdapter {
   // ─── 0g KV Operations ─────────────────────────────────────────────────────
 
   async _zgKvSet(key, value) {
-    const [nodes, nodesErr] = await this._indexer.selectNodes(1);
-    if (nodesErr) throw new Error(`Node selection failed: ${nodesErr}`);
+    try {
+      const [nodes, nodesErr] = await this._indexer.selectNodes(1);
+      if (nodesErr) throw new Error(`Node selection failed: ${nodesErr}`);
 
-    const flowContract = await getFlowContractSafe(this.zgEvmRpc, this._signer);
-    const batcher = new Batcher(1, nodes, flowContract, this.zgEvmRpc);
+      const flowContract = await getFlowContractSafe(this.zgEvmRpc, this._signer);
+      const batcher = new Batcher(1, nodes, flowContract, this.zgEvmRpc);
 
-    const keyBytes = Uint8Array.from(Buffer.from(key, "utf-8"));
-    const valBytes = Uint8Array.from(Buffer.from(value, "utf-8"));
+      const keyBytes = Uint8Array.from(Buffer.from(key, "utf-8"));
+      const valBytes = Uint8Array.from(Buffer.from(value, "utf-8"));
 
-    batcher.streamDataBuilder.set(AUDITGUARD_STREAM_ID, keyBytes, valBytes);
-    const [tx, err] = await batcher.exec();
-    if (err) throw new Error(`KV set failed: ${err}`);
+      batcher.streamDataBuilder.set(AUDITGUARD_STREAM_ID, keyBytes, valBytes);
+      const [tx, err] = await batcher.exec();
+      if (err) throw new Error(`KV set failed: ${err}`);
+    } catch (err) {
+      // Re-throw to be caught by the caller's try-catch
+      throw err;
+    }
   }
 
   async _zgKvGet(key) {

@@ -145,6 +145,7 @@ class EventListener {
     this._jobIndex = new Map();
     this._agentIndex = new Map();
     this._contractIndex = new Map(); // contractAddress -> contractHealth serial
+    this._subJobToParentJob = new Map(); // subJobId -> parentJobId
     this._initIndices();
   }
 
@@ -258,7 +259,7 @@ class EventListener {
 
     // Update jobId on the iNFT
     const metadata = await this.storage.load("auditJob", serial);
-    if (metadata && metadata.jobId === 0) {
+    if (metadata) {
       metadata.jobId = jobId;
       await this.storage.save("auditJob", serial, metadata);
     }
@@ -457,18 +458,66 @@ class EventListener {
 
   // ─── SubAuction Event Handlers ────────────────────────────────────────────
 
+  async _onSubAuction_SubAuctionCreated(args, timestamp) {
+    const subJobId = Number(args.subJobId);
+    const parentJobId = Number(args.parentJobId);
+    console.log(`  [event] SubAuctionCreated: subJobId=${subJobId}, parentJobId=${parentJobId}`);
+
+    this._subJobToParentJob.set(subJobId, parentJobId);
+
+    const serial = this._jobIndex.get(parentJobId);
+    if (!serial) return;
+
+    // Record sub-auction requester as participant on parent Audit Job iNFT
+    await this.inftService.addJobParticipant(serial, {
+      agentAddress: args.requester,
+      role: "report_aggregator",
+      specialization: args.requiredSpecialization,
+    });
+  }
+
+  async _onSubAuction_SubBidSubmitted(args, timestamp) {
+    const subJobId = Number(args.subJobId);
+    console.log(`  [event] SubBidSubmitted: subJobId=${subJobId}, agent=${args.agent}`);
+
+    // Update agent's participation metrics
+    const agentSerial = this._agentIndex.get(args.agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateAgentMetrics(agentSerial, {
+        performance: { auctionsParticipated: 1 },
+      });
+    }
+  }
+
+  async _onSubAuction_SubContractorSelected(args, timestamp) {
+    const subJobId = Number(args.subJobId);
+    const agent = args.agent;
+    console.log(`  [event] SubContractorSelected: subJobId=${subJobId}, agent=${agent}`);
+
+    const parentJobId = this._subJobToParentJob.get(subJobId);
+    if (parentJobId) {
+      const serial = this._jobIndex.get(parentJobId);
+      if (serial) {
+        // Record selected sub-contractor as participant on parent Audit Job iNFT
+        await this.inftService.addJobParticipant(serial, {
+          agentAddress: agent,
+          role: "sub_contractor",
+          specialization: "sub_job_" + subJobId,
+        });
+      }
+    }
+  }
+
+  async _onSubAuction_ResultDelivered(args, timestamp) {
+    const subJobId = Number(args.subJobId);
+    console.log(`  [event] ResultDelivered: subJobId=${subJobId}, hash=${args.resultHash}`);
+  }
+
   async _onSubAuction_ResultAccepted(args, timestamp) {
     const subJobId = Number(args.subJobId);
     console.log(`  [event] SubAuction.ResultAccepted: subJobId=${subJobId}`);
 
-    // Find the sub-contractor agent and reward reputation
-    // The agent address comes from the sub-auction's selected contractor
-    // For now we use the payment amount event to identify the agent
     const paymentGuard = Number(args.paymentAmount) / 1e8;
-
-    // SubAuction doesn't directly give us the agent address in ResultAccepted,
-    // but the sub-contractor was recorded when SubContractorSelected fired.
-    // We'd need to track sub-job -> agent mapping. For now, log it.
     console.log(`    Sub-job ${subJobId} accepted, payment: ${paymentGuard} GUARD`);
   }
 
@@ -485,6 +534,24 @@ class EventListener {
 
   // ─── DataMarketplace Event Handlers ───────────────────────────────────────
 
+  async _onDataMarketplace_DataListed(args, timestamp) {
+    const listingId = Number(args.listingId);
+    const parentJobId = Number(args.parentJobId);
+    console.log(`  [event] DataListed: listingId=${listingId}, parentJobId=${parentJobId}`);
+
+    if (parentJobId > 0) {
+      const serial = this._jobIndex.get(parentJobId);
+      if (serial) {
+        // Log data seller as participant
+        await this.inftService.addJobParticipant(serial, {
+          agentAddress: args.seller,
+          role: "data_seller",
+          specialization: "data_listing_" + listingId,
+        });
+      }
+    }
+  }
+
   async _onDataMarketplace_DataPurchased(args, timestamp) {
     const seller = args.seller;
     const buyer = args.buyer;
@@ -497,6 +564,14 @@ class EventListener {
       await this.inftService.updateAgentMetrics(sellerSerial, {
         performance: { dataListingsSold: 1 },
         economics: { totalEarned: pricePaid },
+      });
+    }
+
+    // Update buyer metrics
+    const buyerSerial = this._agentIndex.get(buyer.toLowerCase());
+    if (buyerSerial) {
+      await this.inftService.updateAgentMetrics(buyerSerial, {
+        performance: { auctionsParticipated: 1 }, // Counting data purchase as an "activity"
       });
     }
   }
@@ -516,7 +591,19 @@ class EventListener {
         platformFee,
         settledAt: new Date().toISOString(),
       });
+
+      // Transition to COMPLETED if not already
+      const metadata = await this.storage.load("auditJob", serial);
+      if (metadata && metadata.state.current !== "COMPLETED") {
+        await this.inftService.transitionAuditJobState(serial, "COMPLETED", "PaymentSettlement.JobSettled");
+      }
     }
+  }
+
+  async _onPaymentSettlement_SubJobSettled(args, timestamp) {
+    const subJobId = Number(args.subJobId);
+    const amount = Number(args.amount) / 1e8;
+    console.log(`  [event] SubJobSettled: subJobId=${subJobId}, amount=${amount}`);
   }
 
   close() {
