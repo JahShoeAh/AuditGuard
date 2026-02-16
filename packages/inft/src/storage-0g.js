@@ -14,7 +14,7 @@
 
 const path = require("path");
 const fs = require("fs");
-const { Indexer, Batcher, KvClient, StorageNode } = require("@0glabs/0g-ts-sdk");
+const { Indexer, Batcher, KvClient, StorageNode } = require("@0gfoundation/0g-ts-sdk");
 const { ethers } = require("ethers");
 
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -29,9 +29,8 @@ const DEFAULT_ZG_KV_RPC = "http://3.101.147.150:6789";
 // Known 0g Testnet Contract Addresses (Bypasses SDK discovery bugs)
 const ZG_FLOW_CONTRACT_ADDRESS = "0x22E03a6A89B950F1c82ec5e74F8eCa321a105296";
 
-// Stream ID for AuditGuard iNFT KV namespace
-const STREAM_DOMAIN = "0x";
-const AUDITGUARD_STREAM_ID = "0x0000000000000000000000000000000000000000000000000000000000000001";
+// Stream ID for AuditGuard iNFT KV namespace (unique hash to avoid collisions)
+const AUDITGUARD_STREAM_ID = ethers.keccak256(ethers.toUtf8Bytes("AuditGuard-iNFT-v2"));
 
 class StorageAdapter {
   /**
@@ -276,7 +275,7 @@ class StorageAdapter {
     }
 
     try {
-      const { ZgFile } = require("@0glabs/0g-ts-sdk");
+      const { ZgFile } = require("@0gfoundation/0g-ts-sdk");
 
       // Write data to a temp file for ZgFile
       const tmpPath = path.join(DATA_DIR, `.tmp-blob-${Date.now()}`);
@@ -427,7 +426,7 @@ class StorageAdapter {
  * Safely get the 0g flow contract instance.
  */
 async function getFlowContractSafe(address, signer) {
-  const { getFlowContract } = require("@0glabs/0g-ts-sdk");
+  const { getFlowContract } = require("@0gfoundation/0g-ts-sdk");
   return await getFlowContract(address, signer);
 }
 

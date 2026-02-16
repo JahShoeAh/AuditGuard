@@ -16,7 +16,7 @@
     "listen": "node src/discovery-listener.js"
   },
   "dependencies": {
-    "@0glabs/0g-ts-sdk": "^0.3.3",
+    "@0gfoundation/0g-ts-sdk": "^1.2.1",
     "@hashgraph/sdk": "^2.46.0",
     "dotenv": "^16.4.0",
     "ethers": "^6.13.1"
