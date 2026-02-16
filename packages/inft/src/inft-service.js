@@ -7,11 +7,10 @@
  *   - Contract Health iNFTs (minted on first audit of a contract)
  *
  * NFT metadata is stored as JSON in HTS token metadata bytes.
- * Large data (reports, detailed logs) is referenced via storageRef
- * fields pointing to 0g Labs DA layer.
+ * Full metadata is persisted to 0g Labs DA via StorageAdapter
+ * (with local JSON fallback when 0g is unreachable).
  *
- * State transitions are tracked in the iNFT metadata and updated
- * by re-minting or via an off-chain state store indexed by serial number.
+ * State transitions are validated and tracked in the iNFT metadata.
  */
 
 const path = require("path");
@@ -26,14 +25,9 @@ const {
   Hbar,
 } = require("@hashgraph/sdk");
 
-const CONFIG_PATH = path.join(__dirname, "..", "..", "sdk", "config.json");
+const { StorageAdapter } = require("./storage-0g");
 
-/**
- * In-memory state store for iNFT metadata.
- * In production this would be backed by 0g Labs DA or a database.
- * Keyed by `${collectionKey}:${serialNumber}`.
- */
-const stateStore = new Map();
+const CONFIG_PATH = path.join(__dirname, "..", "..", "sdk", "config.json");
 
 function readConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
@@ -57,13 +51,15 @@ class INFTService {
    * @param {string} options.operatorId   - Hedera account ID (e.g., "0.0.12345")
    * @param {string} options.operatorKey  - Private key (hex or DER)
    * @param {string} [options.keyType]    - "ECDSA" | "ED25519" | auto
+   * @param {StorageAdapter} [options.storage] - Storage adapter (created if not provided)
    */
-  constructor({ operatorId, operatorKey, keyType }) {
+  constructor({ operatorId, operatorKey, keyType, storage }) {
     this.operatorId = AccountId.fromString(operatorId);
     this.operatorKey = parsePrivateKey(operatorKey, keyType);
     this.client = Client.forTestnet().setOperator(this.operatorId, this.operatorKey);
     this.client.setDefaultMaxTransactionFee(new Hbar(5));
     this.config = readConfig();
+    this.storage = storage || new StorageAdapter();
   }
 
   /** Gracefully close the Hedera client. */
@@ -71,9 +67,7 @@ class INFTService {
     this.client.close();
   }
 
-  /**
-   * Reload config from disk (useful if other scripts updated it).
-   */
+  /** Reload config from disk. */
   reloadConfig() {
     this.config = readConfig();
   }
@@ -106,7 +100,7 @@ class INFTService {
 
     const metadata = {
       schemaVersion: "1.0.0",
-      tokenId: "", // populated after mint
+      tokenId: "",
       jobId: discoveryEvent.jobId || 0,
       target: {
         contractAddress: discoveryEvent.contractAddress,
@@ -152,7 +146,7 @@ class INFTService {
     const serialNumber = await this._mintNFT("auditJob", metadata);
     metadata.tokenId = `${collections.auditJob.tokenId}:${serialNumber}`;
 
-    stateStore.set(`auditJob:${serialNumber}`, metadata);
+    await this.storage.save("auditJob", serialNumber, metadata);
 
     console.log(`  [iNFT] Minted Audit Job iNFT #${serialNumber} for ${discoveryEvent.contractAddress}`);
     return { serialNumber, metadata };
@@ -255,7 +249,7 @@ class INFTService {
     const serialNumber = await this._mintNFT("agentProfile", metadata);
     metadata.tokenId = `${collections.agentProfile.tokenId}:${serialNumber}`;
 
-    stateStore.set(`agentProfile:${serialNumber}`, metadata);
+    await this.storage.save("agentProfile", serialNumber, metadata);
 
     console.log(`  [iNFT] Minted Agent Profile iNFT #${serialNumber} for ${registration.agentId}`);
     return { serialNumber, metadata };
@@ -282,7 +276,7 @@ class INFTService {
     }
 
     const now = new Date().toISOString();
-    const initialScore = 100 - (contractInfo.initialRiskScore || 50); // Invert risk to health
+    const initialScore = 100 - (contractInfo.initialRiskScore || 50);
 
     const metadata = {
       schemaVersion: "1.0.0",
@@ -344,7 +338,7 @@ class INFTService {
     const serialNumber = await this._mintNFT("contractHealth", metadata);
     metadata.tokenId = `${collections.contractHealth.tokenId}:${serialNumber}`;
 
-    stateStore.set(`contractHealth:${serialNumber}`, metadata);
+    await this.storage.save("contractHealth", serialNumber, metadata);
 
     console.log(`  [iNFT] Minted Contract Health iNFT #${serialNumber} for ${contractInfo.contractAddress}`);
     return { serialNumber, metadata };
@@ -359,12 +353,11 @@ class INFTService {
    * @param {string} newState - Target state from AuditJobState enum
    * @param {string} trigger - What caused the transition
    * @param {string} [txHash] - On-chain tx hash if applicable
-   * @returns {object} Updated metadata
+   * @returns {Promise<object>} Updated metadata
    */
-  transitionAuditJobState(serialNumber, newState, trigger, txHash) {
-    const key = `auditJob:${serialNumber}`;
-    const metadata = stateStore.get(key);
-    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found in state store`);
+  async transitionAuditJobState(serialNumber, newState, trigger, txHash) {
+    const metadata = await this.storage.load("auditJob", serialNumber);
+    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found`);
 
     const now = new Date().toISOString();
     const previousState = metadata.state.current;
@@ -381,7 +374,7 @@ class INFTService {
     metadata.state.current = newState;
     metadata.updatedAt = now;
 
-    stateStore.set(key, metadata);
+    await this.storage.save("auditJob", serialNumber, metadata);
     console.log(`  [iNFT] Audit Job #${serialNumber}: ${previousState} -> ${newState} (${trigger})`);
     return metadata;
   }
@@ -391,16 +384,58 @@ class INFTService {
    *
    * @param {number} serialNumber - Audit Job iNFT serial
    * @param {object} participant - Participant data matching AuditJobParticipant
-   * @returns {object} Updated metadata
+   * @returns {Promise<object>} Updated metadata
    */
-  addJobParticipant(serialNumber, participant) {
-    const key = `auditJob:${serialNumber}`;
-    const metadata = stateStore.get(key);
-    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found in state store`);
+  async addJobParticipant(serialNumber, participant) {
+    const metadata = await this.storage.load("auditJob", serialNumber);
+    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found`);
 
     metadata.participants.push(participant);
     metadata.updatedAt = new Date().toISOString();
-    stateStore.set(key, metadata);
+    await this.storage.save("auditJob", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Update auction metadata on an Audit Job iNFT.
+   *
+   * @param {number} serialNumber
+   * @param {object} auctionData - Partial auction fields to merge
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateAuctionData(serialNumber, auctionData) {
+    const metadata = await this.storage.load("auditJob", serialNumber);
+    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found`);
+
+    metadata.auction = { ...(metadata.auction || {}), ...auctionData };
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("auditJob", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Update payment data on an Audit Job iNFT.
+   *
+   * @param {number} serialNumber
+   * @param {object} paymentData - Payment fields to merge
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updatePaymentData(serialNumber, paymentData) {
+    const metadata = await this.storage.load("auditJob", serialNumber);
+    if (!metadata) throw new Error(`Audit Job iNFT #${serialNumber} not found`);
+
+    metadata.payments = { ...(metadata.payments || {}), ...paymentData };
+    if (paymentData.breakdown && metadata.payments.breakdown) {
+      // Append to breakdown array rather than overwrite
+      if (!Array.isArray(metadata.payments.breakdown)) {
+        metadata.payments.breakdown = [];
+      }
+      if (Array.isArray(paymentData.breakdown)) {
+        metadata.payments.breakdown.push(...paymentData.breakdown);
+      }
+    }
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("auditJob", serialNumber, metadata);
     return metadata;
   }
 
@@ -412,12 +447,11 @@ class INFTService {
    * @param {string} reason - ReputationChangeReason
    * @param {number} [jobId]
    * @param {string} [txHash]
-   * @returns {object} Updated metadata
+   * @returns {Promise<object>} Updated metadata
    */
-  updateAgentReputation(serialNumber, delta, reason, jobId, txHash) {
-    const key = `agentProfile:${serialNumber}`;
-    const metadata = stateStore.get(key);
-    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found in state store`);
+  async updateAgentReputation(serialNumber, delta, reason, jobId, txHash) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
 
     const now = new Date().toISOString();
     let newScore = metadata.reputation.current + delta;
@@ -445,8 +479,51 @@ class INFTService {
     }
 
     metadata.updatedAt = now;
-    stateStore.set(key, metadata);
+    await this.storage.save("agentProfile", serialNumber, metadata);
     console.log(`  [iNFT] Agent #${serialNumber} reputation: ${delta > 0 ? "+" : ""}${delta} -> ${newScore} (${reason})`);
+    return metadata;
+  }
+
+  /**
+   * Update Agent Profile performance and economics after a job event.
+   *
+   * @param {number} serialNumber
+   * @param {object} updates - Partial fields to merge into performance/economics
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateAgentMetrics(serialNumber, updates) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    if (updates.performance) {
+      for (const [k, v] of Object.entries(updates.performance)) {
+        if (typeof v === "number" && typeof metadata.performance[k] === "number") {
+          metadata.performance[k] += v;
+        } else {
+          metadata.performance[k] = v;
+        }
+      }
+      // Recompute derived fields
+      const p = metadata.performance;
+      const totalFindings = p.successfulFindings + p.falsePositives + p.falseNegatives;
+      p.accuracyRate = totalFindings > 0 ? (p.successfulFindings / totalFindings) * 100 : 0;
+      p.winRate = p.auctionsParticipated > 0 ? (p.auctionsWon / p.auctionsParticipated) * 100 : 0;
+    }
+
+    if (updates.economics) {
+      for (const [k, v] of Object.entries(updates.economics)) {
+        if (typeof v === "number" && typeof metadata.economics[k] === "number") {
+          metadata.economics[k] += v;
+        }
+      }
+    }
+
+    if (updates.jobHistoryEntry) {
+      metadata.performance.jobHistory.push(updates.jobHistoryEntry);
+    }
+
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("agentProfile", serialNumber, metadata);
     return metadata;
   }
 
@@ -463,12 +540,11 @@ class INFTService {
    * @param {number} auditResult.totalCostGuard
    * @param {string} [auditResult.reportHash]
    * @param {string} [auditResult.auditJobTokenId]
-   * @returns {object} Updated metadata
+   * @returns {Promise<object>} Updated metadata
    */
-  recordAuditOnContractHealth(serialNumber, auditResult) {
-    const key = `contractHealth:${serialNumber}`;
-    const metadata = stateStore.get(key);
-    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found in state store`);
+  async recordAuditOnContractHealth(serialNumber, auditResult) {
+    const metadata = await this.storage.load("contractHealth", serialNumber);
+    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found`);
 
     const now = new Date().toISOString();
     const previousScore = metadata.health.securityScore;
@@ -498,7 +574,7 @@ class INFTService {
     });
 
     metadata.updatedAt = now;
-    stateStore.set(key, metadata);
+    await this.storage.save("contractHealth", serialNumber, metadata);
     console.log(
       `  [iNFT] Contract Health #${serialNumber}: score ${previousScore} -> ${auditResult.newSecurityScore} (job ${auditResult.jobId})`
     );
@@ -508,13 +584,13 @@ class INFTService {
   // ─── Query ────────────────────────────────────────────────────────────────
 
   /**
-   * Get iNFT metadata from the in-memory state store.
+   * Get iNFT metadata.
    * @param {string} collectionKey - "auditJob" | "agentProfile" | "contractHealth"
    * @param {number} serialNumber
-   * @returns {object|null}
+   * @returns {Promise<object|null>}
    */
-  getINFT(collectionKey, serialNumber) {
-    return stateStore.get(`${collectionKey}:${serialNumber}`) || null;
+  async getINFT(collectionKey, serialNumber) {
+    return this.storage.load(collectionKey, serialNumber);
   }
 
   /**
@@ -523,13 +599,39 @@ class INFTService {
    * @returns {object[]}
    */
   listINFTs(collectionKey) {
-    const results = [];
-    for (const [key, value] of stateStore) {
-      if (key.startsWith(`${collectionKey}:`)) {
-        results.push(value);
-      }
-    }
-    return results;
+    return this.storage.listAll(collectionKey);
+  }
+
+  /**
+   * Find an iNFT by a field value.
+   * @param {string} collectionKey
+   * @param {string} field - e.g., "jobId", "agentAddress"
+   * @param {*} value
+   * @returns {object|null}
+   */
+  findINFT(collectionKey, field, value) {
+    return this.storage.findBy(collectionKey, field, value);
+  }
+
+  /**
+   * Find an iNFT serial number by a field value.
+   * @param {string} collectionKey
+   * @param {string} field
+   * @param {*} value
+   * @returns {number|null}
+   */
+  findSerial(collectionKey, field, value) {
+    return this.storage.findSerialBy(collectionKey, field, value);
+  }
+
+  /**
+   * Upload a large data blob (audit report) to 0g DA and return the root hash.
+   * @param {Buffer|string} data
+   * @param {string} label
+   * @returns {Promise<string|null>}
+   */
+  async uploadReport(data, label) {
+    return this.storage.uploadBlob(data, label);
   }
 
   // ─── Publishing to HCS ────────────────────────────────────────────────────
@@ -582,7 +684,7 @@ class INFTService {
     }
 
     // HTS NFT metadata is stored as bytes. We encode a compact JSON summary.
-    // Full metadata lives in the state store (and eventually on 0g Labs DA).
+    // Full metadata lives in 0g Labs DA (via StorageAdapter).
     const metadataBytes = Buffer.from(
       JSON.stringify({
         schema: metadata.schemaVersion,
@@ -615,14 +717,14 @@ class INFTService {
   _validateAuditJobTransition(from, to) {
     const allowed = {
       DISCOVERED: ["AUCTION_OPEN", "CANCELLED"],
-      AUCTION_OPEN: ["BIDDING_CLOSED", "CANCELLED"],
+      AUCTION_OPEN: ["BIDDING_CLOSED", "AUDITING_IN_PROGRESS", "CANCELLED"],
       BIDDING_CLOSED: ["AUDITING_IN_PROGRESS", "CANCELLED"],
-      AUDITING_IN_PROGRESS: ["REPORT_PENDING"],
+      AUDITING_IN_PROGRESS: ["REPORT_PENDING", "COMPLETED"],
       REPORT_PENDING: ["COMPLETED"],
       COMPLETED: ["VULNERABILITIES_ACTIVE", "MONITORING_ACTIVE"],
       VULNERABILITIES_ACTIVE: ["REMEDIATION_VERIFIED", "MONITORING_ACTIVE"],
       REMEDIATION_VERIFIED: ["MONITORING_ACTIVE"],
-      MONITORING_ACTIVE: ["AUCTION_OPEN"], // re-audit cycle
+      MONITORING_ACTIVE: ["AUCTION_OPEN"],
     };
 
     const transitions = allowed[from];

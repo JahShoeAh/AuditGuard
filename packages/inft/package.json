@@ -16,8 +16,16 @@
     "listen": "node src/discovery-listener.js"
   },
   "dependencies": {
+    "@0glabs/0g-ts-sdk": "^0.3.3",
     "@hashgraph/sdk": "^2.46.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.1"
   },
-  "keywords": ["inft", "nft", "auditguard", "hedera", "0g-labs"]
+  "keywords": [
+    "inft",
+    "nft",
+    "auditguard",
+    "hedera",
+    "0g-labs"
+  ]
 }
