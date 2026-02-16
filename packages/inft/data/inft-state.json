@@ -5107,5 +5107,770 @@
     },
     "createdAt": "2026-02-16T00:52:01.495Z",
     "updatedAt": "2026-02-16T00:52:03.447Z"
+  },
+  "auditJob:26": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:26",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "lineCount": 3500,
+      "codeHash": "0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-42",
+      "timestamp": "2026-02-16T00:57:28.000Z",
+      "initialRiskScore": 75,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "COMPLETED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-16T00:57:28.924Z",
+          "trigger": "hcs_discovery_event"
+        },
+        {
+          "from": "DISCOVERED",
+          "to": "AUCTION_OPEN",
+          "timestamp": "2026-02-16T00:57:34.367Z",
+          "trigger": "AuditAuction.JobPosted"
+        },
+        {
+          "from": "AUCTION_OPEN",
+          "to": "AUDITING_IN_PROGRESS",
+          "timestamp": "2026-02-16T00:57:35.026Z",
+          "trigger": "AuditAuction.WinnersSelected"
+        },
+        {
+          "from": "AUDITING_IN_PROGRESS",
+          "to": "COMPLETED",
+          "timestamp": "2026-02-16T00:57:35.029Z",
+          "trigger": "AuditAuction.JobCompleted"
+        }
+      ]
+    },
+    "participants": [
+      {
+        "agentAddress": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentId": "StaticAnalysis-47",
+        "role": "primary_auditor",
+        "specialization": "static_analysis",
+        "bidAmount": 15,
+        "reputationAtBid": 9400
+      },
+      {
+        "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "agentId": "LLMContextual-3",
+        "role": "primary_auditor",
+        "specialization": "llm_contextual",
+        "bidAmount": 35,
+        "reputationAtBid": 8700
+      },
+      {
+        "agentAddress": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "agentId": "Dependency-8",
+        "role": "sub_contractor",
+        "specialization": "dependency_analysis",
+        "paymentReceived": 3
+      }
+    ],
+    "reports": {
+      "findings": {
+        "critical": 1,
+        "high": 0,
+        "medium": 1,
+        "low": 0,
+        "informational": 0,
+        "total": 2,
+        "duplicatesDetected": 0
+      },
+      "finalReportHash": "0x38a39855c6473eb6480cb7a0e9a3984b427bb67bbcd4516c4dc63a01a80751d9",
+      "reportStorageRef": "0g-da://0x38a39855c6473eb6480cb7a0e9a3984b427bb67bbcd4516c4dc63a01a80751d9"
+    },
+    "createdAt": "2026-02-16T00:57:28.924Z",
+    "updatedAt": "2026-02-16T00:57:35.029Z",
+    "auction": {
+      "deadline": "2026-02-16T01:57:35.024Z",
+      "budgetGuard": 100,
+      "totalBids": 0,
+      "winningAgents": [
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "platformFeePaid": 5
+    }
+  },
+  "contractHealth:21": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:21",
+    "contract": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 88,
+      "scoreHistory": [
+        {
+          "score": 25,
+          "timestamp": "2026-02-16T00:57:31.815Z",
+          "jobId": 0,
+          "delta": 0
+        },
+        {
+          "score": 88,
+          "timestamp": "2026-02-16T00:57:36.798Z",
+          "jobId": 26,
+          "delta": 63
+        }
+      ],
+      "riskLevel": "low",
+      "lastAuditTimestamp": "2026-02-16T00:57:36.798Z",
+      "totalAuditsCompleted": 1
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [
+      {
+        "jobId": 26,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-16T00:57:36.798Z",
+        "agentsInvolved": [
+          "StaticAnalysis-47",
+          "LLMContextual-3"
+        ],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 25,
+        "securityScoreAfter": 88,
+        "totalCostGuard": 50,
+        "reportHash": "0x38a39855c6473eb6480cb7a0e9a3984b427bb67bbcd4516c4dc63a01a80751d9"
+      }
+    ],
+    "monitoring": {
+      "isActive": false
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-16T00:57:31.815Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:57:31.815Z",
+    "updatedAt": "2026-02-16T00:57:36.798Z"
+  },
+  "agentProfile:20": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:20",
+    "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "agentId": "LLMContextual-3",
+    "identity": {
+      "ucpEndpoint": "openclaw://llm-3",
+      "specializations": [
+        "llm_contextual"
+      ],
+      "tier": "PREMIUM",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-16T00:57:35.029Z"
+    },
+    "reputation": {
+      "current": 9100,
+      "history": [
+        {
+          "timestamp": "2026-02-16T00:57:35.029Z",
+          "delta": 8700,
+          "newScore": 8700,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-16T00:57:36.796Z",
+          "delta": 400,
+          "newScore": 9100,
+          "reason": "job_completion",
+          "jobId": 26
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 9100,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 1,
+      "successfulFindings": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 100,
+      "auctionsWon": 1,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 0,
+      "totalEarned": 35,
+      "totalSlashed": 0,
+      "pricing": {
+        "baseBidMultiplier": 1,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 0,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-16T00:57:35.029Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:57:35.029Z",
+    "updatedAt": "2026-02-16T00:57:36.797Z"
+  },
+  "auditJob:27": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:27",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "lineCount": 3500,
+      "codeHash": "0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-42",
+      "timestamp": "2026-02-16T00:58:29.000Z",
+      "initialRiskScore": 75,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "COMPLETED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-16T00:58:29.713Z",
+          "trigger": "hcs_discovery_event"
+        },
+        {
+          "from": "DISCOVERED",
+          "to": "AUCTION_OPEN",
+          "timestamp": "2026-02-16T00:58:35.626Z",
+          "trigger": "AuditAuction.JobPosted"
+        },
+        {
+          "from": "AUCTION_OPEN",
+          "to": "AUDITING_IN_PROGRESS",
+          "timestamp": "2026-02-16T00:58:36.272Z",
+          "trigger": "AuditAuction.WinnersSelected"
+        },
+        {
+          "from": "AUDITING_IN_PROGRESS",
+          "to": "COMPLETED",
+          "timestamp": "2026-02-16T00:58:36.275Z",
+          "trigger": "AuditAuction.JobCompleted"
+        }
+      ]
+    },
+    "participants": [
+      {
+        "agentAddress": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentId": "StaticAnalysis-47",
+        "role": "primary_auditor",
+        "specialization": "static_analysis",
+        "bidAmount": 15,
+        "reputationAtBid": 9400
+      },
+      {
+        "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "agentId": "LLMContextual-3",
+        "role": "primary_auditor",
+        "specialization": "llm_contextual",
+        "bidAmount": 35,
+        "reputationAtBid": 8700
+      },
+      {
+        "agentAddress": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "agentId": "Dependency-8",
+        "role": "sub_contractor",
+        "specialization": "dependency_analysis",
+        "paymentReceived": 3
+      }
+    ],
+    "reports": {
+      "findings": {
+        "critical": 1,
+        "high": 0,
+        "medium": 1,
+        "low": 0,
+        "informational": 0,
+        "total": 2,
+        "duplicatesDetected": 0
+      },
+      "finalReportHash": "0x218c79816d88a18a5ed002c15731280b0a2979883f0322ccd7d0ccc2f3bd6f5e",
+      "reportStorageRef": "0g-da://0x218c79816d88a18a5ed002c15731280b0a2979883f0322ccd7d0ccc2f3bd6f5e"
+    },
+    "createdAt": "2026-02-16T00:58:29.713Z",
+    "updatedAt": "2026-02-16T00:58:36.275Z",
+    "auction": {
+      "deadline": "2026-02-16T01:58:36.270Z",
+      "budgetGuard": 100,
+      "totalBids": 0,
+      "winningAgents": [
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "platformFeePaid": 5
+    }
+  },
+  "contractHealth:22": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:22",
+    "contract": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 88,
+      "scoreHistory": [
+        {
+          "score": 25,
+          "timestamp": "2026-02-16T00:58:33.035Z",
+          "jobId": 0,
+          "delta": 0
+        },
+        {
+          "score": 88,
+          "timestamp": "2026-02-16T00:58:38.128Z",
+          "jobId": 27,
+          "delta": 63
+        }
+      ],
+      "riskLevel": "low",
+      "lastAuditTimestamp": "2026-02-16T00:58:38.128Z",
+      "totalAuditsCompleted": 1
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [
+      {
+        "jobId": 27,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-16T00:58:38.128Z",
+        "agentsInvolved": [
+          "StaticAnalysis-47",
+          "LLMContextual-3"
+        ],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 25,
+        "securityScoreAfter": 88,
+        "totalCostGuard": 50,
+        "reportHash": "0x218c79816d88a18a5ed002c15731280b0a2979883f0322ccd7d0ccc2f3bd6f5e"
+      }
+    ],
+    "monitoring": {
+      "isActive": false
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-16T00:58:33.035Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:58:33.035Z",
+    "updatedAt": "2026-02-16T00:58:38.128Z"
+  },
+  "agentProfile:21": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:21",
+    "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "agentId": "LLMContextual-3",
+    "identity": {
+      "ucpEndpoint": "openclaw://llm-3",
+      "specializations": [
+        "llm_contextual"
+      ],
+      "tier": "PREMIUM",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-16T00:58:36.276Z"
+    },
+    "reputation": {
+      "current": 9100,
+      "history": [
+        {
+          "timestamp": "2026-02-16T00:58:36.276Z",
+          "delta": 8700,
+          "newScore": 8700,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-16T00:58:38.126Z",
+          "delta": 400,
+          "newScore": 9100,
+          "reason": "job_completion",
+          "jobId": 27
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 9100,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 1,
+      "successfulFindings": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 100,
+      "auctionsWon": 1,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 0,
+      "totalEarned": 35,
+      "totalSlashed": 0,
+      "pricing": {
+        "baseBidMultiplier": 1,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 0,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-16T00:58:36.276Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:58:36.276Z",
+    "updatedAt": "2026-02-16T00:58:38.127Z"
+  },
+  "auditJob:28": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:28",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "lineCount": 3500,
+      "codeHash": "0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-42",
+      "timestamp": "2026-02-16T00:59:45.000Z",
+      "initialRiskScore": 75,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "COMPLETED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-16T00:59:45.945Z",
+          "trigger": "hcs_discovery_event"
+        },
+        {
+          "from": "DISCOVERED",
+          "to": "AUCTION_OPEN",
+          "timestamp": "2026-02-16T00:59:51.611Z",
+          "trigger": "AuditAuction.JobPosted"
+        },
+        {
+          "from": "AUCTION_OPEN",
+          "to": "AUDITING_IN_PROGRESS",
+          "timestamp": "2026-02-16T00:59:52.386Z",
+          "trigger": "AuditAuction.WinnersSelected"
+        },
+        {
+          "from": "AUDITING_IN_PROGRESS",
+          "to": "COMPLETED",
+          "timestamp": "2026-02-16T00:59:52.389Z",
+          "trigger": "AuditAuction.JobCompleted"
+        }
+      ]
+    },
+    "participants": [
+      {
+        "agentAddress": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentId": "StaticAnalysis-47",
+        "role": "primary_auditor",
+        "specialization": "static_analysis",
+        "bidAmount": 15,
+        "reputationAtBid": 9400
+      },
+      {
+        "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "agentId": "LLMContextual-3",
+        "role": "primary_auditor",
+        "specialization": "llm_contextual",
+        "bidAmount": 35,
+        "reputationAtBid": 8700
+      },
+      {
+        "agentAddress": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "agentId": "Dependency-8",
+        "role": "sub_contractor",
+        "specialization": "dependency_analysis",
+        "paymentReceived": 3
+      }
+    ],
+    "reports": {
+      "findings": {
+        "critical": 1,
+        "high": 0,
+        "medium": 1,
+        "low": 0,
+        "informational": 0,
+        "total": 2,
+        "duplicatesDetected": 0
+      },
+      "finalReportHash": "0x509f69f5c3d1b5b23cc44485988f2b0288a6731fa2ae9ee8fd5c47d0d6cd5d0e",
+      "reportStorageRef": "0g-da://0x509f69f5c3d1b5b23cc44485988f2b0288a6731fa2ae9ee8fd5c47d0d6cd5d0e"
+    },
+    "createdAt": "2026-02-16T00:59:45.945Z",
+    "updatedAt": "2026-02-16T00:59:52.389Z",
+    "auction": {
+      "deadline": "2026-02-16T01:59:52.383Z",
+      "budgetGuard": 100,
+      "totalBids": 0,
+      "winningAgents": [
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "platformFeePaid": 5
+    }
+  },
+  "contractHealth:23": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:23",
+    "contract": {
+      "contractAddress": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "chain": "hedera",
+      "contractType": "LendingProtocol",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 88,
+      "scoreHistory": [
+        {
+          "score": 25,
+          "timestamp": "2026-02-16T00:59:49.156Z",
+          "jobId": 0,
+          "delta": 0
+        },
+        {
+          "score": 88,
+          "timestamp": "2026-02-16T00:59:54.301Z",
+          "jobId": 28,
+          "delta": 63
+        }
+      ],
+      "riskLevel": "low",
+      "lastAuditTimestamp": "2026-02-16T00:59:54.301Z",
+      "totalAuditsCompleted": 1
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [
+      {
+        "jobId": 28,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-16T00:59:54.301Z",
+        "agentsInvolved": [
+          "StaticAnalysis-47",
+          "LLMContextual-3"
+        ],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 25,
+        "securityScoreAfter": 88,
+        "totalCostGuard": 50,
+        "reportHash": "0x509f69f5c3d1b5b23cc44485988f2b0288a6731fa2ae9ee8fd5c47d0d6cd5d0e"
+      }
+    ],
+    "monitoring": {
+      "isActive": false
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-16T00:59:49.156Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:59:49.156Z",
+    "updatedAt": "2026-02-16T00:59:54.301Z"
+  },
+  "agentProfile:22": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:22",
+    "agentAddress": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "agentId": "LLMContextual-3",
+    "identity": {
+      "ucpEndpoint": "openclaw://llm-3",
+      "specializations": [
+        "llm_contextual"
+      ],
+      "tier": "PREMIUM",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-16T00:59:52.389Z"
+    },
+    "reputation": {
+      "current": 9100,
+      "history": [
+        {
+          "timestamp": "2026-02-16T00:59:52.389Z",
+          "delta": 8700,
+          "newScore": 8700,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-16T00:59:54.299Z",
+          "delta": 400,
+          "newScore": 9100,
+          "reason": "job_completion",
+          "jobId": 28
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 9100,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 1,
+      "successfulFindings": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 100,
+      "auctionsWon": 1,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 0,
+      "totalEarned": 35,
+      "totalSlashed": 0,
+      "pricing": {
+        "baseBidMultiplier": 1,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 0,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-16T00:59:52.389Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T00:59:52.389Z",
+    "updatedAt": "2026-02-16T00:59:54.300Z"
   }
 }

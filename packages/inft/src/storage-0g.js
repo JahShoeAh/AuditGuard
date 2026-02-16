@@ -30,8 +30,8 @@ const DEFAULT_ZG_KV_RPC = "http://3.101.147.150:6789";
 const ZG_FLOW_CONTRACT_ADDRESS = "0x22E03a6A89B950F1c82ec5e74F8eCa321a105296";
 
 // Stream ID for AuditGuard iNFT KV namespace
-// Using a non-zero, unique stream ID to avoid potential collisions with standard system streams
-const AUDITGUARD_STREAM_ID = "0x0000000000000000000000000000000000000000000000000000000000000042";
+const STREAM_DOMAIN = "0x";
+const AUDITGUARD_STREAM_ID = "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 class StorageAdapter {
   /**
@@ -288,42 +288,13 @@ class StorageAdapter {
 
       const rootHash = tree.rootHash();
 
-      // THE ULTIMATE BYPASS: Manually call FixedPriceFlow.submit using ethers
+      // Attempt upload with SDK discovery ( Galileo )
       try {
-        console.log(`  [storage] Attempting raw ethers upload for "${label}"...`);
-        const flowABI = [
-          "function submit(tuple(bytes32 root, uint256 height, uint256 nodes, uint256 size, bytes tags) submission) external payable returns (uint256, bytes32, uint256, uint256)",
-          "function pricePerSector() external view returns (uint256)"
-        ];
-        const flowContract = new ethers.Contract(ZG_FLOW_CONTRACT_ADDRESS, flowABI, this._signer);
-
-        const submission = {
-          root: rootHash,
-          height: tree.height(),
-          nodes: tree.nodeCount(),
-          size: file.size(),
-          tags: "0x",
-        };
-
-        // Default fee fallback
-        let fee = ethers.parseEther("0.0001");
-        try {
-          const pricePerSector = await flowContract.pricePerSector();
-          const sectors = Math.ceil(file.size() / 256);
-          fee = pricePerSector * BigInt(sectors);
-          console.log(`  [storage] Storage fee: ${ethers.formatEther(fee)} AAG`);
-        } catch (pErr) {
-          console.warn(`  [storage] Using default fee: ${ethers.formatEther(fee)} AAG`);
-        }
-
-        const tx = await flowContract.submit(submission, { 
-          value: fee,
-          gasLimit: 2000000 
-        });
-        
-        console.log(`  [storage] 0g Submission Tx Sent: ${tx.hash}`);
-        await tx.wait();
-        console.log(`  [storage] Blob "${label}" anchored to 0g — root: ${rootHash}`);
+        console.log(`  [storage] Attempting 0g upload for "${label}"...`);
+        const [tx, uploadErr] = await this._indexer.upload(file, this.zgEvmRpc, this._signer);
+        await file.close();
+        if (uploadErr) throw uploadErr;
+        console.log(`  [storage] Blob "${label}" uploaded to 0g — root: ${rootHash}`);
       } catch (sdkErr) {
         this._handleZgFailure(`0g upload failed: ${sdkErr.message}`);
       }
@@ -379,15 +350,14 @@ class StorageAdapter {
       const [nodes, nodesErr] = await this._indexer.selectNodes(1);
       if (nodesErr) throw new Error(`Node selection failed: ${nodesErr}`);
 
+      // Try automatic discovery first
       const flowContract = await getFlowContractSafe(ZG_FLOW_CONTRACT_ADDRESS, this._signer);
       const batcher = new Batcher(1, nodes, flowContract, this.zgEvmRpc);
-
       const keyBytes = Uint8Array.from(Buffer.from(key, "utf-8"));
       const valBytes = Uint8Array.from(Buffer.from(value, "utf-8"));
-
       batcher.streamDataBuilder.set(AUDITGUARD_STREAM_ID, keyBytes, valBytes);
       const [tx, err] = await batcher.exec();
-      if (err) throw new Error(`KV set failed: ${err}`);
+      if (err) throw err;
     } catch (err) {
       throw err;
     }
