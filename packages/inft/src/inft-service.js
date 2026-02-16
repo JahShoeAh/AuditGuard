@@ -485,6 +485,172 @@ class INFTService {
   }
 
   /**
+   * Slash an agent for severe misconduct or critical failures.
+   *
+   * @param {number} serialNumber
+   * @param {number} amount - GUARD amount to slash from stake
+   * @param {number} reputationPenalty - Basis points to remove
+   * @param {string} reason
+   * @returns {Promise<object>} Updated metadata
+   */
+  async slashAgent(serialNumber, amount, reputationPenalty, reason) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    const now = new Date().toISOString();
+
+    // 1. Reputation penalty
+    await this.updateAgentReputation(serialNumber, -reputationPenalty, "slash_penalty");
+
+    // 2. Economic slashing
+    metadata.economics.totalSlashed = (metadata.economics.totalSlashed || 0) + amount;
+    metadata.economics.stakedAmount = Math.max(0, (metadata.economics.stakedAmount || 0) - amount);
+
+    // 3. Update status if stake too low or reputation too low
+    if (metadata.reputation.current < 1000 || metadata.economics.stakedAmount < 10) {
+      metadata.identity.status = "SLASHED";
+      metadata.state.current = "SLASHED";
+    }
+
+    metadata.updatedAt = now;
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    console.log(`  [iNFT] Agent #${serialNumber} SLASHED: -${amount} GUARD, -${reputationPenalty} bps (${reason})`);
+    return metadata;
+  }
+
+  /**
+   * Increase an agent's staked amount.
+   *
+   * @param {number} serialNumber
+   * @param {number} amount - GUARD amount added to stake
+   * @returns {Promise<object>} Updated metadata
+   */
+  async topUpStake(serialNumber, amount) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    metadata.economics.stakedAmount = (metadata.economics.stakedAmount || 0) + amount;
+    
+    // If agent was slashed, check if they can be reactivated
+    if (metadata.identity.status === "SLASHED" && 
+        metadata.economics.stakedAmount >= 100 && 
+        metadata.reputation.current > 2000) {
+      metadata.identity.status = "ACTIVE";
+      metadata.state.current = "ACTIVE";
+    }
+
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    console.log(`  [iNFT] Agent #${serialNumber} stake topped up: +${amount} GUARD (Total: ${metadata.economics.stakedAmount})`);
+    return metadata;
+  }
+
+  /**
+   * Check for code changes and trigger an autonomous re-audit if needed.
+   *
+   * @param {number} healthSerial
+   * @param {string} newCodeHash
+   * @returns {Promise<boolean>} True if re-audit triggered
+   */
+  async checkAndTriggerReaudit(healthSerial, newCodeHash) {
+    const metadata = await this.storage.load("contractHealth", healthSerial);
+    if (!metadata) throw new Error(`Contract Health iNFT #${healthSerial} not found`);
+
+    if (metadata.contract.currentCodeHash !== newCodeHash) {
+      console.log(`  [iNFT] Code change detected for ${metadata.contract.contractAddress}!`);
+      
+      const previousHash = metadata.contract.currentCodeHash;
+      metadata.contract.currentCodeHash = newCodeHash;
+      
+      // Update intelligence
+      metadata.intelligence = {
+        ...(metadata.intelligence || {}),
+        autoReauditTriggered: true,
+        predictedRiskChange: 20, // 20% increase in risk due to change
+      };
+      
+      metadata.health.riskLevel = "high"; // Escalated due to change
+      
+      metadata.updatedAt = new Date().toISOString();
+      await this.storage.save("contractHealth", healthSerial, metadata);
+      
+      // In a real system, this would emit an HCS event that Scanner/Orchestrator pick up
+      await this.publishToAuditLog("AUTONOMOUS_REAUDIT_TRIGGERED", {
+        contractAddress: metadata.contract.contractAddress,
+        previousHash,
+        newHash: newCodeHash,
+        reason: "code_change_detected",
+      });
+      
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get personalized job hints for an agent based on their profile.
+   *
+   * @param {number} agentSerial
+   * @returns {Promise<object[]>} List of recommended job hints
+   */
+  async getAgentPortfolioHints(agentSerial) {
+    const agent = await this.storage.load("agentProfile", agentSerial);
+    if (!agent) throw new Error(`Agent Profile iNFT #${agentSerial} not found`);
+
+    const openJobs = this.storage.listAll("auditJob").filter(j => j.state.current === "AUCTION_OPEN");
+    
+    return openJobs.map(job => {
+      const matchScore = this._calculateMatchScore(agent, job);
+      return {
+        jobId: job.jobId,
+        tokenId: job.tokenId,
+        contractType: job.target.contractType,
+        matchScore,
+        recommendation: matchScore > 70 ? "HIGH_PRIORITY" : matchScore > 40 ? "SUITABLE" : "LOW_MATCH",
+      };
+    }).sort((a, b) => b.matchScore - a.matchScore);
+  }
+
+  /**
+   * Generate a leaderboard of agents by reputation.
+   *
+   * @param {number} limit
+   * @returns {object[]}
+   */
+  getLeaderboard(limit = 10) {
+    const agents = this.storage.listAll("agentProfile");
+    return agents
+      .filter(a => a.identity.status !== "SLASHED")
+      .sort((a, b) => b.reputation.current - a.reputation.current)
+      .slice(0, limit)
+      .map(a => ({
+        agentId: a.agentId,
+        reputation: a.reputation.current,
+        accuracy: a.performance.accuracyRate,
+        jobsCompleted: a.performance.completedJobs,
+        tier: a.identity.tier,
+      }));
+  }
+
+  /**
+   * Internal match score calculation for portfolio hints.
+   */
+  _calculateMatchScore(agent, job) {
+    let score = 50; // Base score
+    
+    // Specialization match
+    const jobType = job.target.contractType?.toLowerCase();
+    if (agent.identity.specializations.some(s => s.toLowerCase() === jobType)) {
+      score += 30;
+    }
+    
+    // Reputation factor
+    score += (agent.reputation.current / 1000) * 2;
+    
+    return Math.min(100, score);
+  }
+
+  /**
    * Update Agent Profile performance and economics after a job event.
    *
    * @param {number} serialNumber
@@ -579,6 +745,154 @@ class INFTService {
       `  [iNFT] Contract Health #${serialNumber}: score ${previousScore} -> ${auditResult.newSecurityScore} (job ${auditResult.jobId})`
     );
     return metadata;
+  }
+
+  /**
+   * Add a new vulnerability to the Contract Health iNFT catalog.
+   *
+   * @param {number} serialNumber
+   * @param {object} vulnerability - Matching Vulnerability type
+   * @returns {Promise<object>} Updated metadata
+   */
+  async addVulnerabilityToContract(serialNumber, vulnerability) {
+    const metadata = await this.storage.load("contractHealth", serialNumber);
+    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found`);
+
+    const now = new Date().toISOString();
+    vulnerability.discoveredAt = vulnerability.discoveredAt || now;
+    vulnerability.status = vulnerability.status || "open";
+
+    metadata.vulnerabilities.catalog.push(vulnerability);
+
+    // Update summary counts
+    const severity = vulnerability.severity.toLowerCase();
+    if (metadata.vulnerabilities.summary[severity] !== undefined) {
+      metadata.vulnerabilities.summary[severity]++;
+    }
+    metadata.vulnerabilities.summary.total++;
+    metadata.vulnerabilities.summary.open++;
+
+    metadata.updatedAt = now;
+    await this.storage.save("contractHealth", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Update intelligence and risk predictions for a contract.
+   *
+   * @param {number} serialNumber
+   * @param {object} intelligence - Partial intelligence fields
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateContractIntelligence(serialNumber, intelligence) {
+    const metadata = await this.storage.load("contractHealth", serialNumber);
+    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found`);
+
+    metadata.intelligence = { ...(metadata.intelligence || {}), ...intelligence };
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("contractHealth", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Process a final audit report to update all involved agents' reputations
+   * and the target contract's health.
+   *
+   * @param {number} jobSerial - Audit Job iNFT serial
+   * @param {object} report - Aggregated report findings
+   * @returns {Promise<void>}
+   */
+  async processAuditFindings(jobSerial, report) {
+    const jobMeta = await this.storage.load("auditJob", jobSerial);
+    if (!jobMeta) throw new Error(`Audit Job iNFT #${jobSerial} not found`);
+
+    const healthSerial = this.findSerial("contractHealth", "contract.contractAddress", jobMeta.target.contractAddress);
+    if (!healthSerial) {
+      console.warn(`  [iNFT] No Contract Health iNFT found for ${jobMeta.target.contractAddress}, skipping health update`);
+    }
+
+    // 1. Update Contract Health with findings
+    if (healthSerial) {
+      for (const vuln of report.findings) {
+        await this.addVulnerabilityToContract(healthSerial, {
+          id: `AG-VULN-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          severity: vuln.severity,
+          category: vuln.category || "logic_error",
+          title: vuln.title,
+          status: "open",
+          discoveredByAgent: vuln.agentId,
+          discoveredInJobId: jobMeta.jobId,
+        });
+      }
+
+      await this.recordAuditOnContractHealth(healthSerial, {
+        jobId: jobMeta.jobId,
+        newSecurityScore: report.securityScore,
+        agentsInvolved: jobMeta.participants.map((p) => p.agentId).filter(Boolean),
+        findingsCount: report.findings.length,
+        criticalFindings: report.findings.filter((f) => f.severity === "critical").length,
+        totalCostGuard: jobMeta.payments?.totalPaid || 0,
+        reportHash: report.reportHash,
+      });
+    }
+
+    // 2. Update Agent Reputations based on their reports
+    if (report.agentReports) {
+      for (const agentReport of report.agentReports) {
+        const agentSerial = this.findSerial("agentProfile", "agentAddress", agentReport.agentAddress);
+        if (!agentSerial) continue;
+
+        const delta = this._calculateReputationDelta(agentReport);
+        const reason = delta >= 0 ? "valid_findings_bonus" : "false_positive_penalty";
+
+        await this.updateAgentReputation(agentSerial, delta, reason, jobMeta.jobId);
+        await this.updateAgentMetrics(agentSerial, {
+          performance: {
+            successfulFindings: agentReport.validFindings,
+            falsePositives: agentReport.falsePositives,
+            falseNegatives: agentReport.falseNegatives,
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Update an agent's dynamic pricing strategy.
+   *
+   * @param {number} serialNumber
+   * @param {object} pricingUpdates - Partial pricing strategy
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateAgentPricing(serialNumber, pricingUpdates) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    metadata.economics.pricing = { ...(metadata.economics.pricing || {}), ...pricingUpdates };
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Calculate reputation delta based on report accuracy.
+   *
+   * @param {object} agentReport
+   * @returns {number} Delta in basis points
+   */
+  _calculateReputationDelta(agentReport) {
+    // Base rewards for valid findings
+    let delta = agentReport.validFindings * 50; // 50 bps per valid finding
+
+    // Penalties for false positives/negatives
+    delta -= agentReport.falsePositives * 100; // 100 bps penalty
+    delta -= agentReport.falseNegatives * 200; // 200 bps penalty
+
+    // Accuracy multiplier
+    if (agentReport.accuracyScore > 90) delta += 100;
+    if (agentReport.accuracyScore < 50) delta -= 200;
+
+    return delta;
   }
 
   // ─── Query ────────────────────────────────────────────────────────────────

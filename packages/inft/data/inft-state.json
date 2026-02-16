@@ -253,5 +253,235 @@
     },
     "createdAt": "2026-02-16T19:43:33.217Z",
     "updatedAt": "2026-02-16T19:44:03.699Z"
+  },
+  "agentProfile:25": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:25",
+    "agentAddress": "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+    "agentId": "SecuritySentinel-9000",
+    "identity": {
+      "ucpEndpoint": "openclaw://sentinel-9000",
+      "specializations": [
+        "reentrancy",
+        "logic_error"
+      ],
+      "tier": "SPECIALIZED",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-16T19:48:03.948Z"
+    },
+    "reputation": {
+      "current": 4700,
+      "history": [
+        {
+          "timestamp": "2026-02-16T19:48:03.948Z",
+          "delta": 6000,
+          "newScore": 6000,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-16T19:49:30.363Z",
+          "delta": 200,
+          "newScore": 6200,
+          "reason": "valid_findings_bonus",
+          "jobId": 101
+        },
+        {
+          "timestamp": "2026-02-16T19:50:06.823Z",
+          "delta": -1500,
+          "newScore": 4700,
+          "reason": "slash_penalty"
+        }
+      ],
+      "trend": "rising",
+      "peakScore": 6200,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 0,
+      "successfulFindings": 2,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 100,
+      "auctionsWon": 0,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 450,
+      "totalEarned": 0,
+      "totalSlashed": 50,
+      "pricing": {
+        "baseBidMultiplier": 1.2,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 15,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-16T19:48:03.948Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T19:48:03.948Z",
+    "updatedAt": "2026-02-16T19:50:06.823Z"
+  },
+  "auditJob:31": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:31",
+    "jobId": 101,
+    "target": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "YieldAggregator",
+      "lineCount": 0,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-default",
+      "timestamp": "2026-02-16T19:48:18.166Z",
+      "initialRiskScore": 0,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-16T19:48:18.166Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-16T19:48:18.166Z",
+    "updatedAt": "2026-02-16T19:48:18.166Z"
+  },
+  "contractHealth:26": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:26",
+    "contract": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "unknown",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": "0xf2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+    },
+    "health": {
+      "securityScore": 82,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-16T19:48:36.057Z",
+          "jobId": 0,
+          "delta": 0
+        },
+        {
+          "score": 82,
+          "timestamp": "2026-02-16T19:49:18.233Z",
+          "jobId": 101,
+          "delta": 42
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": "2026-02-16T19:49:18.233Z",
+      "totalAuditsCompleted": 1
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 1,
+        "high": 0,
+        "medium": 1,
+        "low": 0,
+        "informational": 0,
+        "total": 2,
+        "remediated": 0,
+        "open": 2
+      },
+      "catalog": [
+        {
+          "id": "AG-VULN-1771271334006-141",
+          "severity": "critical",
+          "category": "reentrancy",
+          "title": "Cross-contract reentrancy in deposit",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-16T19:48:54.006Z"
+        },
+        {
+          "id": "AG-VULN-1771271346123-890",
+          "severity": "medium",
+          "category": "logic_error",
+          "title": "Incorrect fee calculation",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-16T19:49:06.123Z"
+        }
+      ]
+    },
+    "auditHistory": [
+      {
+        "jobId": 101,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-16T19:49:18.233Z",
+        "agentsInvolved": [],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 40,
+        "securityScoreAfter": 82,
+        "totalCostGuard": 0,
+        "reportHash": "0xr1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1"
+      }
+    ],
+    "monitoring": {
+      "isActive": false
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-16T19:48:36.057Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-16T19:48:36.057Z",
+    "updatedAt": "2026-02-16T19:53:46.131Z",
+    "intelligence": {
+      "autoReauditTriggered": true,
+      "predictedRiskChange": 20
+    }
   }
 }
