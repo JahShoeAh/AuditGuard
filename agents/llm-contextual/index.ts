@@ -1,0 +1,360 @@
+import {
+  HCSClient,
+  ContractClient,
+  createAgentLogger,
+  createAgentWallet,
+  CONFIG,
+  randomInt,
+  randomFloat,
+  randomBool,
+  randomSeveritySkewedHigh,
+  randomFindingTitle,
+  hashOf,
+  sleep,
+} from "../shared/index.js";
+import type {
+  ContractDiscoveryEvent,
+  ContractType,
+  Finding,
+  HCSMessage,
+  SubResultDeliveredEvent,
+} from "../shared/types.js";
+import { ethers } from "ethers";
+
+// ---- Config ----
+const AGENT_ID = "llm-contextual-003";
+const DEMO_MODE = process.env.DEMO_MODE === "true";
+const SPECIALIZATIONS: ContractType[] = ["lending", "bridge", "dex"];
+const BASE_REPUTATION = 87;
+const MIN_RISK_SCORE = 50;       // only take complex jobs
+const MIN_LOC = 1000;            // not worth my time below this
+const SUB_CONTRACT_PAYMENT = 3;  // GUARD for dependency analysis
+const SUB_CONTRACT_SLA = DEMO_MODE ? 120 : 900; // 2 min demo, 15 min prod
+const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;
+
+const log = createAgentLogger(AGENT_ID, "llm_contextual");
+
+// Pending sub-contract results
+const pendingSubResults: Map<string, (result: SubResultDeliveredEvent) => void> = new Map();
+
+// Track pending jobs awaiting winner selection
+const pendingJobs = new Map<string, {
+  contractAddress: string;
+  contractType: ContractType;
+  loc: number;
+}>();
+
+// ---- Bidding Logic ----
+
+export function shouldBid(
+  estimatedLOC: number,
+  contractType: ContractType,
+  riskScore: number
+): boolean {
+  if (riskScore < MIN_RISK_SCORE) {
+    log.info(`Risk too low (${riskScore} < ${MIN_RISK_SCORE}), skipping`);
+    return false;
+  }
+  if (estimatedLOC < MIN_LOC) {
+    log.info(`Too small (${estimatedLOC} LOC < ${MIN_LOC}), skipping`);
+    return false;
+  }
+  return true;
+}
+
+export function calculateBid(
+  estimatedLOC: number,
+  contractType: ContractType,
+  riskScore: number
+): { amount: number; collateral: number; estimatedTimeSec: number } {
+  let bid = 30 + estimatedLOC * 0.003; // premium base
+
+  if (contractType === "lending" || contractType === "bridge") {
+    bid *= 1.15; // premium for risky protocol types
+  }
+
+  const collateral = bid * 0.4; // lower collateral (high rep)
+  const estimatedTimeSec = DEMO_MODE ? randomInt(10, 30) : randomInt(60, 180);
+
+  return {
+    amount: Math.round(bid * 100) / 100,
+    collateral: Math.round(collateral * 100) / 100,
+    estimatedTimeSec,
+  };
+}
+
+// ---- Mock Audit ----
+
+export function generateFindings(contractType: ContractType, hasDepAnalysis: boolean): Finding[] {
+  // LLM agent finds fewer but higher-severity issues
+  const count = randomInt(1, 5);
+  const findings: Finding[] = [];
+
+  for (let i = 0; i < count; i++) {
+    findings.push({
+      id: `LLM-${String(i + 1).padStart(3, "0")}`,
+      severity: randomSeveritySkewedHigh(),
+      title: randomFindingTitle(contractType),
+      description: `Deep semantic analysis finding${hasDepAnalysis ? " (informed by dependency analysis)" : ""}`,
+      confidence: randomFloat(0.8, 0.99),
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+    });
+  }
+
+  return findings;
+}
+
+// ---- Main ----
+
+async function main() {
+  log.info("LLM Contextual Agent starting...");
+  if (DEMO_MODE) log.info("DEMO MODE — compressed timers");
+  log.info(`Specializations: ${SPECIALIZATIONS.join(", ")}`);
+  log.info(`Min risk: ${MIN_RISK_SCORE}, Min LOC: ${MIN_LOC}`);
+
+  const wallet = createAgentWallet("LLM");
+  const hcs = new HCSClient(wallet.hederaClient);
+  const contracts = new ContractClient(wallet.evmWallet);
+
+  log.info(`Wallet: ${wallet.evmAddress}`);
+
+  // Listen for sub-contract result deliveries
+  hcs.subscribeAgentComms((msg: HCSMessage) => {
+    if (msg.type === "SUB_RESULT_DELIVERED") {
+      const result = msg as SubResultDeliveredEvent;
+      const callback = pendingSubResults.get(result.payload.subAuctionId);
+      if (callback) {
+        callback(result);
+        pendingSubResults.delete(result.payload.subAuctionId);
+      }
+    }
+  });
+
+  // Listen for winner selection events on-chain
+  contracts.onWinnerSelected((jobId, winners, totalEscrowed, platformFee) => {
+    const myAddress = wallet.evmAddress.toLowerCase();
+    const winnerIndex = winners.findIndex(w => w.toLowerCase() === myAddress);
+    if (winnerIndex === -1) return;
+
+    const jobKey = jobId.toString();
+    const pending = pendingJobs.get(jobKey);
+    if (!pending) return;
+
+    log.info(`WON auction for job #${jobKey}! Premium contract.`);
+    pendingJobs.delete(jobKey);
+
+    simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
+      .catch(err => log.error(`Audit cycle failed: ${err}`));
+  });
+
+  // Listen for discoveries
+  hcs.subscribeDiscovery(async (msg: HCSMessage) => {
+    if (msg.type !== "CONTRACT_DISCOVERED") return;
+
+    const discovery = msg as ContractDiscoveryEvent;
+    const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
+
+    log.info(
+      `Evaluating: ${contractAddress.slice(0, 10)}... ` +
+      `type=${contractType} risk=${riskScore} loc=${estimatedLOC}`
+    );
+
+    if (!shouldBid(estimatedLOC, contractType, riskScore)) return;
+
+    const bid = calculateBid(estimatedLOC, contractType, riskScore);
+
+    log.info(
+      `Premium bid: ${bid.amount} GUARD (collateral: ${bid.collateral}) ` +
+      `est. ${bid.estimatedTimeSec}s`
+    );
+
+    // Submit bid on-chain
+    let jobIdNum = 0;
+    try {
+      const tx = await contracts.submitBid(
+        0,
+        ethers.parseUnits(bid.amount.toString(), 8),
+        ethers.parseUnits(bid.collateral.toString(), 8),
+        bid.estimatedTimeSec,
+        SPECIALIZATIONS[0] // primary specialization
+      );
+      log.info(`Bid submitted on-chain (tx: ${tx.hash?.slice(0, 14)}...)`);
+    } catch (err) {
+      log.warn(`On-chain bid failed (continuing via HCS): ${err}`);
+    }
+
+    // Track for winner selection
+    pendingJobs.set(String(jobIdNum), {
+      contractAddress,
+      contractType,
+      loc: estimatedLOC,
+    });
+
+    await hcs.publishAuditLog({
+      type: "BID_SUBMITTED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        contractAddress,
+        bidAmount: bid.amount,
+        collateral: bid.collateral,
+        estimatedTimeSec: bid.estimatedTimeSec,
+        reputation: BASE_REPUTATION,
+        tier: "PREMIUM",
+        evmAddress: wallet.evmAddress,
+      },
+    });
+
+    // Auto-simulate fallback
+    setTimeout(async () => {
+      if (pendingJobs.has(String(jobIdNum))) {
+        log.info(`No WinnersSelected event after ${WINNER_WAIT_MS / 1000}s — auto-simulating win`);
+        pendingJobs.delete(String(jobIdNum));
+        await simulateAuditCycle(contractAddress, contractType, estimatedLOC, hcs, contracts, wallet.evmAddress);
+      }
+    }, WINNER_WAIT_MS);
+  });
+
+  log.info("Subscribed to discovery + agent comms. Waiting for high-value contracts...");
+}
+
+async function simulateAuditCycle(
+  contractAddress: string,
+  contractType: ContractType,
+  loc: number,
+  hcs: HCSClient,
+  contracts: ContractClient,
+  evmAddress: string
+) {
+  let hasDepAnalysis = false;
+
+  // 70% chance contract has external dependencies requiring sub-contract
+  if (randomBool(0.7)) {
+    log.info(
+      `External dependencies detected. Sub-contracting dependency analysis ` +
+      `(${SUB_CONTRACT_PAYMENT} GUARD, ${SUB_CONTRACT_SLA}s SLA)`
+    );
+
+    const subAuctionId = `sub-${Date.now()}-${randomInt(1000, 9999)}`;
+
+    // Create sub-auction on-chain
+    try {
+      await contracts.createSubAuction(
+        0, // parentJobId
+        "Dependency analysis for audit job",  // taskDescription
+        "dependency_analysis",                // requiredSpecialization
+        ethers.parseUnits(SUB_CONTRACT_PAYMENT.toString(), 8),
+        SUB_CONTRACT_SLA,
+      );
+      log.info("Sub-auction created on-chain");
+    } catch (err) {
+      log.warn(`On-chain sub-auction failed (continuing via HCS): ${err}`);
+    }
+
+    // Broadcast sub-auction to agent network
+    await hcs.publishAgentComms({
+      type: "SUB_AUCTION_POSTED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        subAuctionId,
+        taskType: "dependency_analysis",
+        paymentAmount: SUB_CONTRACT_PAYMENT,
+        slaDurationSec: SUB_CONTRACT_SLA,
+        parentJobId: contractAddress,
+      },
+    });
+
+    await hcs.publishAuditLog({
+      type: "SUB_AUCTION_CREATED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        subAuctionId,
+        taskType: "dependency_analysis",
+        payment: SUB_CONTRACT_PAYMENT,
+        parentJobId: contractAddress,
+      },
+    });
+
+    // Wait for sub-contractor to deliver (with timeout)
+    log.info("Waiting for dependency analysis delivery...");
+    hasDepAnalysis = await waitForSubResult(subAuctionId, SUB_CONTRACT_SLA * 1000);
+
+    if (hasDepAnalysis) {
+      log.info("Dependency analysis received. Incorporating into audit.");
+
+      // Accept result on-chain
+      try {
+        await contracts.acceptResult(0);
+        log.info("Sub-result accepted on-chain");
+      } catch (err) {
+        log.warn(`On-chain accept failed (continuing): ${err}`);
+      }
+
+      await hcs.publishAuditLog({
+        type: "SUB_RESULT_ACCEPTED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { subAuctionId },
+      });
+    } else {
+      log.info("Sub-contract timed out. Proceeding without dependency data.");
+    }
+  }
+
+  // Main audit
+  const auditTime = DEMO_MODE ? randomInt(10, 30) : randomInt(60, 180);
+  log.info(`Running deep semantic analysis... (${auditTime}s)`);
+  await sleep(auditTime * 1000);
+
+  const findings = generateFindings(contractType, hasDepAnalysis);
+  const criticalCount = findings.filter((f) => f.severity === "critical").length;
+
+  log.info(
+    `Analysis complete: ${findings.length} findings [C:${criticalCount}]` +
+    (hasDepAnalysis ? " (dep-informed)" : "")
+  );
+
+  const findingsHash = hashOf(findings);
+
+  await hcs.publishAgentComms({
+    type: "FINDINGS_SUBMITTED",
+    agentId: AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      jobId: contractAddress,
+      findingsHash,
+      findingsCount: findings.length,
+      criticalCount,
+      highCount: findings.filter((f) => f.severity === "high").length,
+      mediumCount: findings.filter((f) => f.severity === "medium").length,
+      lowCount: findings.filter((f) => f.severity === "low").length,
+      evmAddress,
+    },
+  });
+
+  log.info(`Findings submitted. Hash: ${findingsHash.slice(0, 16)}...`);
+}
+
+function waitForSubResult(subAuctionId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingSubResults.delete(subAuctionId);
+      resolve(false);
+    }, timeoutMs);
+
+    pendingSubResults.set(subAuctionId, () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+if (!process.env.VITEST) {
+  main().catch((err) => {
+    log.error(`Fatal: ${err}`);
+    process.exit(1);
+  });
+}
