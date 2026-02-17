@@ -22,10 +22,16 @@ Set `DEMO_MODE=true` to keep timeouts short.
 ## Deferred integrations (do later to avoid merge conflicts)
 - Add a root script alias (e.g., `orchestrator`: `node orchestrator/src/index.js`).
 - Optionally add this folder to the root workspaces for dependency hoisting.
-- Wire to shared agent types once sub-agent branch lands; currently uses local `types.js`.
+- Swap local `types.js` for the shared `agents/shared/types.ts` once that branch lands.
 - Replace the placeholder `auction.createJob` call with the final ABI method name after contracts stabilize.
 - Hook settlement flow: collect `FINDINGS_SUBMITTED` and call `paymentSettlement.settleJob`.
+- Add signature verification for PONG messages (reuse agent helpers when available).
 - Persist roster/cache if desired; today it is in-memory only.
+- Replace the lightweight stub modules in `orchestrator/node_modules/` with real npm installs when permissions allow (stubs are only for local tests).
+
+## Tests (offline-friendly)
+- A minimal test harness lives at `orchestrator/test/run-tests.js` (Node + assert; no external runner).
+- Run with `npm test` inside `orchestrator/`. It exercises agent registration, discovery invites, and fallback winner selection using mocks.
 
 ## BYO-Agent touchpoints
 - Uses `AGENT_REGISTERED` messages on auditLog topic to onboard agents.

@@ -53,4 +53,16 @@ export class HCSClient {
         }
       });
   }
+
+  subscribeDiscovery(handler) {
+    this.subscribe(CONFIG.hcsTopics.discovery, handler);
+  }
+
+  subscribeAuditLog(handler) {
+    this.subscribe(CONFIG.hcsTopics.auditLog, handler);
+  }
+
+  subscribeAgentComms(handler) {
+    this.subscribe(CONFIG.hcsTopics.agentComms, handler);
+  }
 }

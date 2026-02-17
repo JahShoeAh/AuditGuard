@@ -43,6 +43,22 @@ export const CONFIG = {
   guardToken: {
     decimals: 8,
   },
+  // Data marketplace auto-buy
+  dataMarketplace: {
+    maxAutoBuyGuard: 1.0, // buy cheap reports automatically
+    allowedCategories: ["SCAN_REPORT", "DEPENDENCY_TREE"],
+  },
+  // Sub-auction defaults (used when orchestrator creates helper tasks)
+  subAuction: {
+    paymentGuard: 3,          // pay 3 GUARD to dependency agent
+    slaSeconds: 15 * 60,      // 15 min SLA
+    auctionDurationSeconds: 5 * 60,
+  },
+  payments: {
+    baseGuard: 10,            // base payment per job
+    bonusGuard: 0,            // optional bonus
+    reportFeeGuard: 0.1,      // report fee for settlement
+  },
   stakes: {
     minStake: 25,   // GUARD; configurable
   },
