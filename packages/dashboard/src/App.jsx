@@ -1,37 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useConnection } from './hooks/useConnection';
 import { useEventListeners } from './hooks/useEventListeners';
-import useStore from './store';
 import Header from './components/Header';
 import DiscoveryFeed from './components/DiscoveryFeed';
+import AuctionFeed from './components/AuctionFeed';
 import ActivityLog from './components/ActivityLog';
-
-// ── Auction Feed placeholder (Prompt 4) ────────────────────
-
-function AuctionFeed() {
-  const jobCount = useStore((s) => Object.keys(s.activeJobs).length);
-  const bidCount = useStore((s) => s.stats.totalBids);
-
-  return (
-    <div className="panel flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-white/[0.04] flex items-center gap-2 flex-shrink-0">
-        <span className="w-1.5 h-1.5 rounded-full bg-guard-amber animate-pulse-glow" />
-        <h2 className="text-xs font-semibold tracking-wider uppercase font-sans text-guard-amber">
-          Auction Feed
-        </h2>
-        <span className="text-[10px] text-gray-600 font-mono">
-          ({jobCount} jobs, {bidCount} bids)
-        </span>
-      </div>
-      <div className="flex-1 flex items-center justify-center p-6">
-        <div className="text-center">
-          <p className="text-xs text-gray-500 font-sans mb-1">Real-time auction activity</p>
-          <p className="text-[10px] text-gray-600 font-mono">Coming in Prompt 4</p>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── Connection error banner ────────────────────────────────
 
