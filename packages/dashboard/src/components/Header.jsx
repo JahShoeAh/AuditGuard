@@ -95,7 +95,7 @@ export default function Header() {
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="panel px-5 py-3 mb-4 flex items-center justify-between gap-4"
+      className="panel px-5 py-3 flex items-center justify-between gap-4"
     >
       {/* Left — Wordmark */}
       <div className="flex-shrink-0">
@@ -131,15 +131,20 @@ export default function Header() {
           accentColor="var(--accent-amber)"
         />
         <StatChip
-          label="Bids"
-          value={stats.totalBids}
+          label="Sub-contracts"
+          value={stats.totalSubAuctions}
           accentColor="var(--accent-purple)"
         />
         <StatChip
-          label="GUARD Txd"
-          value={stats.guardTransacted}
+          label="Data Sales"
+          value={stats.totalDataSales}
+          accentColor="#14b8a6"
+        />
+        <StatChip
+          label="GUARD Settled"
+          value={stats.totalGuardTransacted}
           accentColor="var(--accent-gold)"
-          format={(v) => v.toLocaleString()}
+          format={(v) => (v > 0 ? `${v.toFixed(2)}` : '0')}
         />
       </div>
     </motion.header>
