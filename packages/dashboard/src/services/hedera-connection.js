@@ -5,6 +5,9 @@ import { JsonRpcProvider, Contract } from 'ethers';
 import AgentRegistryABI from '@sdk/abis/AgentRegistry.json';
 import AuditAuctionABI from '@sdk/abis/AuditAuction.json';
 import AuditBudgetVaultABI from '@sdk/abis/AuditBudgetVault.json';
+import SubAuctionABI from '@sdk/abis/SubAuction.json';
+import DataMarketplaceABI from '@sdk/abis/DataMarketplace.json';
+import PaymentSettlementABI from '@sdk/abis/PaymentSettlement.json';
 
 // Config — static import via @sdk alias (Vite resolves at build time)
 import sdkConfig from '@sdk/config.json';
@@ -31,6 +34,18 @@ const MOCK_CONFIG = {
     budgetVault: {
       id: '0.0.mock-vault',
       evmAddress: '0x0000000000000000000000000000000000000003',
+    },
+    subAuction: {
+      id: '0.0.mock-subauction',
+      evmAddress: '0x0000000000000000000000000000000000000004',
+    },
+    dataMarketplace: {
+      id: '0.0.mock-marketplace',
+      evmAddress: '0x0000000000000000000000000000000000000005',
+    },
+    paymentSettlement: {
+      id: '0.0.mock-settlement',
+      evmAddress: '0x0000000000000000000000000000000000000006',
     },
   },
   seededAgents: {
@@ -93,8 +108,33 @@ export function createContractInstances(provider, config) {
     provider
   );
 
+  const subAuctionContract = new Contract(
+    config.contracts.subAuction.evmAddress,
+    SubAuctionABI.abi,
+    provider
+  );
+
+  const dataMarketplaceContract = new Contract(
+    config.contracts.dataMarketplace.evmAddress,
+    DataMarketplaceABI.abi,
+    provider
+  );
+
+  const paymentSettlementContract = new Contract(
+    config.contracts.paymentSettlement.evmAddress,
+    PaymentSettlementABI.abi,
+    provider
+  );
+
   console.log('[AuditGuard] Contract instances created (read-only)');
-  return { agentRegistryContract, auctionContract, budgetVaultContract };
+  return {
+    agentRegistryContract,
+    auctionContract,
+    budgetVaultContract,
+    subAuctionContract,
+    dataMarketplaceContract,
+    paymentSettlementContract,
+  };
 }
 
 // ---------- e) initializeConnection ----------

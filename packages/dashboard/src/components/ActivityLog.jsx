@@ -22,6 +22,17 @@ const TYPE_COLORS = {
   SUB_AUCTION: 'var(--text-secondary)',
   DATA_LISTING: 'var(--text-secondary)',
   MONITORING_OFFER: 'var(--text-secondary)',
+  // Day 2
+  SUB_AUCTION_CREATED: 'var(--accent-purple)',
+  SUB_BID: '#b39ddb',
+  SUB_SELECTED: 'var(--accent-purple)',
+  RESULT_DELIVERED: '#9575cd',
+  RESULT_ACCEPTED: 'var(--accent-green)',
+  DATA_LISTED: '#14b8a6',
+  DATA_PURCHASED: 'var(--accent-gold)',
+  DATA_RATED: '#4db6ac',
+  JOB_SETTLED: 'var(--accent-gold)',
+  SUB_JOB_SETTLED: 'var(--accent-gold)',
 };
 
 // ── Format a log entry into a single description line ──────
@@ -65,6 +76,38 @@ function describeEntry(entry) {
   }
   if (t === 'SUB_AUCTION' || t === 'DATA_LISTING' || t === 'MONITORING_OFFER') {
     return `${entry.fromAgentName || '?'}: ${entry.data?.description || t.toLowerCase().replace('_', ' ')}`;
+  }
+  // Day 2 event types
+  if (t === 'SUB_AUCTION_CREATED') {
+    return `${entry.requesterName || '?'} needs ${entry.requiredSpecialization || 'analysis'}  ${entry.paymentFormatted || ''}`;
+  }
+  if (t === 'SUB_BID') {
+    return `${entry.agentName || '?'} → Sub #${entry.subJobId}  ${entry.bidFormatted || ''}`;
+  }
+  if (t === 'SUB_SELECTED') {
+    return `${entry.agentName || '?'} wins Sub #${entry.subJobId}  ${entry.agreedPriceFormatted || ''}`;
+  }
+  if (t === 'RESULT_DELIVERED') {
+    return `Sub #${entry.subJobId} result delivered by ${entry.agentName || '?'}`;
+  }
+  if (t === 'RESULT_ACCEPTED') {
+    return `Sub #${entry.subJobId} accepted  ${entry.paymentFormatted || ''}`;
+  }
+  if (t === 'DATA_LISTED') {
+    return `${entry.sellerName || '?'} listed "${entry.title || '?'}"  ${entry.priceFormatted || ''}`;
+  }
+  if (t === 'DATA_PURCHASED') {
+    return `${entry.buyerName || '?'} bought from ${entry.sellerName || '?'}  ${entry.pricePaidFormatted || ''}`;
+  }
+  if (t === 'DATA_RATED') {
+    const stars = '★'.repeat(entry.rating || 0) + '☆'.repeat(5 - (entry.rating || 0));
+    return `${entry.buyerName || '?'} rated listing #${entry.listingId}  ${stars}`;
+  }
+  if (t === 'JOB_SETTLED') {
+    return `Job #${entry.jobId} settled — ${entry.recipientCount || '?'} recipients  ${entry.totalDisbursedFormatted || ''}`;
+  }
+  if (t === 'SUB_JOB_SETTLED') {
+    return `Sub #${entry.subJobId} settled → ${entry.agentName || '?'}  ${entry.amountFormatted || ''}`;
   }
   return entry.type || 'Unknown event';
 }

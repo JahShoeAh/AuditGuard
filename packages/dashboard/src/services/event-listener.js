@@ -12,6 +12,13 @@ const MIRROR_NODE = import.meta.env.VITE_HEDERA_MIRROR_NODE
 const HCS_POLL_MS = 4_000;       // 4 s for HCS topics
 const CONTRACT_POLL_MS = 5_000;  // 5 s for on-chain events
 
+// ── DataMarketplace enum mappings ───────────────────────────
+const DATA_CATEGORIES = [
+  'SCAN_REPORT', 'DEPENDENCY_ANALYSIS', 'EXPLOIT_DATABASE',
+  'HOT_LEAD', 'FUZZING_SEEDS', 'THREAT_INTEL',
+];
+const LISTING_TYPES = ['ONE_TIME', 'SUBSCRIPTION', 'TIP'];
+
 // ── Helpers ────────────────────────────────────────────────
 
 /** Convert raw 8-decimal BigInt to human-readable "15.00 GUARD" */
@@ -43,7 +50,8 @@ export function resolveAgentName(evmAddress, config) {
 
 export class EventListenerService {
   /** @param {object} config  SDK config.json contents
-   *  @param {object} contracts  { agentRegistryContract, auctionContract, budgetVaultContract }
+   *  @param {object} contracts  { agentRegistryContract, auctionContract, budgetVaultContract,
+   *                               subAuctionContract, dataMarketplaceContract, paymentSettlementContract }
    *  @param {object} store  Zustand store actions (bound via getState)
    *  @param {import('ethers').JsonRpcProvider} provider */
   constructor(config, contracts, store, provider) {
@@ -203,19 +211,40 @@ export class EventListenerService {
       const to   = currentBlock;
 
       // Run all queries in parallel
-      const { auctionContract, agentRegistryContract } = this.contracts;
+      const {
+        auctionContract, agentRegistryContract,
+        subAuctionContract, dataMarketplaceContract, paymentSettlementContract,
+      } = this.contracts;
+
+      // Helper: safely query a contract that may not be deployed yet
+      const q = (contract, event) =>
+        contract ? contract.queryFilter(event, from, to).catch(() => []) : Promise.resolve([]);
 
       const [
         jobPosted, bidSubmitted, winnersSelected, bidRefunded,
         agentRegistered, reputationUpdated, agentPromoted,
+        subAuctionCreated, subBidSubmitted, subContractorSelected,
+        resultDelivered, resultAccepted,
+        dataListed, dataPurchased, dataRated,
+        jobSettled, subJobSettled,
       ] = await Promise.all([
-        auctionContract.queryFilter('JobPosted', from, to).catch(() => []),
-        auctionContract.queryFilter('BidSubmitted', from, to).catch(() => []),
-        auctionContract.queryFilter('WinnersSelected', from, to).catch(() => []),
-        auctionContract.queryFilter('BidRefunded', from, to).catch(() => []),
-        agentRegistryContract.queryFilter('AgentRegistered', from, to).catch(() => []),
-        agentRegistryContract.queryFilter('ReputationUpdated', from, to).catch(() => []),
-        agentRegistryContract.queryFilter('AgentPromoted', from, to).catch(() => []),
+        q(auctionContract, 'JobPosted'),
+        q(auctionContract, 'BidSubmitted'),
+        q(auctionContract, 'WinnersSelected'),
+        q(auctionContract, 'BidRefunded'),
+        q(agentRegistryContract, 'AgentRegistered'),
+        q(agentRegistryContract, 'ReputationUpdated'),
+        q(agentRegistryContract, 'AgentPromoted'),
+        q(subAuctionContract, 'SubAuctionCreated'),
+        q(subAuctionContract, 'SubBidSubmitted'),
+        q(subAuctionContract, 'SubContractorSelected'),
+        q(subAuctionContract, 'ResultDelivered'),
+        q(subAuctionContract, 'ResultAccepted'),
+        q(dataMarketplaceContract, 'DataListed'),
+        q(dataMarketplaceContract, 'DataPurchased'),
+        q(dataMarketplaceContract, 'DataRated'),
+        q(paymentSettlementContract, 'JobSettled'),
+        q(paymentSettlementContract, 'SubJobSettled'),
       ]);
 
       // ── Process AuditAuction events ──
@@ -349,6 +378,290 @@ export class EventListenerService {
           agentName: resolveAgentName(a.agent, this.config),
           fromTier: Number(a.from),
           toTier: Number(a.to),
+          timestamp: Date.now(),
+        });
+      }
+
+      // ── Process SubAuction events ──
+
+      for (const ev of subAuctionCreated) {
+        const a = ev.args;
+        const subJobId = a.subJobId.toString();
+        const parentJobId = a.parentJobId.toString();
+        const paymentFormatted = parseGuardAmount(a.paymentAmount);
+        this.store.addSubJob({
+          subJobId,
+          parentJobId,
+          requester: a.requester,
+          requesterName: resolveAgentName(a.requester, this.config),
+          taskDescription: a.taskDescription,
+          requiredSpecialization: a.requiredSpecialization,
+          paymentAmount: a.paymentAmount,
+          paymentFormatted,
+          slaDeadline: a.slaDeadline,
+          auctionDeadline: a.auctionDeadline,
+          status: 'OPEN',
+          blockNumber: ev.blockNumber,
+        });
+        this.store.incrementStat('totalSubAuctions');
+        this.store.addLogEntry({
+          type: 'SUB_AUCTION_CREATED',
+          source: 'contract',
+          subJobId,
+          parentJobId,
+          requesterName: resolveAgentName(a.requester, this.config),
+          taskDescription: a.taskDescription,
+          requiredSpecialization: a.requiredSpecialization,
+          paymentFormatted,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of subBidSubmitted) {
+        const a = ev.args;
+        const subJobId = a.subJobId.toString();
+        const bid = {
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          proposedPrice: a.proposedPrice,
+          proposedPriceFormatted: parseGuardAmount(a.proposedPrice),
+          collateralLocked: a.collateralLocked,
+          estimatedTime: Number(a.estimatedTime),
+          blockNumber: ev.blockNumber,
+        };
+        this.store.addSubBid(subJobId, bid);
+        this.store.addLogEntry({
+          type: 'SUB_BID',
+          source: 'contract',
+          subJobId,
+          agentName: bid.agentName,
+          bidFormatted: bid.proposedPriceFormatted,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of subContractorSelected) {
+        const a = ev.args;
+        const subJobId = a.subJobId.toString();
+        const agentName = resolveAgentName(a.agent, this.config);
+        const agreedPriceFormatted = parseGuardAmount(a.agreedPrice);
+        this.store.updateSubJobStatus(subJobId, {
+          selectedAgent: a.agent,
+          selectedAgentName: agentName,
+          agreedPrice: a.agreedPrice,
+          agreedPriceFormatted,
+          status: 'IN_PROGRESS',
+        });
+        this.store.addLogEntry({
+          type: 'SUB_SELECTED',
+          source: 'contract',
+          subJobId,
+          agentName,
+          agreedPriceFormatted,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of resultDelivered) {
+        const a = ev.args;
+        const subJobId = a.subJobId.toString();
+        this.store.updateSubJobStatus(subJobId, {
+          resultHash: a.resultHash,
+          deliveredBy: a.agent,
+          status: 'DELIVERED',
+        });
+        this.store.addLogEntry({
+          type: 'RESULT_DELIVERED',
+          source: 'contract',
+          subJobId,
+          agentName: resolveAgentName(a.agent, this.config),
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of resultAccepted) {
+        const a = ev.args;
+        const subJobId = a.subJobId.toString();
+        this.store.updateSubJobStatus(subJobId, {
+          status: 'ACCEPTED',
+          completedAt: Date.now(),
+        });
+        // Create GUARD flow — look up stored sub-job for requester/agent addresses
+        const subJob = this.store.subJobs?.[subJobId];
+        if (subJob?.selectedAgent) {
+          this.store.addGuardFlow({
+            from: subJob.requester,
+            to: subJob.selectedAgent,
+            toName: subJob.selectedAgentName,
+            amount: a.paymentAmount,
+            amountFormatted: parseGuardAmount(a.paymentAmount),
+            type: 'SUB_CONTRACT',
+            jobId: subJob.parentJobId,
+            timestamp: Date.now(),
+          });
+        }
+        this.store.addLogEntry({
+          type: 'RESULT_ACCEPTED',
+          source: 'contract',
+          subJobId,
+          paymentFormatted: parseGuardAmount(a.paymentAmount),
+          timestamp: Date.now(),
+        });
+      }
+
+      // ── Process DataMarketplace events ──
+
+      for (const ev of dataListed) {
+        const a = ev.args;
+        const listingId = a.listingId.toString();
+        const parentJobId = a.parentJobId ? a.parentJobId.toString() : null;
+        const categoryStr = DATA_CATEGORIES[Number(a.category)] || `CAT_${a.category}`;
+        const listingTypeStr = LISTING_TYPES[Number(a.listingType)] || `TYPE_${a.listingType}`;
+        const priceFormatted = parseGuardAmount(a.price);
+        this.store.addDataListing({
+          listingId,
+          parentJobId,
+          seller: a.seller,
+          sellerName: resolveAgentName(a.seller, this.config),
+          title: a.title,
+          category: Number(a.category),
+          categoryStr,
+          listingType: Number(a.listingType),
+          listingTypeStr,
+          price: a.price,
+          priceFormatted,
+          contentHash: a.contentHash,
+          blockNumber: ev.blockNumber,
+          active: true,
+        });
+        this.store.addLogEntry({
+          type: 'DATA_LISTED',
+          source: 'contract',
+          listingId,
+          parentJobId,
+          sellerName: resolveAgentName(a.seller, this.config),
+          title: a.title,
+          priceFormatted,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of dataPurchased) {
+        const a = ev.args;
+        const listingId = a.listingId.toString();
+        const pricePaidFormatted = parseGuardAmount(a.pricePaid);
+        const purchase = {
+          listingId,
+          buyer: a.buyer,
+          buyerName: resolveAgentName(a.buyer, this.config),
+          seller: a.seller,
+          sellerName: resolveAgentName(a.seller, this.config),
+          pricePaid: a.pricePaid,
+          pricePaidFormatted,
+          platformFee: a.platformFee,
+          timestamp: Date.now(),
+        };
+        this.store.addDataPurchase(purchase);
+        this.store.addGuardFlow({
+          from: a.buyer,
+          fromName: resolveAgentName(a.buyer, this.config),
+          to: a.seller,
+          toName: resolveAgentName(a.seller, this.config),
+          amount: a.pricePaid,
+          amountFormatted: pricePaidFormatted,
+          type: 'DATA_PURCHASE',
+          listingId,
+          timestamp: Date.now(),
+        });
+        this.store.incrementStat('totalDataSales');
+        this.store.addLogEntry({
+          type: 'DATA_PURCHASED',
+          source: 'contract',
+          listingId,
+          buyerName: purchase.buyerName,
+          sellerName: purchase.sellerName,
+          pricePaidFormatted,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of dataRated) {
+        const a = ev.args;
+        const listingId = a.listingId.toString();
+        const rating = Number(a.rating);
+        this.store.updateDataPurchaseRating(listingId, a.buyer, rating);
+        this.store.addLogEntry({
+          type: 'DATA_RATED',
+          source: 'contract',
+          listingId,
+          buyerName: resolveAgentName(a.buyer, this.config),
+          rating,
+          timestamp: Date.now(),
+        });
+      }
+
+      // ── Process PaymentSettlement events ──
+
+      for (const ev of jobSettled) {
+        const a = ev.args;
+        const settlementId = a.settlementId.toString();
+        const jobId = a.jobId.toString();
+        const totalDisbursed = a.totalDisbursed;
+        const totalDisbursedFormatted = parseGuardAmount(totalDisbursed);
+        this.store.addSettlement({
+          settlementId,
+          jobId,
+          totalDisbursed,
+          totalDisbursedFormatted,
+          platformFee: a.platformFee,
+          reportFees: a.reportFees,
+          recipientCount: Number(a.recipientCount),
+          blockNumber: ev.blockNumber,
+          timestamp: Date.now(),
+        });
+        this.store.incrementStat('totalSettlements');
+        this.store.incrementStat('totalGuardTransacted', Number(totalDisbursed) / 100_000_000);
+        this.store.addLogEntry({
+          type: 'JOB_SETTLED',
+          source: 'contract',
+          settlementId,
+          jobId,
+          totalDisbursedFormatted,
+          recipientCount: Number(a.recipientCount),
+          timestamp: Date.now(),
+        });
+        // Fetch per-recipient breakdown and emit individual GUARD flows
+        if (paymentSettlementContract) {
+          try {
+            const payments = await paymentSettlementContract.getSettlementPayments(a.settlementId);
+            for (const payment of payments) {
+              const total = payment.basePayment + payment.bonus;
+              this.store.addGuardFlow({
+                from: 'vault',
+                to: payment.recipient,
+                toName: resolveAgentName(payment.recipient, this.config),
+                amount: total,
+                amountFormatted: parseGuardAmount(total),
+                type: payment.description || 'SETTLEMENT',
+                jobId,
+                timestamp: Date.now(),
+              });
+            }
+          } catch (err) {
+            console.warn('[EventListener] Could not fetch settlement payments:', err.message);
+          }
+        }
+      }
+
+      for (const ev of subJobSettled) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'SUB_JOB_SETTLED',
+          source: 'contract',
+          settlementId: a.settlementId.toString(),
+          subJobId: a.subJobId.toString(),
+          agentName: resolveAgentName(a.agent, this.config),
+          amountFormatted: parseGuardAmount(a.amount),
           timestamp: Date.now(),
         });
       }

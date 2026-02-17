@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Countdown from './Countdown';
 import BidRow from './BidRow';
+import SubContractTree from './SubContractTree';
 import { shortenAddress, parseGuardAmount } from '../services/event-listener';
 
 // ── Contract type styling ──────────────────────────────────
@@ -237,6 +238,9 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
           </span>
         </motion.div>
       )}
+
+      {/* ── Sub-contract tree (Day 2) ── */}
+      <SubContractTree parentJobId={job.jobId} />
     </motion.div>
   );
 }
