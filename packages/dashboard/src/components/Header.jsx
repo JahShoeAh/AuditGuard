@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import useStore from '../store';
+import { hashscan } from '../utils/hashscan';
 
 // ── Stat chip with pulse on value change ───────────────────
 
@@ -45,7 +46,16 @@ function NetworkStatus({ isConnected, connectionError, guardTokenId }) {
         <span className="text-xs font-semibold tracking-wider font-sans" style={{
           color: isConnected ? 'var(--accent-green)' : 'var(--accent-red)',
         }}>
-          {isConnected ? 'HEDERA TESTNET' : connectionError ? 'DISCONNECTED' : 'CONNECTING'}
+            {isConnected ? (
+          <a
+            href={hashscan.networkUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline"
+          >
+            HEDERA TESTNET↗
+          </a>
+        ) : connectionError ? 'DISCONNECTED' : 'CONNECTING'}
         </span>
       </div>
       {guardTokenId && (
@@ -95,7 +105,7 @@ export default function Header() {
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="panel px-5 py-3 mb-4 flex items-center justify-between gap-4"
+      className="panel px-5 py-3 flex items-center justify-between gap-4"
     >
       {/* Left — Wordmark */}
       <div className="flex-shrink-0">
@@ -131,15 +141,20 @@ export default function Header() {
           accentColor="var(--accent-amber)"
         />
         <StatChip
-          label="Bids"
-          value={stats.totalBids}
+          label="Sub-contracts"
+          value={stats.totalSubAuctions}
           accentColor="var(--accent-purple)"
         />
         <StatChip
-          label="GUARD Txd"
-          value={stats.guardTransacted}
+          label="Data Sales"
+          value={stats.totalDataSales}
+          accentColor="#14b8a6"
+        />
+        <StatChip
+          label="GUARD Settled"
+          value={stats.totalGuardTransacted}
           accentColor="var(--accent-gold)"
-          format={(v) => v.toLocaleString()}
+          format={(v) => (v > 0 ? `${v.toFixed(2)}` : '0')}
         />
       </div>
     </motion.header>

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { formatDistanceToNowStrict } from 'date-fns';
 import useStore from '../store';
 import { shortenAddress } from '../services/event-listener';
+import { hashscan } from '../utils/hashscan';
 
 // ── Contract type config ───────────────────────────────────
 
@@ -165,11 +166,22 @@ function DiscoveryCard({ discovery }) {
         <RiskBar score={initialRiskScore || 0} />
       </div>
 
-      {/* Row 5: TVL */}
+      {/* Row 5: TVL + HCS link */}
       <div className="flex items-center justify-between text-[11px]">
         <span className="text-gray-500 font-sans">
           TVL: <span className="text-gray-300 font-mono">{formatTVL(tvlEstimate)}</span>
         </span>
+        {discovery._hcsSequence != null && discovery._hcsTopic && (
+          <a
+            href={hashscan.topicMessage(discovery._hcsTopic, discovery._hcsSequence)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[9px] font-mono text-gray-700 hover:text-guard-cyan transition-colors"
+            onClick={(e) => e.stopPropagation()}
+          >
+            seq #{discovery._hcsSequence}↗
+          </a>
+        )}
       </div>
     </motion.div>
   );
