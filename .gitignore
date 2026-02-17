@@ -6,3 +6,13 @@ coverage/
 typechain-types/
 *.log
 dist/
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# agents local
+agents/node_modules/
+agents/.env
+agents/dist/
