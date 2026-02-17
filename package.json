@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "orchestrator"
   ],
   "description": "For ETH Denver",
   "main": "index.js",
@@ -19,7 +20,9 @@
     "scanner": "node packages/agents/scanner-agent.js",
     "agents": "node packages/agents/run-all-agents.js",
     "inft:create-collections": "node packages/inft/scripts/create-nft-collections.js",
-    "inft:listen": "node packages/inft/src/discovery-listener.js"
+    "inft:listen": "node packages/inft/src/discovery-listener.js",
+    "orchestrator": "node orchestrator/src/index.js",
+    "orchestrator:test": "npm --prefix orchestrator test"
   },
   "repository": {
     "type": "git",
