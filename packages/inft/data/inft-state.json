@@ -270,7 +270,7 @@
       "registeredAt": "2026-02-16T19:48:03.948Z"
     },
     "reputation": {
-      "current": 4700,
+      "current": 5300,
       "history": [
         {
           "timestamp": "2026-02-16T19:48:03.948Z",
@@ -290,6 +290,27 @@
           "delta": -1500,
           "newScore": 4700,
           "reason": "slash_penalty"
+        },
+        {
+          "timestamp": "2026-02-17T09:30:14.200Z",
+          "delta": 200,
+          "newScore": 4900,
+          "reason": "valid_findings_bonus",
+          "jobId": 101
+        },
+        {
+          "timestamp": "2026-02-17T09:33:09.875Z",
+          "delta": 200,
+          "newScore": 5100,
+          "reason": "valid_findings_bonus",
+          "jobId": 101
+        },
+        {
+          "timestamp": "2026-02-17T09:43:43.881Z",
+          "delta": 200,
+          "newScore": 5300,
+          "reason": "valid_findings_bonus",
+          "jobId": 101
         }
       ],
       "trend": "rising",
@@ -298,7 +319,7 @@
     },
     "performance": {
       "completedJobs": 0,
-      "successfulFindings": 2,
+      "successfulFindings": 8,
       "falsePositives": 0,
       "falseNegatives": 0,
       "accuracyRate": 100,
@@ -310,9 +331,9 @@
       "jobHistory": []
     },
     "economics": {
-      "stakedAmount": 450,
+      "stakedAmount": 427.5,
       "totalEarned": 0,
-      "totalSlashed": 50,
+      "totalSlashed": 72.5,
       "pricing": {
         "baseBidMultiplier": 1.2,
         "reputationDiscountThreshold": 8000,
@@ -338,7 +359,56 @@
       ]
     },
     "createdAt": "2026-02-16T19:48:03.948Z",
-    "updatedAt": "2026-02-16T19:50:06.823Z"
+    "updatedAt": "2026-02-17T09:44:01.534Z",
+    "staking": {
+      "totalStaked": 450,
+      "lockedStake": 100,
+      "availableStake": 350,
+      "unbondingAmount": 0,
+      "unbondingCompleteAt": null,
+      "status": "ACTIVE",
+      "history": [
+        {
+          "timestamp": "2026-02-17T09:35:47.515Z",
+          "action": "test_update",
+          "totalStaked": 450,
+          "lockedStake": 100,
+          "availableStake": 350,
+          "status": "ACTIVE"
+        }
+      ],
+      "_action": "test_update"
+    },
+    "slashHistory": [
+      {
+        "slashId": 9901,
+        "jobId": 101,
+        "subJobId": 0,
+        "reason": "FALSE_POSITIVE",
+        "slashBasisPoints": 500,
+        "slashedAmount": 22.5,
+        "evidenceHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "slashedBy": "StakingManager",
+        "timestamp": "2026-02-17T09:36:02.429Z",
+        "appealStatus": "DENIED",
+        "appealDeadline": null,
+        "appealReason": null
+      },
+      {
+        "slashId": 9902,
+        "jobId": 102,
+        "subJobId": 0,
+        "reason": "SLA_VIOLATION",
+        "slashBasisPoints": 2500,
+        "slashedAmount": 50,
+        "evidenceHash": "0xabababababababababababababababababababababababababababababababab",
+        "slashedBy": "StakingManager",
+        "timestamp": "2026-02-17T09:36:29.627Z",
+        "appealStatus": "APPROVED",
+        "appealDeadline": null,
+        "appealReason": null
+      }
+    ]
   },
   "auditJob:31": {
     "schemaVersion": "1.0.0",
@@ -409,22 +479,40 @@
           "timestamp": "2026-02-16T19:49:18.233Z",
           "jobId": 101,
           "delta": 42
+        },
+        {
+          "score": 82,
+          "timestamp": "2026-02-17T09:30:00.757Z",
+          "jobId": 101,
+          "delta": 0
+        },
+        {
+          "score": 82,
+          "timestamp": "2026-02-17T09:32:56.768Z",
+          "jobId": 101,
+          "delta": 0
+        },
+        {
+          "score": 82,
+          "timestamp": "2026-02-17T09:43:26.241Z",
+          "jobId": 101,
+          "delta": 0
         }
       ],
-      "riskLevel": "high",
-      "lastAuditTimestamp": "2026-02-16T19:49:18.233Z",
-      "totalAuditsCompleted": 1
+      "riskLevel": "low",
+      "lastAuditTimestamp": "2026-02-17T09:43:26.241Z",
+      "totalAuditsCompleted": 4
     },
     "vulnerabilities": {
       "summary": {
-        "critical": 1,
+        "critical": 4,
         "high": 0,
-        "medium": 1,
+        "medium": 4,
         "low": 0,
         "informational": 0,
-        "total": 2,
+        "total": 8,
         "remediated": 0,
-        "open": 2
+        "open": 8
       },
       "catalog": [
         {
@@ -446,6 +534,66 @@
           "discoveredByAgent": "SecuritySentinel-9000",
           "discoveredInJobId": 101,
           "discoveredAt": "2026-02-16T19:49:06.123Z"
+        },
+        {
+          "id": "AG-VULN-1771320570430-4",
+          "severity": "critical",
+          "category": "reentrancy",
+          "title": "Cross-contract reentrancy in deposit",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:29:30.430Z"
+        },
+        {
+          "id": "AG-VULN-1771320583523-35",
+          "severity": "medium",
+          "category": "logic_error",
+          "title": "Incorrect fee calculation",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:29:43.523Z"
+        },
+        {
+          "id": "AG-VULN-1771320750534-673",
+          "severity": "critical",
+          "category": "reentrancy",
+          "title": "Cross-contract reentrancy in deposit",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:32:30.534Z"
+        },
+        {
+          "id": "AG-VULN-1771320763653-217",
+          "severity": "medium",
+          "category": "logic_error",
+          "title": "Incorrect fee calculation",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:32:43.653Z"
+        },
+        {
+          "id": "AG-VULN-1771321378954-746",
+          "severity": "critical",
+          "category": "reentrancy",
+          "title": "Cross-contract reentrancy in deposit",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:42:58.955Z"
+        },
+        {
+          "id": "AG-VULN-1771321392573-269",
+          "severity": "medium",
+          "category": "logic_error",
+          "title": "Incorrect fee calculation",
+          "status": "open",
+          "discoveredByAgent": "SecuritySentinel-9000",
+          "discoveredInJobId": 101,
+          "discoveredAt": "2026-02-17T09:43:12.573Z"
         }
       ]
     },
@@ -461,10 +609,49 @@
         "securityScoreAfter": 82,
         "totalCostGuard": 0,
         "reportHash": "0xr1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1"
+      },
+      {
+        "jobId": 101,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-17T09:30:00.757Z",
+        "agentsInvolved": [],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 82,
+        "securityScoreAfter": 82,
+        "totalCostGuard": 0,
+        "reportHash": "0xr1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1"
+      },
+      {
+        "jobId": 101,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-17T09:32:56.768Z",
+        "agentsInvolved": [],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 82,
+        "securityScoreAfter": 82,
+        "totalCostGuard": 0,
+        "reportHash": "0xr1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1"
+      },
+      {
+        "jobId": 101,
+        "auditJobTokenId": null,
+        "completedAt": "2026-02-17T09:43:26.241Z",
+        "agentsInvolved": [],
+        "findingsCount": 2,
+        "criticalFindings": 1,
+        "securityScoreBefore": 82,
+        "securityScoreAfter": 82,
+        "totalCostGuard": 0,
+        "reportHash": "0xr1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1r1"
       }
     ],
     "monitoring": {
-      "isActive": false
+      "isActive": true,
+      "agentAddress": "0xmonitor",
+      "weeklyRate": 5,
+      "startedAt": "2026-02-17T09:37:18.508Z"
     },
     "state": {
       "current": "UNAUDITED",
@@ -478,10 +665,731 @@
       ]
     },
     "createdAt": "2026-02-16T19:48:36.057Z",
-    "updatedAt": "2026-02-16T19:53:46.131Z",
+    "updatedAt": "2026-02-17T09:43:26.241Z",
     "intelligence": {
       "autoReauditTriggered": true,
       "predictedRiskChange": 20
+    },
+    "vault": {
+      "vaultAddress": "0x1212121212121212121212121212121212121212",
+      "creator": "0xdeployer",
+      "currentBalance": 300,
+      "weeklyMonitoringBudget": 10,
+      "criticalBountyAllocation": 50,
+      "reauditIntervalSeconds": 300
     }
+  },
+  "agentProfile:26": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:26",
+    "agentAddress": "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+    "agentId": "SecuritySentinel-9000",
+    "identity": {
+      "ucpEndpoint": "openclaw://sentinel-9000",
+      "specializations": [
+        "reentrancy",
+        "logic_error"
+      ],
+      "tier": "SPECIALIZED",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-17T09:28:31.458Z"
+    },
+    "reputation": {
+      "current": 6000,
+      "history": [
+        {
+          "timestamp": "2026-02-17T09:28:31.458Z",
+          "delta": 6000,
+          "newScore": 6000,
+          "reason": "seed_initial"
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 6000,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 0,
+      "successfulFindings": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 0,
+      "auctionsWon": 0,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 500,
+      "totalEarned": 0,
+      "totalSlashed": 0,
+      "pricing": {
+        "baseBidMultiplier": 1,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 0,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "staking": {
+      "totalStaked": 500,
+      "lockedStake": 0,
+      "availableStake": 500,
+      "unbondingAmount": 0,
+      "unbondingCompleteAt": null,
+      "status": "ACTIVE",
+      "history": []
+    },
+    "slashHistory": [],
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-17T09:28:31.458Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:28:31.458Z",
+    "updatedAt": "2026-02-17T09:28:31.458Z"
+  },
+  "agentProfile:27": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:27",
+    "agentAddress": "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+    "agentId": "SecuritySentinel-9000",
+    "identity": {
+      "ucpEndpoint": "openclaw://sentinel-9000",
+      "specializations": [
+        "reentrancy",
+        "logic_error"
+      ],
+      "tier": "SPECIALIZED",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-17T09:28:39.480Z"
+    },
+    "reputation": {
+      "current": 6000,
+      "history": [
+        {
+          "timestamp": "2026-02-17T09:28:39.480Z",
+          "delta": 6000,
+          "newScore": 6000,
+          "reason": "seed_initial"
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 6000,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 0,
+      "successfulFindings": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 0,
+      "auctionsWon": 0,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 500,
+      "totalEarned": 0,
+      "totalSlashed": 0,
+      "pricing": {
+        "baseBidMultiplier": 1.2,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 15,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "staking": {
+      "totalStaked": 500,
+      "lockedStake": 0,
+      "availableStake": 500,
+      "unbondingAmount": 0,
+      "unbondingCompleteAt": null,
+      "status": "ACTIVE",
+      "history": []
+    },
+    "slashHistory": [],
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-17T09:28:39.480Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:28:39.480Z",
+    "updatedAt": "2026-02-17T09:30:44.557Z"
+  },
+  "auditJob:32": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:32",
+    "jobId": 101,
+    "target": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "YieldAggregator",
+      "lineCount": 0,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-default",
+      "timestamp": "2026-02-17T09:28:55.750Z",
+      "initialRiskScore": 0,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-17T09:28:55.750Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-17T09:28:55.750Z",
+    "updatedAt": "2026-02-17T09:28:55.750Z"
+  },
+  "contractHealth:27": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:27",
+    "contract": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "unknown",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 40,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-17T09:29:11.116Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-17T09:29:11.116Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:29:11.116Z",
+    "updatedAt": "2026-02-17T09:29:11.116Z"
+  },
+  "agentProfile:28": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:28",
+    "agentAddress": "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+    "agentId": "SecuritySentinel-9000",
+    "identity": {
+      "ucpEndpoint": "openclaw://sentinel-9000",
+      "specializations": [
+        "reentrancy",
+        "logic_error"
+      ],
+      "tier": "SPECIALIZED",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-17T09:31:35.889Z"
+    },
+    "reputation": {
+      "current": 4500,
+      "history": [
+        {
+          "timestamp": "2026-02-17T09:31:35.889Z",
+          "delta": 6000,
+          "newScore": 6000,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-17T09:33:57.531Z",
+          "delta": -1500,
+          "newScore": 4500,
+          "reason": "slash_penalty"
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 6000,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 0,
+      "successfulFindings": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 0,
+      "auctionsWon": 0,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 450,
+      "totalEarned": 0,
+      "totalSlashed": 50,
+      "pricing": {
+        "baseBidMultiplier": 1.2,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 15,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "staking": {
+      "totalStaked": 500,
+      "lockedStake": 0,
+      "availableStake": 500,
+      "unbondingAmount": 0,
+      "unbondingCompleteAt": null,
+      "status": "ACTIVE",
+      "history": []
+    },
+    "slashHistory": [],
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-17T09:31:35.889Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:31:35.889Z",
+    "updatedAt": "2026-02-17T09:33:57.531Z"
+  },
+  "auditJob:33": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:33",
+    "jobId": 101,
+    "target": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "YieldAggregator",
+      "lineCount": 0,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-default",
+      "timestamp": "2026-02-17T09:31:56.022Z",
+      "initialRiskScore": 0,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-17T09:31:56.022Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-17T09:31:56.022Z",
+    "updatedAt": "2026-02-17T09:31:56.022Z"
+  },
+  "contractHealth:28": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:28",
+    "contract": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "unknown",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 40,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-17T09:32:15.282Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-17T09:32:15.282Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:32:15.282Z",
+    "updatedAt": "2026-02-17T09:32:15.282Z"
+  },
+  "_ecosystem:treasury": {
+    "totalRevenue": 72.5,
+    "revenueBySource": {
+      "AUDIT_PLATFORM_FEE": 50,
+      "SLASHING_PROCEEDS": 22.5
+    },
+    "feeHistory": [
+      {
+        "source": "AUDIT_PLATFORM_FEE",
+        "amount": 50,
+        "jobId": 101,
+        "fromContract": "0xauction",
+        "timestamp": "2026-02-17T09:39:09.092Z"
+      },
+      {
+        "source": "SLASHING_PROCEEDS",
+        "amount": 22.5,
+        "jobId": 101,
+        "fromContract": "0xstaking",
+        "timestamp": "2026-02-17T09:39:23.001Z"
+      }
+    ],
+    "distributions": [
+      {
+        "distributionId": 1,
+        "totalDistributed": 72.5,
+        "ucpAmount": 29,
+        "reserveAmount": 36.25,
+        "burnAmount": 7.25,
+        "timestamp": "2026-02-17T09:39:36.331Z"
+      }
+    ]
+  },
+  "agentProfile:29": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946510:29",
+    "agentAddress": "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+    "agentId": "SecuritySentinel-9000",
+    "identity": {
+      "ucpEndpoint": "openclaw://sentinel-9000",
+      "specializations": [
+        "reentrancy",
+        "logic_error"
+      ],
+      "tier": "SPECIALIZED",
+      "status": "ACTIVE",
+      "registeredAt": "2026-02-17T09:42:06.117Z"
+    },
+    "reputation": {
+      "current": 4500,
+      "history": [
+        {
+          "timestamp": "2026-02-17T09:42:06.117Z",
+          "delta": 6000,
+          "newScore": 6000,
+          "reason": "seed_initial"
+        },
+        {
+          "timestamp": "2026-02-17T09:44:32.778Z",
+          "delta": -1500,
+          "newScore": 4500,
+          "reason": "slash_penalty"
+        }
+      ],
+      "trend": "stable",
+      "peakScore": 6000,
+      "specialtyScores": {}
+    },
+    "performance": {
+      "completedJobs": 0,
+      "successfulFindings": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "accuracyRate": 0,
+      "auctionsWon": 0,
+      "auctionsParticipated": 0,
+      "winRate": 0,
+      "subContractsCompleted": 0,
+      "dataListingsSold": 0,
+      "jobHistory": []
+    },
+    "economics": {
+      "stakedAmount": 450,
+      "totalEarned": 0,
+      "totalSlashed": 50,
+      "pricing": {
+        "baseBidMultiplier": 1.2,
+        "reputationDiscountThreshold": 8000,
+        "discountPercent": 10,
+        "premiumMarkup": 15,
+        "maxConcurrentJobs": 3
+      },
+      "portfolio": {
+        "activeJobs": [],
+        "pendingBids": [],
+        "preferredContractTypes": []
+      }
+    },
+    "staking": {
+      "totalStaked": 500,
+      "lockedStake": 0,
+      "availableStake": 500,
+      "unbondingAmount": 0,
+      "unbondingCompleteAt": null,
+      "status": "ACTIVE",
+      "history": []
+    },
+    "slashHistory": [],
+    "state": {
+      "current": "REGISTERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "REGISTERED",
+          "timestamp": "2026-02-17T09:42:06.117Z",
+          "trigger": "agent_registration"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:42:06.117Z",
+    "updatedAt": "2026-02-17T09:44:32.778Z"
+  },
+  "auditJob:34": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946509:34",
+    "jobId": 101,
+    "target": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "YieldAggregator",
+      "lineCount": 0,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-default",
+      "timestamp": "2026-02-17T09:42:23.058Z",
+      "initialRiskScore": 0,
+      "hcsMessageId": null,
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-17T09:42:23.058Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-17T09:42:23.058Z",
+    "updatedAt": "2026-02-17T09:42:23.058Z"
+  },
+  "contractHealth:29": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7946511:29",
+    "contract": {
+      "contractAddress": "0xc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "chain": "hedera",
+      "contractType": "unknown",
+      "deployer": null,
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 40,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-17T09:42:42.988Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-17T09:42:42.988Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-17T09:42:42.988Z",
+    "updatedAt": "2026-02-17T09:42:42.988Z"
   }
 }

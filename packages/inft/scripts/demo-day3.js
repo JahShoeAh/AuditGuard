@@ -94,7 +94,9 @@ async function main() {
 
     // 4. VERIFY REPUTATION & METRICS
     console.log("Step 4: Verify Agent State");
-    const agentData = await inftService.getINFT("agentProfile", agentSerial);
+    // processAuditFindings resolves by address, may have updated a prior-run agent iNFT
+    const resolvedAgentSerial = inftService.findSerial("agentProfile", "agentAddress", agentAddr) || agentSerial;
+    const agentData = await inftService.getINFT("agentProfile", resolvedAgentSerial);
     console.log(`  New Reputation: ${agentData.reputation.current} (+${agentData.reputation.current - 6000} bps)`);
     console.log(`  Accuracy Rate: ${agentData.performance.accuracyRate}%`);
     console.log(`  Successful Findings: ${agentData.performance.successfulFindings}\n`);
@@ -110,10 +112,17 @@ async function main() {
 
     // 6. CONTRACT HEALTH & VULNERABILITIES
     console.log("Step 6: Verify Contract Health & Vulnerability Catalog");
-    const healthData = await inftService.getINFT("contractHealth", healthSerial);
+    // processAuditFindings resolves by contract address, may have updated a different serial
+    // if prior runs exist — find the most-updated health iNFT for this contract
+    const resolvedHealthSerial = inftService.findSerial("contractHealth", "contract.contractAddress", contractAddr) || healthSerial;
+    const healthData = await inftService.getINFT("contractHealth", resolvedHealthSerial);
     console.log(`  Security Score: ${healthData.health.securityScore}/100`);
     console.log(`  Vulnerability Count: ${healthData.vulnerabilities.summary.total}`);
-    console.log(`  Catalog entry [0]: ${healthData.vulnerabilities.catalog[0].title} (${healthData.vulnerabilities.catalog[0].severity})\n`);
+    if (healthData.vulnerabilities.catalog.length > 0) {
+      console.log(`  Catalog entry [0]: ${healthData.vulnerabilities.catalog[0].title} (${healthData.vulnerabilities.catalog[0].severity})\n`);
+    } else {
+      console.log("  (Vulnerability catalog empty on this iNFT — findings may have gone to a prior-run iNFT)\n");
+    }
 
     // 7. SLASHING SIMULATION
     console.log("Step 7: Slashing Simulation (Misconduct)");
@@ -122,15 +131,14 @@ async function main() {
     const slashedAgent = await inftService.getINFT("agentProfile", agentSerial);
     console.log(`  Reputation after slash: ${slashedAgent.reputation.current}`);
     console.log(`  Stake after slash: ${slashedAgent.economics.stakedAmount} GUARD`);
-    console.log(`  Agent Status: ${slashedAgent.identity.status}
-`);
+    console.log(`  Agent Status: ${slashedAgent.identity.status}\n`);
 
     console.log("Day 3 Demo Completed Successfully! 🛡️");
 
   } catch (error) {
-    console.error(`
-  [FATAL ERROR] ${error.message}`);
+    console.error(`\n  [FATAL ERROR] ${error.message}`);
     console.error(error.stack);
+    process.exitCode = 1;
   } finally {
     inftService.close();
   }
