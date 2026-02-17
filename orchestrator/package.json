@@ -1,0 +1,15 @@
+{
+  "name": "auditguard-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.48.1",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.16.0",
+    "winston": "^3.12.0"
+  }
+}
