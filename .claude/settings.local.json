@@ -21,7 +21,9 @@
       "Bash(python3:*)",
       "Bash(gh repo view:*)",
       "Bash(ls:*)",
-      "Bash(npx vite build)"
+      "Bash(npx vite build)",
+      "Bash(npm install:*)",
+      "Bash(npm info:*)"
     ]
   }
 }

@@ -34,9 +34,8 @@
   },
   "homepage": "https://github.com/JahShoeAh/AuditGuard#readme",
   "devDependencies": {
-    "@nomicfoundation/hardhat-ethers": "^4.0.4",
     "@nomicfoundation/hardhat-toolbox": "^6.1.0",
     "ethers": "^6.16.0",
-    "hardhat": "^3.1.8"
+    "hardhat": "^2.28.0"
   }
 }
