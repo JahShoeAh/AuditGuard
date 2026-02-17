@@ -231,6 +231,16 @@ class INFTService {
           preferredContractTypes: [],
         },
       },
+      staking: {
+        totalStaked: registration.stakedAmount || 0,
+        lockedStake: 0,
+        availableStake: registration.stakedAmount || 0,
+        unbondingAmount: 0,
+        unbondingCompleteAt: null,
+        status: "ACTIVE",
+        history: [],
+      },
+      slashHistory: [],
       state: {
         current: "REGISTERED",
         history: [
@@ -319,6 +329,18 @@ class INFTService {
       auditHistory: [],
       monitoring: {
         isActive: false,
+        agentAddress: null,
+        weeklyRate: 0,
+        startedAt: null,
+      },
+      vault: {
+        vaultAddress: null,
+        creator: null,
+        currentBalance: 0,
+        reservedForEscrow: 0,
+        weeklyMonitoringBudget: 0,
+        criticalBountyAllocation: 0,
+        reauditIntervalSeconds: 0,
       },
       state: {
         current: "UNAUDITED",
@@ -530,10 +552,10 @@ class INFTService {
     if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
 
     metadata.economics.stakedAmount = (metadata.economics.stakedAmount || 0) + amount;
-    
+
     // If agent was slashed, check if they can be reactivated
-    if (metadata.identity.status === "SLASHED" && 
-        metadata.economics.stakedAmount >= 100 && 
+    if (metadata.identity.status === "SLASHED" &&
+        metadata.economics.stakedAmount >= 100 &&
         metadata.reputation.current > 2000) {
       metadata.identity.status = "ACTIVE";
       metadata.state.current = "ACTIVE";
@@ -543,6 +565,302 @@ class INFTService {
     await this.storage.save("agentProfile", serialNumber, metadata);
     console.log(`  [iNFT] Agent #${serialNumber} stake topped up: +${amount} GUARD (Total: ${metadata.economics.stakedAmount})`);
     return metadata;
+  }
+
+  // ─── Day 3: Staking Details (StakingManager) ──────────────────────────────
+
+  /**
+   * Update detailed staking breakdown on an Agent Profile iNFT.
+   * Maps to StakingManager.StakeInfo struct fields.
+   *
+   * @param {number} serialNumber
+   * @param {object} stakingUpdate
+   * @param {number} [stakingUpdate.totalStaked]
+   * @param {number} [stakingUpdate.lockedStake]
+   * @param {number} [stakingUpdate.availableStake]
+   * @param {number} [stakingUpdate.unbondingAmount]
+   * @param {string} [stakingUpdate.unbondingCompleteAt] - ISO timestamp
+   * @param {string} [stakingUpdate.status] - ACTIVE | UNBONDING | WITHDRAWN | FROZEN
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateAgentStakingDetails(serialNumber, stakingUpdate) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    if (!metadata.staking) {
+      metadata.staking = {
+        totalStaked: 0,
+        lockedStake: 0,
+        availableStake: 0,
+        unbondingAmount: 0,
+        unbondingCompleteAt: null,
+        status: "ACTIVE",
+        history: [],
+      };
+    }
+
+    const now = new Date().toISOString();
+    const prev = { ...metadata.staking };
+
+    for (const [k, v] of Object.entries(stakingUpdate)) {
+      if (k !== "history" && v !== undefined) {
+        metadata.staking[k] = v;
+      }
+    }
+
+    // Keep economics.stakedAmount in sync
+    if (stakingUpdate.totalStaked !== undefined) {
+      metadata.economics.stakedAmount = stakingUpdate.totalStaked;
+    }
+
+    // Record snapshot in staking history
+    metadata.staking.history.push({
+      timestamp: now,
+      action: stakingUpdate._action || "update",
+      totalStaked: metadata.staking.totalStaked,
+      lockedStake: metadata.staking.lockedStake,
+      availableStake: metadata.staking.availableStake,
+      status: metadata.staking.status,
+    });
+    // Keep last 50 entries
+    if (metadata.staking.history.length > 50) {
+      metadata.staking.history = metadata.staking.history.slice(-50);
+    }
+
+    metadata.updatedAt = now;
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Record a slash event from StakingManager on an Agent Profile iNFT.
+   * Stores the full SlashRecord including evidenceHash for 0g DA lookup.
+   *
+   * @param {number} serialNumber
+   * @param {object} slashRecord
+   * @param {number} slashRecord.slashId
+   * @param {number} slashRecord.jobId
+   * @param {number} slashRecord.subJobId
+   * @param {string} slashRecord.reason - FALSE_POSITIVE | FALSE_NEGATIVE | MALICIOUS_REPORT | SLA_VIOLATION | COLLUSION | PLAGIARISM
+   * @param {number} slashRecord.slashBasisPoints
+   * @param {number} slashRecord.slashedAmount - GUARD in human units
+   * @param {string} slashRecord.evidenceHash - bytes32 hash of evidence in 0g DA
+   * @param {string} slashRecord.slashedBy - address that initiated the slash
+   * @returns {Promise<object>} Updated metadata
+   */
+  async recordSlashOnAgent(serialNumber, slashRecord) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    const now = new Date().toISOString();
+
+    if (!metadata.slashHistory) {
+      metadata.slashHistory = [];
+    }
+
+    metadata.slashHistory.push({
+      slashId: slashRecord.slashId,
+      jobId: slashRecord.jobId,
+      subJobId: slashRecord.subJobId || 0,
+      reason: slashRecord.reason,
+      slashBasisPoints: slashRecord.slashBasisPoints,
+      slashedAmount: slashRecord.slashedAmount,
+      evidenceHash: slashRecord.evidenceHash,
+      slashedBy: slashRecord.slashedBy,
+      timestamp: now,
+      appealStatus: "PENDING",
+      appealDeadline: null,
+      appealReason: null,
+    });
+
+    // Update economics
+    metadata.economics.totalSlashed = (metadata.economics.totalSlashed || 0) + slashRecord.slashedAmount;
+    metadata.economics.stakedAmount = Math.max(0, (metadata.economics.stakedAmount || 0) - slashRecord.slashedAmount);
+
+    metadata.updatedAt = now;
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    console.log(`  [iNFT] Agent #${serialNumber} SLASH recorded: slashId=${slashRecord.slashId}, reason=${slashRecord.reason}, -${slashRecord.slashedAmount} GUARD`);
+    return metadata;
+  }
+
+  /**
+   * Update the appeal status of a slash record on an Agent Profile iNFT.
+   *
+   * @param {number} serialNumber
+   * @param {number} slashId
+   * @param {string} appealStatus - PENDING | APPROVED | DENIED
+   * @param {string} [appealReason] - Agent's appeal justification
+   * @param {number} [restoredAmount] - GUARD restored on approval
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateSlashAppeal(serialNumber, slashId, appealStatus, appealReason, restoredAmount) {
+    const metadata = await this.storage.load("agentProfile", serialNumber);
+    if (!metadata) throw new Error(`Agent Profile iNFT #${serialNumber} not found`);
+
+    if (!metadata.slashHistory) return metadata;
+
+    const record = metadata.slashHistory.find(s => s.slashId === slashId);
+    if (!record) {
+      console.warn(`  [iNFT] Agent #${serialNumber}: slash ${slashId} not found in history`);
+      return metadata;
+    }
+
+    record.appealStatus = appealStatus;
+    if (appealReason) record.appealReason = appealReason;
+
+    // If approved, restore economics
+    if (appealStatus === "APPROVED" && restoredAmount) {
+      metadata.economics.totalSlashed = Math.max(0, (metadata.economics.totalSlashed || 0) - restoredAmount);
+      metadata.economics.stakedAmount = (metadata.economics.stakedAmount || 0) + restoredAmount;
+      console.log(`  [iNFT] Agent #${serialNumber} appeal APPROVED for slash ${slashId}: +${restoredAmount} GUARD restored`);
+    } else if (appealStatus === "DENIED") {
+      console.log(`  [iNFT] Agent #${serialNumber} appeal DENIED for slash ${slashId}`);
+    }
+
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("agentProfile", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Upload slash evidence to 0g DA and return the hash.
+   * The hash is stored on-chain in StakingManager.SlashRecord.evidenceHash.
+   *
+   * @param {object} evidence - Evidence payload
+   * @param {string} evidence.description
+   * @param {number} evidence.jobId
+   * @param {string} evidence.agentAddress
+   * @param {object[]} [evidence.findings]
+   * @param {string} [evidence.additionalData]
+   * @returns {Promise<string|null>} 0g root hash or null if upload failed
+   */
+  async uploadSlashEvidence(evidence) {
+    const payload = JSON.stringify({
+      type: "SLASH_EVIDENCE",
+      timestamp: new Date().toISOString(),
+      ...evidence,
+    });
+
+    const rootHash = await this.storage.uploadBlob(
+      Buffer.from(payload, "utf8"),
+      `slash-evidence-job${evidence.jobId || 0}-${Date.now()}`
+    );
+
+    if (rootHash) {
+      console.log(`  [iNFT] Slash evidence uploaded to 0g DA: ${rootHash}`);
+    }
+    return rootHash;
+  }
+
+  // ─── Day 3: Vault Tracking (VaultFactory / AuditVault) ────────────────────
+
+  /**
+   * Update vault info on a Contract Health iNFT.
+   *
+   * @param {number} serialNumber - Contract Health iNFT serial
+   * @param {object} vaultInfo
+   * @param {string} vaultInfo.vaultAddress
+   * @param {string} [vaultInfo.creator]
+   * @param {number} [vaultInfo.currentBalance]
+   * @param {number} [vaultInfo.reservedForEscrow]
+   * @param {number} [vaultInfo.weeklyMonitoringBudget]
+   * @param {number} [vaultInfo.criticalBountyAllocation]
+   * @param {number} [vaultInfo.reauditIntervalSeconds]
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateContractVaultInfo(serialNumber, vaultInfo) {
+    const metadata = await this.storage.load("contractHealth", serialNumber);
+    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found`);
+
+    metadata.vault = { ...(metadata.vault || {}), ...vaultInfo };
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("contractHealth", serialNumber, metadata);
+    return metadata;
+  }
+
+  /**
+   * Update monitoring subscription info on a Contract Health iNFT.
+   *
+   * @param {number} serialNumber
+   * @param {object} monitorInfo
+   * @param {boolean} monitorInfo.isActive
+   * @param {string} [monitorInfo.agentAddress]
+   * @param {number} [monitorInfo.weeklyRate]
+   * @param {string} [monitorInfo.startedAt]
+   * @returns {Promise<object>} Updated metadata
+   */
+  async updateContractMonitoring(serialNumber, monitorInfo) {
+    const metadata = await this.storage.load("contractHealth", serialNumber);
+    if (!metadata) throw new Error(`Contract Health iNFT #${serialNumber} not found`);
+
+    metadata.monitoring = { ...(metadata.monitoring || {}), ...monitorInfo };
+    metadata.updatedAt = new Date().toISOString();
+    await this.storage.save("contractHealth", serialNumber, metadata);
+    return metadata;
+  }
+
+  // ─── Day 3: Treasury Fee Tracking ─────────────────────────────────────────
+
+  /**
+   * Record a treasury fee event for ecosystem analytics.
+   * Stored in a dedicated treasury metrics section.
+   *
+   * @param {object} feeEvent
+   * @param {string} feeEvent.source - AUDIT_PLATFORM_FEE | DATA_MARKETPLACE_FEE | REPORT_AGENT_FEE | SLASHING_PROCEEDS | SUB_AUCTION_FEE
+   * @param {number} feeEvent.amount - GUARD amount
+   * @param {number} [feeEvent.jobId]
+   * @param {string} [feeEvent.fromContract]
+   */
+  async recordTreasuryFee(feeEvent) {
+    // Store in a special ecosystem metrics key
+    const metrics = await this.storage.load("_ecosystem", "treasury") || {
+      totalRevenue: 0,
+      revenueBySource: {},
+      feeHistory: [],
+      distributions: [],
+    };
+
+    metrics.totalRevenue += feeEvent.amount;
+    metrics.revenueBySource[feeEvent.source] = (metrics.revenueBySource[feeEvent.source] || 0) + feeEvent.amount;
+    metrics.feeHistory.push({
+      ...feeEvent,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Keep last 200 entries
+    if (metrics.feeHistory.length > 200) {
+      metrics.feeHistory = metrics.feeHistory.slice(-200);
+    }
+
+    await this.storage.save("_ecosystem", "treasury", metrics);
+    return metrics;
+  }
+
+  /**
+   * Record a treasury distribution event.
+   *
+   * @param {object} distEvent
+   * @param {number} distEvent.distributionId
+   * @param {number} distEvent.totalDistributed
+   * @param {number} distEvent.ucpAmount
+   * @param {number} distEvent.reserveAmount
+   * @param {number} distEvent.burnAmount
+   */
+  async recordTreasuryDistribution(distEvent) {
+    const metrics = await this.storage.load("_ecosystem", "treasury") || {
+      totalRevenue: 0,
+      revenueBySource: {},
+      feeHistory: [],
+      distributions: [],
+    };
+
+    metrics.distributions.push({
+      ...distEvent,
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.storage.save("_ecosystem", "treasury", metrics);
+    return metrics;
   }
 
   /**

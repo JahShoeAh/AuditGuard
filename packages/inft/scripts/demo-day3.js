@@ -23,8 +23,7 @@ const { INFTService } = require("../src/inft-service");
 async function main() {
   console.log("╔══════════════════════════════════════════════════════════════╗");
   console.log("║           AuditGuard Day 3 iNFT Intelligence Demo           ║");
-  console.log("╚══════════════════════════════════════════════════════════════╝
-");
+  console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
   if (!process.env.HEDERA_ACCOUNT_ID || !process.env.HEDERA_PRIVATE_KEY) {
     console.error("  [ERROR] Missing HEDERA_ACCOUNT_ID or HEDERA_PRIVATE_KEY in .env");
@@ -50,8 +49,7 @@ async function main() {
       stakedAmount: 500,
       initialReputation: 6000,
     });
-    console.log(`  Minted Agent Profile iNFT #${agentSerial} for SecuritySentinel-9000
-`);
+    console.log(`  Minted Agent Profile iNFT #${agentSerial} for SecuritySentinel-9000\n`);
 
     // 2. SETUP: CONTRACT DISCOVERY
     console.log("Step 2: Contract Discovery");
@@ -66,8 +64,7 @@ async function main() {
       contractAddress: contractAddr,
       initialRiskScore: 60,
     });
-    console.log(`  Minted Audit Job iNFT #${jobSerial} and Contract Health iNFT #${healthSerial}
-`);
+    console.log(`  Minted Audit Job iNFT #${jobSerial} and Contract Health iNFT #${healthSerial}\n`);
 
     // 3. PROCESS FINDINGS
     console.log("Step 3: Processing Audit Findings (Reputation Engine)");
@@ -93,16 +90,14 @@ async function main() {
     };
 
     await inftService.processAuditFindings(jobSerial, mockReport);
-    console.log("  Reputation and Contract Health updated via processAuditFindings
-");
+    console.log("  Reputation and Contract Health updated via processAuditFindings\n");
 
     // 4. VERIFY REPUTATION & METRICS
     console.log("Step 4: Verify Agent State");
     const agentData = await inftService.getINFT("agentProfile", agentSerial);
     console.log(`  New Reputation: ${agentData.reputation.current} (+${agentData.reputation.current - 6000} bps)`);
     console.log(`  Accuracy Rate: ${agentData.performance.accuracyRate}%`);
-    console.log(`  Successful Findings: ${agentData.performance.successfulFindings}
-`);
+    console.log(`  Successful Findings: ${agentData.performance.successfulFindings}\n`);
 
     // 5. DYNAMIC PRICING
     console.log("Step 5: Dynamic Pricing Update");
@@ -111,16 +106,14 @@ async function main() {
       premiumMarkup: 15,
       baseBidMultiplier: 1.2,
     });
-    console.log("  Agent updated pricing strategy based on increased reputation
-");
+    console.log("  Agent updated pricing strategy based on increased reputation\n");
 
     // 6. CONTRACT HEALTH & VULNERABILITIES
     console.log("Step 6: Verify Contract Health & Vulnerability Catalog");
     const healthData = await inftService.getINFT("contractHealth", healthSerial);
     console.log(`  Security Score: ${healthData.health.securityScore}/100`);
     console.log(`  Vulnerability Count: ${healthData.vulnerabilities.summary.total}`);
-    console.log(`  Catalog entry [0]: ${healthData.vulnerabilities.catalog[0].title} (${healthData.vulnerabilities.catalog[0].severity})
-`);
+    console.log(`  Catalog entry [0]: ${healthData.vulnerabilities.catalog[0].title} (${healthData.vulnerabilities.catalog[0].severity})\n`);
 
     // 7. SLASHING SIMULATION
     console.log("Step 7: Slashing Simulation (Misconduct)");

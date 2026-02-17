@@ -124,6 +124,9 @@ class EventListener {
       SubAuction: config.contracts?.subAuction?.evmAddress,
       DataMarketplace: config.contracts?.dataMarketplace?.evmAddress,
       PaymentSettlement: config.contracts?.paymentSettlement?.evmAddress,
+      StakingManager: config.contracts?.stakingManager?.evmAddress,
+      Treasury: config.contracts?.treasury?.evmAddress,
+      VaultFactory: config.contracts?.vaultFactory?.evmAddress,
     };
 
     for (const [name, address] of Object.entries(contractMap)) {
@@ -146,7 +149,15 @@ class EventListener {
     this._agentIndex = new Map();
     this._contractIndex = new Map(); // contractAddress -> contractHealth serial
     this._subJobToParentJob = new Map(); // subJobId -> parentJobId
+    this._vaultAddresses = new Map(); // vaultAddress -> contractAddress (for AuditVault event polling)
     this._initIndices();
+
+    // AuditVault ABI loaded separately — vault instances are dynamic, not in config
+    this._auditVaultInterface = null;
+    const vaultAbi = loadABI("AuditVault");
+    if (vaultAbi) {
+      this._auditVaultInterface = new ethers.Interface(vaultAbi);
+    }
   }
 
   _initIndices() {
@@ -162,7 +173,16 @@ class EventListener {
         this._contractIndex.set(item.contract.contractAddress.toLowerCase(), this.storage.findSerialBy("contractHealth", "contract.contractAddress", item.contract.contractAddress));
       }
     }
-    console.log(`  [events] Index: ${this._jobIndex.size} jobs, ${this._agentIndex.size} agents, ${this._contractIndex.size} contracts`);
+    // Rebuild vault address index from contract health iNFTs
+    for (const item of this.storage.listAll("contractHealth")) {
+      if (item.vault?.vaultAddress && item.contract?.contractAddress) {
+        this._vaultAddresses.set(
+          item.vault.vaultAddress.toLowerCase(),
+          item.contract.contractAddress.toLowerCase()
+        );
+      }
+    }
+    console.log(`  [events] Index: ${this._jobIndex.size} jobs, ${this._agentIndex.size} agents, ${this._contractIndex.size} contracts, ${this._vaultAddresses.size} vaults`);
   }
 
   async start() {
@@ -190,6 +210,8 @@ class EventListener {
   }
 
   async _pollAllContracts() {
+    // Poll named contracts (AuditAuction, SubAuction, DataMarketplace, PaymentSettlement,
+    // StakingManager, Treasury, VaultFactory)
     for (const [contractName, address] of Object.entries(this.contracts)) {
       const iface = this.interfaces[contractName];
       if (!iface) continue;
@@ -221,6 +243,38 @@ class EventListener {
       }
 
       saveCursor(this.cursor);
+    }
+
+    // Poll individual AuditVault instances
+    if (this._auditVaultInterface && this._vaultAddresses.size > 0) {
+      for (const [vaultAddr, contractAddr] of this._vaultAddresses) {
+        const cursorKey = `AuditVault_${vaultAddr}_lastTimestamp`;
+        const afterTimestamp = this.cursor[cursorKey] || null;
+
+        const logs = await fetchContractLogs(vaultAddr, afterTimestamp);
+        if (logs.length === 0) continue;
+
+        console.log(`  [events] AuditVault(${vaultAddr.slice(0, 10)}...): ${logs.length} new log(s)`);
+
+        for (const log of logs) {
+          const decoded = decodeLog(this._auditVaultInterface, log);
+          if (!decoded) continue;
+
+          const timestamp = log.timestamp || log.consensus_timestamp;
+
+          try {
+            await this._handleAuditVaultEvent(decoded.name, decoded.args, vaultAddr, contractAddr, timestamp);
+          } catch (err) {
+            console.error(`  [events] Error handling AuditVault.${decoded.name}: ${err.message}`);
+          }
+
+          if (timestamp) {
+            this.cursor[cursorKey] = timestamp;
+          }
+        }
+
+        saveCursor(this.cursor);
+      }
     }
   }
 
@@ -604,6 +658,430 @@ class EventListener {
     const subJobId = Number(args.subJobId);
     const amount = Number(args.amount) / 1e8;
     console.log(`  [event] SubJobSettled: subJobId=${subJobId}, amount=${amount}`);
+  }
+
+  // ─── StakingManager Event Handlers ──────────────────────────────────────
+
+  async _onStakingManager_Staked(args, timestamp) {
+    const agent = args.agent;
+    const amount = Number(args.amount) / 1e8;
+    const newTotal = Number(args.newTotal) / 1e8;
+    console.log(`  [event] Staked: agent=${agent}, amount=${amount}, newTotal=${newTotal}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        totalStaked: newTotal,
+        availableStake: newTotal, // On fresh stake, all is available
+        status: "ACTIVE",
+        _action: "stake",
+      });
+    }
+  }
+
+  async _onStakingManager_UnstakeRequested(args, timestamp) {
+    const agent = args.agent;
+    const amount = Number(args.amount) / 1e8;
+    const completesAt = new Date(Number(args.completesAt) * 1000).toISOString();
+    console.log(`  [event] UnstakeRequested: agent=${agent}, amount=${amount}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      const currentStaking = agentData?.staking || {};
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        availableStake: Math.max(0, (currentStaking.availableStake || 0) - amount),
+        unbondingAmount: amount,
+        unbondingCompleteAt: completesAt,
+        _action: "unstake_request",
+      });
+    }
+  }
+
+  async _onStakingManager_UnstakeCompleted(args, timestamp) {
+    const agent = args.agent;
+    const amount = Number(args.amount) / 1e8;
+    console.log(`  [event] UnstakeCompleted: agent=${agent}, amount=${amount}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      const currentStaking = agentData?.staking || {};
+      const newTotal = Math.max(0, (currentStaking.totalStaked || 0) - amount);
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        totalStaked: newTotal,
+        unbondingAmount: 0,
+        unbondingCompleteAt: null,
+        status: newTotal === 0 ? "WITHDRAWN" : "ACTIVE",
+        _action: "unstake_complete",
+      });
+    }
+  }
+
+  async _onStakingManager_StakeLocked(args, timestamp) {
+    const agent = args.agent;
+    const amount = Number(args.amount) / 1e8;
+    const jobId = Number(args.jobId);
+    console.log(`  [event] StakeLocked: agent=${agent}, amount=${amount}, jobId=${jobId}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      const currentStaking = agentData?.staking || {};
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        lockedStake: (currentStaking.lockedStake || 0) + amount,
+        availableStake: Math.max(0, (currentStaking.availableStake || 0) - amount),
+        _action: "lock",
+      });
+    }
+  }
+
+  async _onStakingManager_StakeUnlocked(args, timestamp) {
+    const agent = args.agent;
+    const amount = Number(args.amount) / 1e8;
+    const jobId = Number(args.jobId);
+    console.log(`  [event] StakeUnlocked: agent=${agent}, amount=${amount}, jobId=${jobId}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      const currentStaking = agentData?.staking || {};
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        lockedStake: Math.max(0, (currentStaking.lockedStake || 0) - amount),
+        availableStake: (currentStaking.availableStake || 0) + amount,
+        _action: "unlock",
+      });
+    }
+  }
+
+  async _onStakingManager_SlashInitiated(args, timestamp) {
+    const slashId = Number(args.slashId);
+    const agent = args.agent;
+    const reason = Number(args.reason);
+    const slashedAmount = Number(args.slashedAmount) / 1e8;
+    const slashBps = Number(args.slashBasisPoints);
+    const evidenceHash = args.evidenceHash;
+    const jobId = Number(args.jobId);
+
+    const reasonNames = ["FALSE_POSITIVE", "FALSE_NEGATIVE", "MALICIOUS_REPORT", "SLA_VIOLATION", "COLLUSION", "PLAGIARISM"];
+    const reasonName = reasonNames[reason] || `UNKNOWN_${reason}`;
+
+    console.log(`  [event] SlashInitiated: slashId=${slashId}, agent=${agent}, reason=${reasonName}, amount=${slashedAmount}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      // Record the full slash with evidence hash
+      await this.inftService.recordSlashOnAgent(agentSerial, {
+        slashId,
+        jobId,
+        subJobId: 0,
+        reason: reasonName,
+        slashBasisPoints: slashBps,
+        slashedAmount,
+        evidenceHash,
+        slashedBy: "StakingManager",
+      });
+
+      // Apply reputation penalty matching StakingManager's reputationPenalties mapping
+      const repPenalties = { 0: 100, 1: 200, 2: 5000, 3: 300, 4: 5000, 5: 2500 };
+      const repDelta = -(repPenalties[reason] || 500);
+      await this.inftService.updateAgentReputation(agentSerial, repDelta, `slash_${reasonName.toLowerCase()}`, jobId);
+
+      // Update staking status if frozen
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      if (agentData?.staking) {
+        const newTotal = Math.max(0, (agentData.staking.totalStaked || 0) - slashedAmount);
+        await this.inftService.updateAgentStakingDetails(agentSerial, {
+          totalStaked: newTotal,
+          status: (slashBps === 10000 || newTotal < 100) ? "FROZEN" : agentData.staking.status,
+          _action: "slash",
+        });
+      }
+    }
+  }
+
+  async _onStakingManager_AppealFiled(args, timestamp) {
+    const slashId = Number(args.slashId);
+    const agent = args.agent;
+    const reason = args.reason;
+    console.log(`  [event] AppealFiled: slashId=${slashId}, agent=${agent}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateSlashAppeal(agentSerial, slashId, "PENDING", reason);
+    }
+  }
+
+  async _onStakingManager_AppealApproved(args, timestamp) {
+    const slashId = Number(args.slashId);
+    const agent = args.agent;
+    const restoredAmount = Number(args.restoredAmount) / 1e8;
+    console.log(`  [event] AppealApproved: slashId=${slashId}, agent=${agent}, restored=${restoredAmount}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateSlashAppeal(agentSerial, slashId, "APPROVED", null, restoredAmount);
+
+      // Reverse reputation penalty
+      const agentData = await this.storage.load("agentProfile", agentSerial);
+      const slashEntry = agentData?.slashHistory?.find(s => s.slashId === slashId);
+      if (slashEntry) {
+        const repPenalties = {
+          FALSE_POSITIVE: 100, FALSE_NEGATIVE: 200, MALICIOUS_REPORT: 5000,
+          SLA_VIOLATION: 300, COLLUSION: 5000, PLAGIARISM: 2500,
+        };
+        const restore = repPenalties[slashEntry.reason] || 500;
+        await this.inftService.updateAgentReputation(agentSerial, restore, "appeal_approved", slashEntry.jobId);
+      }
+
+      // Restore staking status
+      if (agentData?.staking) {
+        const newTotal = (agentData.staking.totalStaked || 0) + restoredAmount;
+        await this.inftService.updateAgentStakingDetails(agentSerial, {
+          totalStaked: newTotal,
+          availableStake: (agentData.staking.availableStake || 0) + restoredAmount,
+          status: newTotal >= 100 ? "ACTIVE" : agentData.staking.status,
+          _action: "appeal_approved",
+        });
+      }
+    }
+  }
+
+  async _onStakingManager_AppealDenied(args, timestamp) {
+    const slashId = Number(args.slashId);
+    const agent = args.agent;
+    console.log(`  [event] AppealDenied: slashId=${slashId}, agent=${agent}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateSlashAppeal(agentSerial, slashId, "DENIED");
+    }
+  }
+
+  async _onStakingManager_AgentDeactivating(args, timestamp) {
+    const agent = args.agent;
+    console.log(`  [event] AgentDeactivating: agent=${agent}`);
+
+    const agentSerial = this._agentIndex.get(agent.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateAgentStakingDetails(agentSerial, {
+        status: "UNBONDING",
+        _action: "deactivate",
+      });
+    }
+  }
+
+  // ─── Treasury Event Handlers ────────────────────────────────────────────
+
+  async _onTreasury_FeeReceived(args, timestamp) {
+    const sourceEnum = Number(args.source);
+    const amount = Number(args.amount) / 1e8;
+    const jobId = Number(args.jobId);
+    const fromContract = args.fromContract;
+
+    const sourceNames = ["AUDIT_PLATFORM_FEE", "DATA_MARKETPLACE_FEE", "REPORT_AGENT_FEE", "SLASHING_PROCEEDS", "SUB_AUCTION_FEE"];
+    const sourceName = sourceNames[sourceEnum] || `UNKNOWN_${sourceEnum}`;
+
+    console.log(`  [event] FeeReceived: source=${sourceName}, amount=${amount}, jobId=${jobId}`);
+
+    await this.inftService.recordTreasuryFee({
+      source: sourceName,
+      amount,
+      jobId,
+      fromContract,
+    });
+  }
+
+  async _onTreasury_FeeDistributed(args, timestamp) {
+    const distributionId = Number(args.distributionId);
+    const totalDistributed = Number(args.totalDistributed) / 1e8;
+    const ucpAmount = Number(args.ucpAmount) / 1e8;
+    const reserveAmount = Number(args.reserveAmount) / 1e8;
+    const burnAmount = Number(args.burnAmount) / 1e8;
+
+    console.log(`  [event] FeeDistributed: id=${distributionId}, total=${totalDistributed} (ucp=${ucpAmount}, reserve=${reserveAmount}, burn=${burnAmount})`);
+
+    await this.inftService.recordTreasuryDistribution({
+      distributionId,
+      totalDistributed,
+      ucpAmount,
+      reserveAmount,
+      burnAmount,
+    });
+  }
+
+  // ─── VaultFactory Event Handlers ────────────────────────────────────────
+
+  async _onVaultFactory_VaultCreated(args, timestamp) {
+    const contractAddress = args.contractAddress;
+    const vaultAddress = args.vault;
+    const creator = args.creator;
+    const contractChain = args.contractChain;
+
+    console.log(`  [event] VaultCreated: contract=${contractAddress}, vault=${vaultAddress}`);
+
+    // Find or create Contract Health iNFT for this contract
+    let healthSerial = this._contractIndex.get(contractAddress.toLowerCase());
+    if (!healthSerial) {
+      // Mint a new Contract Health iNFT since a vault was created for this contract
+      const result = await this.inftService.mintContractHealthINFT({
+        contractAddress,
+        chain: contractChain,
+        contractType: "unknown",
+      });
+      healthSerial = result.serialNumber;
+      this._contractIndex.set(contractAddress.toLowerCase(), healthSerial);
+    }
+
+    // Update vault info on the Contract Health iNFT
+    if (healthSerial) {
+      await this.inftService.updateContractVaultInfo(healthSerial, {
+        vaultAddress,
+        creator,
+        currentBalance: 0,
+      });
+    }
+
+    // Register vault for AuditVault event polling
+    this._vaultAddresses.set(vaultAddress.toLowerCase(), contractAddress.toLowerCase());
+
+    await this.inftService.publishToAuditLog("VAULT_CREATED", {
+      contractAddress,
+      vaultAddress,
+      creator,
+      chain: contractChain,
+    });
+  }
+
+  async _onVaultFactory_AutoAuditTriggered(args, timestamp) {
+    const contractAddress = args.contractAddress;
+    const vaultAddress = args.vault;
+    const reason = args.reason;
+
+    console.log(`  [event] AutoAuditTriggered: contract=${contractAddress}, reason=${reason}`);
+
+    const healthSerial = this._contractIndex.get(contractAddress.toLowerCase());
+    if (healthSerial) {
+      await this.inftService.updateContractIntelligence(healthSerial, {
+        autoReauditTriggered: true,
+        reauditReason: reason,
+        reauditTriggeredAt: new Date().toISOString(),
+      });
+    }
+
+    await this.inftService.publishToAuditLog("AUTO_AUDIT_TRIGGERED", {
+      contractAddress,
+      vaultAddress,
+      reason,
+    });
+  }
+
+  // ─── AuditVault Event Handlers (per-vault instance polling) ──────────────
+
+  async _handleAuditVaultEvent(eventName, args, vaultAddr, contractAddr, timestamp) {
+    const handler = `_onAuditVault_${eventName}`;
+    if (typeof this[handler] === "function") {
+      await this[handler](args, vaultAddr, contractAddr, timestamp);
+    }
+  }
+
+  async _onAuditVault_Deposited(args, vaultAddr, contractAddr, timestamp) {
+    const depositor = args.depositor;
+    const amount = Number(args.amount) / 1e8;
+    const newBalance = Number(args.newBalance) / 1e8;
+    console.log(`  [event] AuditVault.Deposited: vault=${vaultAddr.slice(0, 10)}..., depositor=${depositor}, amount=${amount}, balance=${newBalance}`);
+
+    const healthSerial = this._contractIndex.get(contractAddr);
+    if (healthSerial) {
+      await this.inftService.updateContractVaultInfo(healthSerial, {
+        currentBalance: newBalance,
+      });
+    }
+  }
+
+  async _onAuditVault_AuditRecorded(args, vaultAddr, contractAddr, timestamp) {
+    const securityScore = Number(args.securityScore);
+    const totalAudits = Number(args.totalAudits);
+    console.log(`  [event] AuditVault.AuditRecorded: vault=${vaultAddr.slice(0, 10)}..., score=${securityScore}, total=${totalAudits}`);
+
+    const healthSerial = this._contractIndex.get(contractAddr);
+    if (healthSerial) {
+      // This is the on-chain source of truth for security score
+      const currentHealth = await this.storage.load("contractHealth", healthSerial);
+      if (currentHealth && currentHealth.health.securityScore !== securityScore) {
+        await this.inftService.recordAuditOnContractHealth(healthSerial, {
+          jobId: 0, // Will be backfilled when job event arrives
+          newSecurityScore: securityScore,
+          agentsInvolved: [],
+          findingsCount: 0,
+          criticalFindings: 0,
+        });
+      }
+    }
+  }
+
+  async _onAuditVault_AutoAuditTriggered(args, vaultAddr, contractAddr, timestamp) {
+    const reason = args.reason;
+    console.log(`  [event] AuditVault.AutoAuditTriggered: vault=${vaultAddr.slice(0, 10)}..., reason=${reason}`);
+
+    const healthSerial = this._contractIndex.get(contractAddr);
+    if (healthSerial) {
+      await this.inftService.updateContractIntelligence(healthSerial, {
+        autoReauditTriggered: true,
+        reauditReason: reason,
+        reauditTriggeredAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  async _onAuditVault_MonitoringApplied(args, vaultAddr, contractAddr, timestamp) {
+    const agent = args.agent;
+    const weeklyRate = Number(args.weeklyRate) / 1e8;
+    console.log(`  [event] AuditVault.MonitoringApplied: vault=${vaultAddr.slice(0, 10)}..., agent=${agent}, rate=${weeklyRate}/week`);
+
+    const healthSerial = this._contractIndex.get(contractAddr);
+    if (healthSerial) {
+      await this.inftService.updateContractMonitoring(healthSerial, {
+        isActive: true,
+        agentAddress: agent,
+        weeklyRate,
+        startedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  async _onAuditVault_MonitoringCancelled(args, vaultAddr, contractAddr, timestamp) {
+    const agent = args.agent;
+    console.log(`  [event] AuditVault.MonitoringCancelled: vault=${vaultAddr.slice(0, 10)}..., agent=${agent}`);
+
+    const healthSerial = this._contractIndex.get(contractAddr);
+    if (healthSerial) {
+      await this.inftService.updateContractMonitoring(healthSerial, {
+        isActive: false,
+        agentAddress: null,
+        weeklyRate: 0,
+      });
+    }
+  }
+
+  async _onAuditVault_BountyPaid(args, vaultAddr, contractAddr, timestamp) {
+    const recipient = args.recipient;
+    const amount = Number(args.amount) / 1e8;
+    console.log(`  [event] AuditVault.BountyPaid: vault=${vaultAddr.slice(0, 10)}..., recipient=${recipient}, amount=${amount}`);
+
+    // Update agent economics
+    const agentSerial = this._agentIndex.get(recipient.toLowerCase());
+    if (agentSerial) {
+      await this.inftService.updateAgentMetrics(agentSerial, {
+        economics: { totalEarned: amount },
+        jobHistoryEntry: {
+          jobId: 0,
+          role: "bounty_hunter",
+          completedAt: new Date().toISOString(),
+          payment: amount,
+        },
+      });
+    }
   }
 
   close() {
