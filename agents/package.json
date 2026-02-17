@@ -1,0 +1,32 @@
+{
+  "name": "auditguard-agents",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "scanner": "tsx scanner/index.ts",
+    "static": "tsx static-analysis/index.ts",
+    "fuzzer": "tsx fuzzer/index.ts",
+    "llm": "tsx llm-contextual/index.ts",
+    "dependency": "tsx dependency/index.ts",
+    "report": "tsx report/index.ts",
+    "alert": "tsx alert/index.ts",
+    "all": "tsx run-all.ts",
+    "all:demo": "DEMO_MODE=true tsx run-all.ts",
+    "all:legacy": "concurrently \"npm run scanner\" \"npm run static\" \"npm run fuzzer\" \"npm run llm\" \"npm run dependency\" \"npm run report\" \"npm run alert\"",
+    "fund": "tsx scripts/fund-agents.ts",
+    "test": "vitest run --reporter=verbose"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.46.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "concurrently": "^8.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.0.18"
+  }
+}
