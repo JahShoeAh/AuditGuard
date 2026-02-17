@@ -4,6 +4,7 @@ import Countdown from './Countdown';
 import BidRow from './BidRow';
 import SubContractTree from './SubContractTree';
 import { shortenAddress, parseGuardAmount } from '../services/event-listener';
+import { hashscan } from '../utils/hashscan';
 
 // ── Contract type styling ──────────────────────────────────
 
@@ -179,10 +180,20 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
       </div>
 
       {/* ── Contract address ── */}
-      <div className="px-3 py-1.5 border-b border-white/[0.04]">
+      <div className="px-3 py-1.5 border-b border-white/[0.04] flex items-center justify-between">
         <span className="text-[10px] font-mono text-gray-500">
           {shortenAddress(job.contractAddress)}
         </span>
+        {job.contractAddress && (
+          <a
+            href={hashscan.contract(job.contractAddress)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[9px] font-mono text-gray-700 hover:text-guard-cyan transition-colors"
+          >
+            HashScan↗
+          </a>
+        )}
       </div>
 
       {/* ── Bids section ── */}

@@ -4,7 +4,7 @@ import { useEventListeners } from './hooks/useEventListeners';
 import Header from './components/Header';
 import DiscoveryFeed from './components/DiscoveryFeed';
 import AuctionFeed from './components/AuctionFeed';
-import ActivityLog from './components/ActivityLog';
+import TransactionExplorer from './components/TransactionExplorer';
 import MarketplacePanel from './components/MarketplacePanel';
 import PaymentFlow from './components/PaymentFlow';
 
@@ -69,7 +69,7 @@ export default function App() {
           <PaymentFlow />
         </div>
         <div className="flex-1 min-h-0">
-          <ActivityLog />
+          <TransactionExplorer />
         </div>
       </div>
     </div>

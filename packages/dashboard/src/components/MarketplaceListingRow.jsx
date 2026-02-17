@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import useStore from '../store';
+import { hashscan } from '../utils/hashscan';
 
 // ── Category + listing type config ───────────────────────────
 
@@ -143,7 +144,18 @@ export default function MarketplaceListingRow({ listing, isNew }) {
           {hasParentJob ? `Job #${listing.parentJobId}` : 'Standalone'}
         </span>
 
-        {listing.blockNumber && (
+        {listing._tx?.hash && (
+          <a
+            href={hashscan.transaction(listing._tx.hash)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[9px] font-mono text-gray-700 hover:text-guard-cyan transition-colors ml-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            tx↗
+          </a>
+        )}
+        {!listing._tx?.hash && listing.blockNumber && (
           <span className="text-[9px] text-gray-700 ml-auto">
             blk #{listing.blockNumber}
           </span>

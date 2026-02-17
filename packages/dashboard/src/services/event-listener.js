@@ -161,10 +161,26 @@ export class EventListenerService {
     });
   }
 
+  /** Build a lightweight tx-metadata object from an ethers event. */
+  _mkTx(ev, blockTs) {
+    return {
+      hash:        ev.transactionHash,
+      blockNumber: ev.blockNumber,
+      receivedAt:  Date.now(),
+      finalityMs:  blockTs ? Math.max(0, Date.now() - blockTs * 1000) : null,
+    };
+  }
+
   /** Route a parsed HCS message to the right store action. */
   _routeHCSMessage(topicKey, msg) {
-    const { parsedData, timestamp } = msg;
-    const entry = { ...parsedData, _hcsTimestamp: timestamp };
+    const { parsedData, timestamp, sequenceNumber } = msg;
+    const topicId = this.config?.hcsTopics?.[topicKey] || topicKey;
+    const entry = {
+      ...parsedData,
+      _hcsTimestamp:  timestamp,
+      _hcsSequence:   sequenceNumber,
+      _hcsTopic:      topicId,
+    };
 
     if (topicKey === 'discovery') {
       this.store.addDiscovery(entry);
@@ -209,6 +225,13 @@ export class EventListenerService {
 
       const from = this.lastProcessedBlock + 1;
       const to   = currentBlock;
+
+      // Fetch latest block timestamp once for finality calculation
+      let blockTs = null;
+      try {
+        const block = await this.provider.getBlock(to);
+        blockTs = block?.timestamp || null;
+      } catch { /* non-critical */ }
 
       // Run all queries in parallel
       const {
@@ -271,6 +294,7 @@ export class EventListenerService {
           contractAddress: a.contractAddress,
           budgetFormatted: parseGuardAmount(a.budgetAvailable),
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
         });
       }
 
@@ -296,6 +320,7 @@ export class EventListenerService {
           agentName: bid.agentName,
           bidFormatted: bid.bidFormatted,
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
         });
       }
 
@@ -533,6 +558,7 @@ export class EventListenerService {
           contentHash: a.contentHash,
           blockNumber: ev.blockNumber,
           active: true,
+          _tx: this._mkTx(ev, blockTs),
         });
         this.store.addLogEntry({
           type: 'DATA_LISTED',
@@ -543,6 +569,7 @@ export class EventListenerService {
           title: a.title,
           priceFormatted,
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
         });
       }
 
@@ -582,6 +609,7 @@ export class EventListenerService {
           sellerName: purchase.sellerName,
           pricePaidFormatted,
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
         });
       }
 
@@ -629,6 +657,7 @@ export class EventListenerService {
           totalDisbursedFormatted,
           recipientCount: Number(a.recipientCount),
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
         });
         // Fetch per-recipient breakdown and emit individual GUARD flows
         if (paymentSettlementContract) {

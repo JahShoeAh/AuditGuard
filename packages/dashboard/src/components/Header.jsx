@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import useStore from '../store';
+import { hashscan } from '../utils/hashscan';
 
 // ── Stat chip with pulse on value change ───────────────────
 
@@ -45,7 +46,16 @@ function NetworkStatus({ isConnected, connectionError, guardTokenId }) {
         <span className="text-xs font-semibold tracking-wider font-sans" style={{
           color: isConnected ? 'var(--accent-green)' : 'var(--accent-red)',
         }}>
-          {isConnected ? 'HEDERA TESTNET' : connectionError ? 'DISCONNECTED' : 'CONNECTING'}
+            {isConnected ? (
+          <a
+            href={hashscan.networkUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline"
+          >
+            HEDERA TESTNET↗
+          </a>
+        ) : connectionError ? 'DISCONNECTED' : 'CONNECTING'}
         </span>
       </div>
       {guardTokenId && (

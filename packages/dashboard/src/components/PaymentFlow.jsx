@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGuardFlows, getFlowColor } from '../hooks/useGuardFlows';
+import FlowSummary from './FlowSummary';
 
 // ── Quadratic bezier helpers ──────────────────────────────────
 
@@ -239,6 +240,9 @@ export default function PaymentFlow() {
         </div>
       </div>
 
+      {/* Body: SVG canvas + summary sidebar */}
+      <div className="flex-1 flex min-h-0">
+
       {/* SVG canvas */}
       <div ref={containerRef} className="flex-1 relative min-h-0 overflow-hidden">
         {dims.w === 0 ? null : nodePositions.length === 0 ? (
@@ -290,6 +294,11 @@ export default function PaymentFlow() {
           </div>
         )}
       </div>
+
+      {/* Flow summary sidebar */}
+      <FlowSummary />
+
+      </div>{/* end body flex */}
     </div>
   );
 }
