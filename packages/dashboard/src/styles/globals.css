@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-guard-dark text-gray-100;
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(0, 255, 136, 0.03) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 20%, rgba(123, 47, 247, 0.03) 0%, transparent 50%);
+    min-height: 100vh;
+  }
+
+  /* Scrollbar styling for the mission-control aesthetic */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0e17;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1f2937;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #374151;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-guard-panel border border-guard-border rounded-lg;
+  }
+
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full;
+  }
+
+  .status-dot-connected {
+    @apply status-dot bg-guard-green;
+    box-shadow: 0 0 6px rgba(0, 255, 136, 0.6);
+  }
+
+  .status-dot-disconnected {
+    @apply status-dot bg-guard-red;
+    box-shadow: 0 0 6px rgba(255, 56, 96, 0.6);
+  }
+
+  .glow-text {
+    text-shadow: 0 0 10px currentColor;
+  }
+}
