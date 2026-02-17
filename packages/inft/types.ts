@@ -159,7 +159,7 @@ export interface AuditJobINFT {
 // ─── Agent Profile iNFT ──────────────────────────────────────────────────────
 
 export type AgentTier = 'COMMODITY' | 'SPECIALIZED' | 'PREMIUM';
-export type AgentStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' | 'SLASHED';
+export type AgentStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' | 'SLASHED' | 'UNBONDING' | 'WITHDRAWN' | 'FROZEN';
 
 export type AgentINFTState =
   | 'REGISTERED'
@@ -168,7 +168,8 @@ export type AgentINFTState =
   | 'COOLDOWN'
   | 'SUSPENDED'
   | 'SLASHED'
-  | 'DEREGISTERED';
+  | 'DEREGISTERED'
+  | 'UNBONDING';
 
 export type ReputationChangeReason =
   | 'job_completion'
@@ -176,6 +177,7 @@ export type ReputationChangeReason =
   | 'false_positive_penalty'
   | 'false_negative_penalty'
   | 'slash_penalty'
+  | 'slash_reversed'
   | 'sub_contract_completion'
   | 'sub_contract_expired'
   | 'seed_initial';
@@ -187,6 +189,7 @@ export interface ReputationChange {
   reason: ReputationChangeReason;
   jobId?: number;
   txHash?: string;
+  slashId?: string;
 }
 
 export interface SpecialtyScore {
@@ -216,6 +219,28 @@ export interface JobHistoryEntry {
   payment: number;
   validFindings: number;
   reputationDelta: number;
+}
+
+export interface StakingDetails {
+  totalStaked: number;
+  lockedStake: number;
+  availableStake: number;
+  unbondingAmount: number;
+  unbondingCompleteAt?: string;
+  status: AgentStatus;
+  lastUpdated: string;
+}
+
+export interface SlashRecord {
+  slashId: string;
+  jobId?: number;
+  amount: number;
+  bps: number;
+  reason: string;
+  evidenceHash: string; // 0g Labs DA reference
+  timestamp: string;
+  status: 'PENDING' | 'APPEALED' | 'REVERSED' | 'FINALIZED';
+  appealDeadline?: string;
 }
 
 export interface AgentProfileINFT {
@@ -255,6 +280,8 @@ export interface AgentProfileINFT {
     stakedAmount: number;
     totalEarned: number;
     totalSlashed: number;
+    staking?: StakingDetails;
+    slashes?: SlashRecord[];
     pricing?: PricingStrategy;
     portfolio?: PortfolioState;
   };
@@ -393,6 +420,8 @@ export interface ContractHealthINFT {
     currentBalance: number;
     totalDeposited: number;
     totalSpent: number;
+    lastAuditRecordedAt?: string;
+    autoAuditEnabled: boolean;
   };
   state: {
     current: ContractHealthState;
