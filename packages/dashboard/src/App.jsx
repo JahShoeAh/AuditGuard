@@ -1,32 +1,45 @@
-import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { initializeConnection } from './services/hedera-connection';
+import { useConnection } from './hooks/useConnection';
+import { useEventListeners } from './hooks/useEventListeners';
 import useStore from './store';
 
 // Placeholder components — will be built in Prompts 3-4
 function DiscoveryFeed() {
+  const count = useStore((s) => s.discoveries.length);
   return (
     <div className="panel p-4">
       <h2 className="text-guard-green text-sm font-semibold mb-2">DISCOVERY FEED</h2>
-      <p className="text-gray-500 text-xs">Awaiting HCS subscription... (Prompt 3)</p>
+      <p className="text-gray-500 text-xs">
+        {count > 0
+          ? `${count} contracts discovered — UI coming in Prompt 3`
+          : 'Awaiting HCS subscription... (Prompt 3)'}
+      </p>
     </div>
   );
 }
 
 function AuctionFeed() {
+  const jobCount = useStore((s) => Object.keys(s.activeJobs).length);
   return (
     <div className="panel p-4">
       <h2 className="text-guard-blue text-sm font-semibold mb-2">AUCTION FEED</h2>
-      <p className="text-gray-500 text-xs">Awaiting event subscriptions... (Prompt 4)</p>
+      <p className="text-gray-500 text-xs">
+        {jobCount > 0
+          ? `${jobCount} active jobs — UI coming in Prompt 4`
+          : 'Awaiting event subscriptions... (Prompt 4)'}
+      </p>
     </div>
   );
 }
 
 function AgentLeaderboard() {
+  const agentCount = useStore((s) => Object.keys(s.agents).length);
   return (
     <div className="panel p-4">
       <h2 className="text-guard-purple text-sm font-semibold mb-2">AGENT LEADERBOARD</h2>
-      <p className="text-gray-500 text-xs">Coming Day 2+</p>
+      <p className="text-gray-500 text-xs">
+        {agentCount > 0 ? `${agentCount} agents tracked` : 'Coming Day 2+'}
+      </p>
     </div>
   );
 }
@@ -43,11 +56,19 @@ function StatusDot({ connected, error }) {
   );
 }
 
-// Debug panel showing config values
-function DebugPanel({ config }) {
+// Debug panel — config values + live event counters + mock toggle
+function DebugPanel({ config, connection }) {
+  const stats = useStore((s) => s.stats);
+  const discoveries = useStore((s) => s.discoveries.length);
+  const auditLog = useStore((s) => s.auditLog.length);
+  const useMockEvents = useStore((s) => s.useMockEvents);
+  const toggleMock = useStore((s) => s.toggleMockEvents);
+
   if (!config) return null;
 
-  const entries = [
+  const totalEvents = discoveries + auditLog;
+
+  const configEntries = [
     ['GUARD Token', config.guardTokenId],
     ['AuditAuction', config.contracts?.auctionContract?.evmAddress],
     ['HCS Discovery', config.hcsTopics?.discovery],
@@ -60,48 +81,68 @@ function DebugPanel({ config }) {
       animate={{ opacity: 1, y: 0 }}
       className="panel p-3 text-xs"
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-3">
         <span className="text-gray-500 uppercase tracking-wider text-[10px]">Config Debug</span>
-        <span className="text-gray-600 text-[10px]">removable</span>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <span className="text-gray-500 text-[10px]">Mock Events</span>
+          <div className="relative">
+            <input
+              type="checkbox"
+              checked={useMockEvents}
+              onChange={toggleMock}
+              className="sr-only peer"
+            />
+            <div className="w-8 h-4 bg-guard-border rounded-full peer-checked:bg-guard-green/40 transition-colors" />
+            <div className="absolute top-0.5 left-0.5 w-3 h-3 bg-gray-400 rounded-full peer-checked:translate-x-4 peer-checked:bg-guard-green transition-all" />
+          </div>
+        </label>
       </div>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-        {entries.map(([label, value]) => (
+
+      {/* Config values */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
+        {configEntries.map(([label, value]) => (
           <div key={label} className="contents">
             <span className="text-gray-500">{label}</span>
             <span className="text-guard-green font-mono truncate">{String(value)}</span>
           </div>
         ))}
       </div>
+
+      {/* Divider */}
+      <div className="border-t border-guard-border my-2" />
+
+      {/* Live event counters */}
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-gray-500 uppercase tracking-wider text-[10px]">Live Counters</span>
+        <span className="text-guard-green text-[10px] font-semibold">
+          Events received: {totalEvents}
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-2 mt-1">
+        <CounterChip label="Discoveries" value={stats.totalDiscoveries} color="text-guard-green" />
+        <CounterChip label="Auctions" value={stats.totalAuctions} color="text-guard-blue" />
+        <CounterChip label="Bids" value={stats.totalBids} color="text-guard-yellow" />
+        <CounterChip label="Log Entries" value={auditLog} color="text-guard-purple" />
+      </div>
     </motion.div>
   );
 }
 
+function CounterChip({ label, value, color }) {
+  return (
+    <div className="bg-guard-dark rounded px-2 py-1 text-center">
+      <div className={`text-sm font-bold ${color}`}>{value}</div>
+      <div className="text-[9px] text-gray-600 uppercase">{label}</div>
+    </div>
+  );
+}
+
 export default function App() {
-  const { isConnected, connectionError, config, setConnected, setConnectionError } = useStore();
-  const [initializing, setInitializing] = useState(true);
+  const connection = useConnection();
+  const { isConnected, connectionError, config } = connection;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      try {
-        const result = await initializeConnection();
-        if (!cancelled) {
-          setConnected(result.config, result.contracts, result.hederaClient, result.ethersProvider);
-        }
-      } catch (err) {
-        console.error('[AuditGuard] Initialization failed:', err);
-        if (!cancelled) {
-          setConnectionError(err.message);
-        }
-      } finally {
-        if (!cancelled) setInitializing(false);
-      }
-    }
-
-    init();
-    return () => { cancelled = true; };
-  }, [setConnected, setConnectionError]);
+  // Start event listeners (mock or live depending on store toggle)
+  useEventListeners(connection);
 
   return (
     <div className="min-h-screen p-4 max-w-7xl mx-auto">
@@ -135,7 +176,7 @@ export default function App() {
 
       {/* Debug panel */}
       <div className="mb-6">
-        <DebugPanel config={config} />
+        <DebugPanel config={config} connection={connection} />
       </div>
 
       {/* Main grid — placeholder slots */}

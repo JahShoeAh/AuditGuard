@@ -14,6 +14,10 @@ const useStore = create((set) => ({
   setConnectionError: (error) =>
     set({ isConnected: false, connectionError: error }),
 
+  // Mock events toggle
+  useMockEvents: true,  // default ON so UI works before agents run
+  toggleMockEvents: () => set((s) => ({ useMockEvents: !s.useMockEvents })),
+
   // Contract discoveries (from HCS Discovery topic)
   discoveries: [],
   addDiscovery: (d) =>
