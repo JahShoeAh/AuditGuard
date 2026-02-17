@@ -119,12 +119,19 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
     <motion.div
       layout
       initial={{ opacity: 0, y: -20, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
+      animate={{
+        opacity: 1, y: 0, scale: 1,
+        boxShadow: isWinnerState
+          ? ['0 0 0px rgba(16,185,129,0)', '0 0 18px rgba(16,185,129,0.35)', '0 0 8px rgba(16,185,129,0.12)']
+          : '0 0 0px rgba(0,0,0,0)',
+      }}
       exit={{ opacity: 0, scale: 0.95, height: 0 }}
-      transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+      transition={{ type: 'spring', stiffness: 350, damping: 30,
+        boxShadow: isWinnerState ? { duration: 0.8, times: [0, 0.4, 1] } : undefined,
+      }}
       className="card mb-3 relative overflow-hidden"
       style={{
-        borderColor: isWinnerState ? 'rgba(16, 185, 129, 0.25)' : undefined,
+        borderColor: isWinnerState ? 'rgba(16, 185, 129, 0.3)' : undefined,
       }}
     >
       {/* Winner celebration flash */}
@@ -223,6 +230,7 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
                   isWinner={isWinner}
                   isDimmed={isDimmed}
                   isNew={isNew}
+                  index={i}
                 />
               );
             })}

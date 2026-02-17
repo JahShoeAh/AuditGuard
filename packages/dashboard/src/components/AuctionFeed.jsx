@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import useStore from '../store';
 import AuctionCard from './AuctionCard';
 import { shortenAddress } from '../services/event-listener';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 
 // ── Gavel empty state ──────────────────────────────────────
 
@@ -80,6 +81,8 @@ export default function AuctionFeed() {
     return recent;
   }, [bids]);
 
+  const { containerRef } = useAutoScroll(auctions.length);
+
   return (
     <div className="panel flex flex-col h-full">
       {/* Header */}
@@ -103,7 +106,7 @@ export default function AuctionFeed() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3 min-h-0">
+      <div ref={containerRef} className="flex-1 overflow-y-auto p-3 min-h-0">
         <AnimatePresence mode="popLayout">
           {auctions.length === 0 ? (
             <motion.div

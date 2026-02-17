@@ -83,7 +83,7 @@ export default function MarketplaceListingRow({ listing, isNew }) {
         </div>
         <span
           className="text-[11px] font-mono font-bold flex-shrink-0"
-          style={{ color: 'var(--accent-gold)' }}
+          style={{ color: 'var(--accent-gold)', fontVariantNumeric: 'tabular-nums' }}
         >
           {listing.priceFormatted}
         </span>

@@ -26,7 +26,10 @@ function StatChip({ label, value, accentColor, format }) {
       ref={chipRef}
       className="flex flex-col items-center px-3 py-1.5 rounded bg-guard-dark/60 min-w-[80px]"
     >
-      <span className="font-mono text-sm font-semibold" style={{ color: accentColor }}>
+      <span
+        className="font-mono text-sm font-semibold"
+        style={{ color: accentColor, fontVariantNumeric: 'tabular-nums' }}
+      >
         {display}
       </span>
       <span className="text-[9px] uppercase tracking-wider text-gray-500 font-sans mt-0.5">

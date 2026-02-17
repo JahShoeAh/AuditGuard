@@ -10,12 +10,13 @@ const STEPS = ['OPEN', 'IN_PROGRESS', 'DELIVERED', 'ACCEPTED'];
 const STEP_LABELS = ['OPEN', 'SEL', 'DLVR', 'ACPT'];
 
 const SPEC_COLORS = {
-  dependency_analysis: '#9c27b0',
-  static_analysis: '#7e57c2',
-  fuzzing: '#f59e0b',
-  exploit_analysis: '#ef4444',
-  llm_review: '#6366f1',
-  threat_intel: '#ef4444',
+  dependency_analysis: '#f97316',  // orange for DependencyAgent-8
+  static_analysis:     '#22c55e',
+  fuzzing:             '#f59e0b',
+  exploit_analysis:    '#ef4444',
+  llm_contextual:      '#a855f7',
+  llm_review:          '#6366f1',
+  threat_intel:        '#ef4444',
 };
 
 // ── Status step indicator ─────────────────────────────────

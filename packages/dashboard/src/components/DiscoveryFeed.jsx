@@ -4,6 +4,7 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import useStore from '../store';
 import { shortenAddress } from '../services/event-listener';
 import { hashscan } from '../utils/hashscan';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 
 // ── Contract type config ───────────────────────────────────
 
@@ -226,6 +227,7 @@ export default function DiscoveryFeed() {
   const topicId = config?.hcsTopics?.discovery || '...';
 
   const visible = discoveries.slice(0, 20);
+  const { containerRef } = useAutoScroll(discoveries.length);
 
   return (
     <div className="panel flex flex-col h-full">
@@ -250,7 +252,7 @@ export default function DiscoveryFeed() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3 min-h-0">
+      <div ref={containerRef} className="flex-1 overflow-y-auto p-3 min-h-0">
         {visible.length === 0 ? (
           <ScanningEmptyState />
         ) : (

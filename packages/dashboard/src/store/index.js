@@ -138,6 +138,20 @@ const useStore = create((set) => ({
     set((s) => ({
       stats: { ...s.stats, [key]: (s.stats[key] || 0) + amount },
     })),
+
+  // ── Full store reset (debug panel) ───────────────────────
+  resetAll: () => set({
+    isConnected: false, connectionError: null,
+    discoveries: [], activeJobs: {}, bids: {}, agents: {}, auditLog: [],
+    winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
+    dataListings: {}, dataPurchases: [], jobListings: {},
+    settlements: {}, jobSettlements: {}, guardFlows: [],
+    stats: {
+      totalDiscoveries: 0, totalAuctions: 0, totalBids: 0,
+      guardTransacted: 0, totalSubAuctions: 0, totalDataSales: 0,
+      totalSettlements: 0, totalGuardTransacted: 0,
+    },
+  }),
 }));
 
 export default useStore;

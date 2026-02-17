@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import useStore from '../store';
 import TransactionRow from './TransactionRow';
 import SettlementDetail from './SettlementDetail';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 
 // ── Filter tab config ─────────────────────────────────────
 
@@ -46,6 +47,7 @@ export default function TransactionExplorer() {
   }
 
   const onChainCount = auditLog.filter((e) => e._tx?.hash).length;
+  const { containerRef } = useAutoScroll(filteredEntries.length);
 
   return (
     <>
@@ -100,10 +102,17 @@ export default function TransactionExplorer() {
         </div>
 
         {/* Entry list */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div ref={containerRef} className="flex-1 overflow-y-auto min-h-0">
           {filteredEntries.length === 0 ? (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-[11px] text-gray-600 font-mono">No entries yet…</p>
+            <div className="flex flex-col items-center justify-center h-full gap-2">
+              <motion.span
+                animate={{ opacity: [0.3, 0.7, 0.3] }}
+                transition={{ duration: 2.5, repeat: Infinity }}
+                className="text-2xl text-gray-700"
+              >
+                ⛓
+              </motion.span>
+              <p className="text-[11px] text-gray-600 font-mono">No transactions recorded…</p>
             </div>
           ) : (
             <AnimatePresence initial={false}>

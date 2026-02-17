@@ -7,6 +7,7 @@ import AuctionFeed from './components/AuctionFeed';
 import TransactionExplorer from './components/TransactionExplorer';
 import MarketplacePanel from './components/MarketplacePanel';
 import PaymentFlow from './components/PaymentFlow';
+import DebugPanel from './components/DebugPanel';
 
 // ── Connection error banner ────────────────────────────────
 
@@ -45,33 +46,41 @@ export default function App() {
       {/* Error banner (if any) */}
       <ErrorBanner message={connectionError} />
 
-      {/* Main content: Discovery (25%) | Auction (45%) | Marketplace (30%) */}
+      {/*
+        Responsive main content:
+        xl+: 3 columns — Discovery (25%) | Auction (45%) | Marketplace (30%)
+        lg:  2 columns — Discovery+Auction stacked left (60%) | Marketplace (40%)
+        <lg: single column, full-width panels
+      */}
       <div className="flex-1 flex gap-2 min-h-0">
         {/* Left — Discovery Feed */}
-        <div className="w-[25%] flex-shrink-0 min-h-0">
+        <div className="xl:w-[25%] lg:w-[30%] w-full flex-shrink-0 min-h-0 hidden lg:block">
           <DiscoveryFeed />
         </div>
 
-        {/* Center — Auction Feed (with sub-contract trees) */}
-        <div className="w-[45%] flex-shrink-0 min-h-0">
+        {/* Center — Auction Feed */}
+        <div className="xl:w-[45%] lg:flex-1 w-full flex-shrink-0 min-h-0">
           <AuctionFeed />
         </div>
 
         {/* Right — Data Marketplace */}
-        <div className="flex-1 min-h-0">
+        <div className="xl:flex-1 lg:w-[35%] w-full min-h-0 hidden xl:block">
           <MarketplacePanel />
         </div>
       </div>
 
-      {/* Bottom strip: GUARD Flow (55%) | Activity Log (45%) */}
+      {/* Bottom strip: GUARD Flow (55%) | Tx Explorer (45%) */}
       <div className="h-[28vh] flex-shrink-0 flex gap-2">
-        <div className="w-[55%] flex-shrink-0 min-h-0">
+        <div className="lg:w-[55%] w-full flex-shrink-0 min-h-0">
           <PaymentFlow />
         </div>
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 hidden lg:block">
           <TransactionExplorer />
         </div>
       </div>
+
+      {/* Debug panel — toggle with Ctrl+D */}
+      <DebugPanel />
     </div>
   );
 }

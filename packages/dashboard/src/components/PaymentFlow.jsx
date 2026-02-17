@@ -132,16 +132,27 @@ function AgentNode({ node }) {
 
 function EmptyFlow() {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-2">
+    <div className="flex flex-col items-center justify-center h-full gap-2 relative overflow-hidden">
+      {/* Subtle grid lines */}
+      {[25, 50, 75].map((pct) => (
+        <div
+          key={pct}
+          className="absolute top-0 bottom-0 pointer-events-none"
+          style={{
+            left: `${pct}%`,
+            borderLeft: '1px dashed rgba(255,255,255,0.04)',
+          }}
+        />
+      ))}
       <motion.div
         animate={{ opacity: [0.2, 0.5, 0.2] }}
         transition={{ duration: 3, repeat: Infinity }}
-        className="text-2xl"
+        className="text-2xl relative z-10"
       >
         ⟳
       </motion.div>
-      <p className="text-[10px] text-gray-600 font-mono">
-        Waiting for first GUARD transfer…
+      <p className="text-[10px] text-gray-600 font-mono relative z-10">
+        Awaiting GUARD transfers…
       </p>
     </div>
   );

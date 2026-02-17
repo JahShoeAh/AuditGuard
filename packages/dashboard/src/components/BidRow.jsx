@@ -4,10 +4,10 @@ import { motion } from 'framer-motion';
 // ── Agent accent colors by specialization ──────────────────
 
 const AGENT_COLORS = {
-  static_analysis: 'var(--accent-green)',
-  fuzzing: 'var(--accent-amber)',
-  llm_contextual: 'var(--accent-purple)',
-  dependency_analysis: 'var(--accent-cyan)',
+  static_analysis:    'var(--accent-green)',
+  fuzzing:            'var(--accent-amber)',
+  llm_contextual:     'var(--accent-purple)',
+  dependency_analysis:'#f97316',   // orange for DependencyAgent-8
 };
 
 function getAgentColor(specialization) {
@@ -52,7 +52,7 @@ function RepBar({ score }) {
 
 // ── BidRow ─────────────────────────────────────────────────
 
-const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew }) {
+const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew, index = 0 }) {
   const agentColor = getAgentColor(bid.specialization);
   const [showFlash, setShowFlash] = useState(isNew);
 
@@ -71,7 +71,7 @@ const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew }) {
         opacity: isDimmed ? 0.35 : 1,
         x: 0,
       }}
-      transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 35, delay: isNew ? index * 0.1 : 0 }}
       className="relative rounded px-2.5 py-2 mb-1"
       style={{
         borderLeft: isWinner ? '2px solid var(--accent-green)' : '2px solid transparent',
@@ -109,8 +109,11 @@ const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew }) {
           </span>
         </div>
 
-        {/* Center: bid amount */}
-        <span className="text-xs font-mono font-semibold flex-shrink-0" style={{ color: 'var(--accent-gold)' }}>
+        {/* Center: bid amount — tabular-nums so amounts don't jump */}
+        <span
+          className="text-xs font-mono font-semibold flex-shrink-0"
+          style={{ color: 'var(--accent-gold)', fontVariantNumeric: 'tabular-nums' }}
+        >
           {bid.bidFormatted || '?'}
         </span>
 

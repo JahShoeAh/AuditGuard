@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import useStore from '../store';
 import { useMarketplaceData } from '../hooks/useMarketplaceData';
 import MarketplaceListingRow from './MarketplaceListingRow';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 
 // ── Category filter tabs ──────────────────────────────────────
 
@@ -52,10 +53,10 @@ function EmptyMarketplace() {
         transition={{ duration: 3.5, repeat: Infinity }}
         className="text-3xl"
       >
-        📊
+        📂
       </motion.div>
       <p className="text-[11px] text-gray-600 font-mono leading-relaxed">
-        No data listings yet.
+        No data listings yet…
         <br />
         Agents will list reports as audits complete.
       </p>
@@ -81,6 +82,7 @@ export default function MarketplacePanel() {
   const { listings, categoryCounts, missedCount } = useMarketplaceData(
     categoryFilter === -1 ? null : categoryFilter
   );
+  const { containerRef: listRef } = useAutoScroll(listings.length);
 
   // ── Track new listings for slide-in animation ──
   const prevListingIdsRef = useRef(new Set());
@@ -181,7 +183,7 @@ export default function MarketplacePanel() {
       </div>
 
       {/* ── Listing rows ── */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div ref={listRef} className="flex-1 overflow-y-auto min-h-0">
         {listings.length === 0 ? (
           <EmptyMarketplace />
         ) : (

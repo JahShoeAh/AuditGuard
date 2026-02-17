@@ -21,10 +21,11 @@ export function getFlowColor(type) {
 // ── Agent node color by name heuristic ──────────────────────
 
 function agentColor(name) {
-  if (name.includes('Static') || name.includes('Scanner')) return '#22c55e';
-  if (name.includes('Fuzzer'))                               return '#f59e0b';
-  if (name.includes('LLM') || name.includes('Contextual'))  return '#a855f7';
-  if (name.includes('Dep') || name.includes('dependency'))  return '#6366f1';
+  if (name.includes('Static') || name.includes('Scanner'))   return '#22c55e';
+  if (name.includes('Fuzzer'))                                return '#f59e0b';
+  if (name.includes('LLM') || name.includes('Contextual'))   return '#a855f7';
+  if (name.includes('DependencyAgent') || name.includes('Dependency')) return '#f97316'; // orange
+  if (name.includes('Dep'))                                   return '#6366f1';
   return '#06b6d4';
 }
 
@@ -47,6 +48,16 @@ export function useGuardFlows(windowSeconds = 120) {
     return { recentFlows: recent, agentAddresses: addrs };
   }, [guardFlows, windowSeconds]);
 
+  // Build a name map from flow toName/fromName so unknown addresses get proper labels
+  const flowNameMap = useMemo(() => {
+    const map = new Map();
+    for (const f of guardFlows) {
+      if (f.from && f.fromName) map.set(f.from.toLowerCase(), f.fromName);
+      if (f.to   && f.toName)   map.set(f.to.toLowerCase(),   f.toName);
+    }
+    return map;
+  }, [guardFlows]);
+
   // Build agent node list from seededAgents + any unknown addresses in flows.
   // Vault is always included as the settlement hub.
   const agentNodes = useMemo(() => {
@@ -65,12 +76,13 @@ export function useGuardFlows(windowSeconds = 120) {
     // Any addresses from flows not yet represented
     for (const addr of agentAddresses) {
       if (seen.has(addr)) continue;
-      nodes.push({ address: addr, name: addr.slice(0, 6) + '…', color: '#6b7280' });
+      const name = flowNameMap.get(addr) || `${addr.slice(0, 6)}…`;
+      nodes.push({ address: addr, name, color: agentColor(name) });
       seen.add(addr);
     }
 
     return nodes;
-  }, [agentAddresses, config]);
+  }, [agentAddresses, config, flowNameMap]);
 
   const flowsByType = useMemo(() => {
     const map = {};
