@@ -19,7 +19,8 @@
       "WebFetch(domain:www.rpcnodelist.com)",
       "Bash(npm view:*)",
       "Bash(python3:*)",
-      "Bash(gh repo view:*)"
+      "Bash(gh repo view:*)",
+      "Bash(ls:*)"
     ]
   }
 }
