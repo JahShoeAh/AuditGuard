@@ -1,0 +1,147 @@
+import { useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
+import useStore from '../store';
+
+// ── Stat chip with pulse on value change ───────────────────
+
+function StatChip({ label, value, accentColor, format }) {
+  const prevRef = useRef(value);
+  const chipRef = useRef(null);
+
+  useEffect(() => {
+    if (value !== prevRef.current && chipRef.current) {
+      chipRef.current.classList.remove('animate-stat-bump');
+      // Force reflow to restart animation
+      void chipRef.current.offsetWidth;
+      chipRef.current.classList.add('animate-stat-bump');
+      prevRef.current = value;
+    }
+  }, [value]);
+
+  const display = format ? format(value) : value;
+
+  return (
+    <div
+      ref={chipRef}
+      className="flex flex-col items-center px-3 py-1.5 rounded bg-guard-dark/60 min-w-[80px]"
+    >
+      <span className="font-mono text-sm font-semibold" style={{ color: accentColor }}>
+        {display}
+      </span>
+      <span className="text-[9px] uppercase tracking-wider text-gray-500 font-sans mt-0.5">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+// ── Network status badge ───────────────────────────────────
+
+function NetworkStatus({ isConnected, connectionError, guardTokenId }) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div className="flex items-center gap-2">
+        <span className={isConnected ? 'status-dot-connected' : 'status-dot-disconnected'} />
+        <span className="text-xs font-semibold tracking-wider font-sans" style={{
+          color: isConnected ? 'var(--accent-green)' : 'var(--accent-red)',
+        }}>
+          {isConnected ? 'HEDERA TESTNET' : connectionError ? 'DISCONNECTED' : 'CONNECTING'}
+        </span>
+      </div>
+      {guardTokenId && (
+        <span className="text-[10px] font-mono text-gray-600">
+          GUARD {guardTokenId}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Mock events toggle ─────────────────────────────────────
+
+function MockToggle() {
+  const useMockEvents = useStore((s) => s.useMockEvents);
+  const toggleMock = useStore((s) => s.toggleMockEvents);
+
+  return (
+    <label className="flex items-center gap-1.5 cursor-pointer select-none">
+      <span className="text-[10px] text-gray-500 font-sans uppercase tracking-wider">
+        {useMockEvents ? 'Mock' : 'Live'}
+      </span>
+      <div className="relative">
+        <input
+          type="checkbox"
+          checked={useMockEvents}
+          onChange={toggleMock}
+          className="sr-only peer"
+        />
+        <div className="w-7 h-3.5 bg-gray-700 rounded-full peer-checked:bg-guard-amber/30 transition-colors" />
+        <div className="absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-gray-400 rounded-full peer-checked:translate-x-3.5 peer-checked:bg-guard-amber transition-all" />
+      </div>
+    </label>
+  );
+}
+
+// ── Main Header ────────────────────────────────────────────
+
+export default function Header() {
+  const isConnected = useStore((s) => s.isConnected);
+  const connectionError = useStore((s) => s.connectionError);
+  const config = useStore((s) => s.config);
+  const stats = useStore((s) => s.stats);
+
+  return (
+    <motion.header
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4 }}
+      className="panel px-5 py-3 mb-4 flex items-center justify-between gap-4"
+    >
+      {/* Left — Wordmark */}
+      <div className="flex-shrink-0">
+        <h1 className="text-lg font-bold tracking-tight font-mono leading-tight">
+          <span className="text-guard-cyan glow-text-subtle">AUDIT</span>
+          <span className="text-gray-200">GUARD</span>
+        </h1>
+        <p className="text-[10px] text-gray-500 tracking-[0.2em] uppercase font-sans">
+          Autonomous Security Marketplace
+        </p>
+      </div>
+
+      {/* Center — Network status */}
+      <div className="flex items-center gap-4">
+        <NetworkStatus
+          isConnected={isConnected}
+          connectionError={connectionError}
+          guardTokenId={config?.guardTokenId}
+        />
+        <MockToggle />
+      </div>
+
+      {/* Right — Live stats */}
+      <div className="flex items-center gap-2">
+        <StatChip
+          label="Discoveries"
+          value={stats.totalDiscoveries}
+          accentColor="var(--accent-cyan)"
+        />
+        <StatChip
+          label="Auctions"
+          value={stats.totalAuctions}
+          accentColor="var(--accent-amber)"
+        />
+        <StatChip
+          label="Bids"
+          value={stats.totalBids}
+          accentColor="var(--accent-purple)"
+        />
+        <StatChip
+          label="GUARD Txd"
+          value={stats.guardTransacted}
+          accentColor="var(--accent-gold)"
+          format={(v) => v.toLocaleString()}
+        />
+      </div>
+    </motion.header>
+  );
+}
