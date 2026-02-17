@@ -30,3 +30,71 @@
 | "Dependency Agent receives 3 GUARD sub-contract payment" | PaymentSettlement | `PaymentItem{basePayment=3, type=SUB_CONTRACT}` |
 | "5% platform fee on successful audit payments" | PaymentSettlement | `platformFeePercent = 5` |
 | "Logged to HCS" | All events | Agent Scripts teammate publishes events to HCS AuditLog topic after catching them |
+
+## Day 3
+
+| Spec Element | Contract | Function(s) |
+|---|---|---|
+| "Developers deposit GUARD into vault tied to their contract" | AuditVault | `deposit()` — multi-depositor, anyone can fund |
+| "Vault balance is public, influencing agent bidding behavior" | AuditVault / VaultFactory | `getBalance()`, `getVaultsByPriority()` |
+| "If Alice wants priority, she increases vault balance" | VaultFactory | `getVaultsByPriority()` — higher balance = higher priority |
+| "Vaults can have rules: 10 GUARD/week monitoring, 50 GUARD bounties" | AuditVault | `VaultConfig.weeklyMonitoringBudget`, `criticalBountyAllocation` |
+| "Monitoring Agent places standing bid: 5 GUARD/week" | AuditVault | `applyForMonitoring()`, `claimMonitoringPayment()` |
+| "Budget accepts this bid autonomously" | AuditVault | Acceptance logic in `applyForMonitoring()` — cheaper rate auto-wins |
+| "Auto-trigger new auctions when thresholds met (TVL 10x)" | AuditVault / VaultFactory | `checkAndTriggerReaudit()`, deposit threshold in `deposit()`, `AutoAuditTriggered` event |
+| "Dynamic pricing for re-audits based on code change velocity, time" | AuditVault | `config.reauditIntervalSeconds`, `isReauditDue()` |
+| "Stake 100–1000 GUARD depending on tier" | StakingManager | `stake()`, `minStakeForActive` |
+| "Slashed for false positives (5%), false negatives (10%), malicious (100%)" | StakingManager | `slashRates` mapping, `initiateSlash()` |
+| "High-reputation agents bid on premium jobs" | StakingManager | `isStakeSufficient()` — Orchestrator checks before accepting |
+| "Agent iNFT stores staked collateral, historical accuracy metrics" | StakingManager | `getStakeInfo()`, `getStakeHistory()`, `getAgentSlashHistory()` |
+| "Agents vote on slashing/penalty parameters" | StakingManager | `setSlashRate()` — governance-gated |
+| "5% platform fee distributed to UCP validators and treasury" | Treasury | `receiveFee()`, `distribute()`, `distributionConfig` |
+| "Agents vote on Orchestrator Agent fee structures" | Treasury | `setDistributionConfig()` — governance-gated |
+| "High-stake, high-reputation agents get fee reductions" | Treasury | `calculateAgentFeeDiscount()`, `getDiscountEligibility()` |
+
+---
+
+## Architecture After Day 3 (Complete Contract Map)
+
+```
+                    ┌─────────────────┐
+                    │  GUARD Token    │
+                    │  (HTS Native)   │
+                    └────────┬────────┘
+                             │ used by all ↓
+    ┌────────────────────────┼────────────────────────┐
+    │                        │                        │
+┌───┴──────────┐    ┌───────┴────────┐    ┌──────────┴───┐
+│ Agent        │    │ Staking        │    │ Treasury     │
+│ Registry     │◄───│ Manager        │───►│ (Fee Dist.)  │
+│ (Identity)   │    │ (Economics)    │    │              │
+└───┬──────────┘    └───────┬────────┘    └──────┬───────┘
+    │                       │                    ▲
+    │ queries               │ locks/unlocks      │ fees from ↓
+    ▼                       ▼                    │
+┌────────────────────────────────────────────────┴───────┐
+│                    Audit Auction                        │
+│            (Job Posting → Bidding → Winners)            │
+└──────┬───────────────────────────────┬─────────────────┘
+       │                               │
+       ▼                               ▼
+┌──────────────┐              ┌────────────────┐
+│ Sub-Auction  │              │ Payment        │
+│ (Nested      │              │ Settlement     │
+│  Contracting)│              │ (Atomic Batch) │
+└──────────────┘              └───────┬────────┘
+                                      │ draws from ↓
+┌─────────────────────────────────────┴──────────────────┐
+│                    Vault Factory                        │
+│                         │                              │
+│    ┌────────────┐ ┌────────────┐ ┌────────────┐       │
+│    │ Vault:     │ │ Vault:     │ │ Vault:     │       │
+│    │ Lending    │ │ DEX v3     │ │ Staking    │       │
+│    │ Protocol   │ │            │ │ Pool       │       │
+│    └────────────┘ └────────────┘ └────────────┘       │
+└────────────────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────┴──────────────────────────┐
+│                  Data Marketplace                       │
+│          (Scan Reports, Exploit DBs, Hot Leads)        │
+└────────────────────────────────────────────────────────┘
