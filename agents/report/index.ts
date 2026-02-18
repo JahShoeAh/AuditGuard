@@ -15,6 +15,7 @@ import { ethers } from "ethers";
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const DIRECT_SETTLEMENT = process.env.REPORT_AGENT_DIRECT_SETTLEMENT === "true";
 const AGGREGATION_WINDOW_MS = DEMO_MODE ? 20 * 1000 : 120 * 1000;
 const REPORT_FEE = 0.1;               // GUARD base fee per submitting agent
 const REPORT_FEE_DISCOUNTED = 0.05;   // GUARD discounted fee for rep > 90
@@ -167,7 +168,8 @@ async function aggregateAndPublish(
   log.info(`Severity: C:${totalCritical} H:${totalHigh} M:${totalMedium} L:${totalLow}`);
   log.info(`Report hash: ${reportHash.slice(0, 16)}...`);
 
-  // Settle payments on-chain via PaymentSettlement
+  // Build a preview settlement manifest. By default, the Orchestrator executes
+  // settlement to keep a single source of truth for payout authority.
   const payments: PaymentItem[] = [];
   for (const [agentId, scores] of agentScores) {
     const agentAddr = job.agentAddresses.get(agentId) || ethers.ZeroAddress;
@@ -183,11 +185,15 @@ async function aggregateAndPublish(
     });
   }
 
-  try {
-    await contracts.settleJob(0, payments, myAddress);
-    log.info("Job settled on-chain via PaymentSettlement");
-  } catch (err) {
-    log.warn(`On-chain settlement failed (continuing): ${err}`);
+  if (DIRECT_SETTLEMENT) {
+    try {
+      await contracts.settleJob(0, payments, myAddress);
+      log.info("Direct settlement executed by report agent");
+    } catch (err) {
+      log.warn(`Direct settlement failed (continuing): ${err}`);
+    }
+  } else {
+    log.info("Settlement execution delegated to orchestrator");
   }
 
   // Publish reputation updates to audit log

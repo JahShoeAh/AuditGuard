@@ -1,6 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import { fmt } from '../utils/format';
 import { hashscan } from '../utils/hashscan';
+import WalletGate from './wallet/WalletGate';
 
 // ── Score bar color ────────────────────────────────────────
 function scoreBarClass(score) {
@@ -139,6 +141,18 @@ export default function ContractHealthCard({ health, isSelected, onSelect }) {
           )
         )}
       </AnimatePresence>
+
+      <WalletGate>
+        <div className="mt-2">
+          <Link
+            to="/dashboard/stake"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
+          >
+            Deposit to Vault
+          </Link>
+        </div>
+      </WalletGate>
     </motion.div>
   );
 }

@@ -1,6 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { fmt } from '../utils/format';
+import WalletGate from './wallet/WalletGate';
 
 // ── Tier badge ─────────────────────────────────────────────
 const TIER_CONFIG = {
@@ -176,6 +178,18 @@ export default function AgentLeaderboardRow({ rank, profile, isSelected, onSelec
         {/* Sparkline */}
         <Sparkline history={profile.history} />
       </div>
+
+      <WalletGate>
+        <div className="mt-2 pl-7">
+          <Link
+            to="/dashboard/stake"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/20"
+          >
+            Delegate Stake
+          </Link>
+        </div>
+      </WalletGate>
     </motion.div>
   );
 }
