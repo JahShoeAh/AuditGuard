@@ -14,6 +14,13 @@ interface IAgentRegistryStaking {
     function updateReputation(address agent, int256 delta) external;
 }
 
+/// @notice Minimal interface for DelegatedStaking slash propagation.
+/// @dev DelegatedStaking.propagateSlash() must be called after every initiateSlash()
+///      so delegators share proportional slashing risk with the agent.
+interface IDelegatedStaking {
+    function propagateSlash(address agent, uint256 slashBps) external;
+}
+
 /// @title AuditGuard Staking Manager
 /// @notice Single source of truth for agent collateral, staking economics, slashing with
 ///         on-chain evidence and appeals, and unbonding cooldowns. Replaces the scattered
@@ -151,6 +158,11 @@ contract StakingManager is ReentrancyGuard, Pausable, Ownable {
 
     /// @notice Treasury address that receives finalized slash proceeds.
     address public treasury;
+
+    /// @notice DelegatedStaking contract — receives slash propagation calls.
+    /// @dev Set via setDelegatedStaking() after DelegatedStaking is deployed.
+    ///      Zero address = delegation feature not yet deployed (skips propagation).
+    address public delegatedStaking;
 
     // ──────────────────────────────────────────────
     //  State — Authorization
@@ -558,6 +570,12 @@ contract StakingManager is ReentrancyGuard, Pausable, Ownable {
 
         _recordSnapshot(agent, slashedAmount, "slash", jobId);
         emit SlashInitiated(slashId, agent, reason, slashedAmount, basisPoints, evidenceHash, jobId);
+
+        // Propagate slash to delegators — they share the agent's risk proportionally.
+        // Best-effort (try/catch) so a buggy DelegatedStaking cannot block slashing.
+        if (delegatedStaking != address(0)) {
+            try IDelegatedStaking(delegatedStaking).propagateSlash(agent, basisPoints) {} catch {}
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -730,6 +748,14 @@ contract StakingManager is ReentrancyGuard, Pausable, Ownable {
     function setTreasury(address _treasury) external onlyOwner {
         require(_treasury != address(0), "StakingManager: address is zero");
         treasury = _treasury;
+    }
+
+    /// @notice Wires the DelegatedStaking contract so slash events propagate to delegators.
+    /// @dev Call after deploying DelegatedStaking. Set to address(0) to disable propagation.
+    ///      [DelegatedStaking] DelegatedStaking.propagateSlash() is called from initiateSlash().
+    /// @param _delegatedStaking DelegatedStaking contract address.
+    function setDelegatedStaking(address _delegatedStaking) external onlyOwner {
+        delegatedStaking = _delegatedStaking;
     }
 
     /// @notice Associates this contract with the GUARD token through HTS precompile.
