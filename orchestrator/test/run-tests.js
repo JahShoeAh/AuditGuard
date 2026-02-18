@@ -24,6 +24,7 @@ function makeMocks() {
     dataMarketplace: { purchaseData: async () => {} },
     subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
     paymentSettlement: { settleJob: async () => {} },
+    getAddress: () => "0x0000000000000000000000000000000000000abc",
   };
   const inft = { updateReputation: async () => {}, markJobCompleted: async () => {} };
   return { hcs, contracts, auditLogMessages, agentCommsMessages, inft };
@@ -169,12 +170,26 @@ async function testSettlementOnFindings() {
   inft.updateReputation = async () => { repUpdates++; };
   const orch = new OrchestratorAgent({ log, roster, hcs, contracts, inft, enablePing: false });
 
+  orch.jobs.set(99, {
+    findings: [],
+    winners: ["0x0000000000000000000000000000000000000abc"],
+    bidders: [],
+    reportPublished: false,
+    settled: false,
+  });
+
   // Findings alone should not trigger settlement now
   await orch.handleFindings({
     type: MessageType.FINDINGS_SUBMITTED,
     agentId: "static",
     timestamp: now(),
-    payload: { jobId: 99, findingsHash: "0xhash", evmAddress: "0xabc", findingsCount: 2, criticalCount: 1 },
+    payload: {
+      jobId: 99,
+      findingsHash: "0xhash",
+      evmAddress: "0x0000000000000000000000000000000000000abc",
+      findingsCount: 2,
+      criticalCount: 1
+    },
   });
 
   // Settlement happens when Report Agent publishes the report

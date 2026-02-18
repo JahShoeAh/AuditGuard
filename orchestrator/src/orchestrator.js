@@ -201,8 +201,18 @@ export class OrchestratorAgent {
     this.log.info(`Findings submitted for job ${jobId}: ${findingsHash?.slice(0, 12)}…`);
 
     const key = Number(jobId);
-    const job = this.jobs.get(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false };
-    job.findings.push({ agentId: msg.agentId, evmAddress, findingsHash, findingsCount, criticalCount });
+    const job = this.jobs.get(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false, settled: false };
+    const resolvedAddress =
+      (typeof evmAddress === "string" && ethers.isAddress(evmAddress) ? evmAddress : undefined) ??
+      this.roster.get(msg.agentId)?.evmAddress;
+
+    job.findings.push({
+      agentId: msg.agentId,
+      evmAddress: resolvedAddress,
+      findingsHash,
+      findingsCount,
+      criticalCount
+    });
     this.jobs.set(key, job);
 
     // Start time-based auto-publish timer on first finding
@@ -235,9 +245,10 @@ export class OrchestratorAgent {
   }
 
   async handleReportPublished(msg) {
-    const { jobId, totalFindings = 0, criticalFindings = 0, reportHash } = msg.payload || {};
+    const { jobId, totalFindings = 0, reportHash } = msg.payload || {};
+    const criticalFindings = Number(msg.payload?.criticalFindings ?? msg.payload?.criticalCount ?? 0);
     const key = Number(jobId);
-    const job = this.jobs.get(key) ?? { findings: [], winners: [], reportPublished: false };
+    const job = this.jobs.get(key) ?? { findings: [], winners: [], reportPublished: false, settled: false };
     if (job.reportPublished) return;
 
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);
@@ -258,8 +269,13 @@ export class OrchestratorAgent {
       },
     });
 
+    if (!job.winners?.length) {
+      this.selectWinnersFallback(key);
+    }
+
     await this.maybeAlert(jobId, criticalFindings);
-    await this.settleAll(jobId, job.findings);
+    const reportAgentAddress = this.resolveReportAgentAddress(msg);
+    await this.settleAll(jobId, job, reportAgentAddress);
     await this.updateReputation(jobId, job.findings);
     await this.inft.markJobCompleted(jobId, null);
   }
@@ -340,48 +356,119 @@ export class OrchestratorAgent {
     this.log.info(`Alert fired for job ${jobId} (critical=${criticalTotal})`);
   }
 
-  async settleAll(jobId, findingsArr) {
-    if (!findingsArr?.length) return;
+  async settleAll(jobId, job, reportAgentAddress) {
+    const findingsArr = job?.findings ?? [];
+    if (!findingsArr.length) return;
+
+    if (job?.settled) {
+      this.log.info(`Job ${jobId} already settled in-memory, skipping`);
+      return;
+    }
+
+    const onChainSettled = await this.isJobAlreadySettledOnChain(jobId);
+    if (onChainSettled) {
+      this.log.info(`Job ${jobId} already settled on-chain, skipping`);
+      job.settled = true;
+      this.jobs.set(Number(jobId), job);
+      return;
+    }
+
+    const winnerSet = new Set((job.winners ?? []).map((w) => String(w).toLowerCase()));
+    if (!winnerSet.size) {
+      this.log.warn(`Settlement skipped for job ${jobId}: no winners selected`);
+      return;
+    }
+
+    const contributorScores = new Map();
+    for (const finding of findingsArr) {
+      const address =
+        (typeof finding.evmAddress === "string" && ethers.isAddress(finding.evmAddress)
+          ? finding.evmAddress
+          : this.roster.get(finding.agentId)?.evmAddress);
+      if (!address || !winnerSet.has(address.toLowerCase())) continue;
+
+      const current = contributorScores.get(address.toLowerCase()) ?? {
+        recipient: address,
+        agentId: finding.agentId,
+        score: 0,
+        critical: 0
+      };
+      current.score += (finding.findingsCount ?? 0) + 2 * (finding.criticalCount ?? 0);
+      current.critical += (finding.criticalCount ?? 0);
+      contributorScores.set(address.toLowerCase(), current);
+    }
+
+    const scores = Array.from(contributorScores.values()).filter((f) => f.score > 0);
+    if (!scores.length) {
+      this.log.warn(`Settlement skipped for job ${jobId}: no winner findings with valid addresses`);
+      return;
+    }
+
     const totalPool = parseUnits(CONFIG.payments.totalGuard.toString(), CONFIG.guardToken.decimals);
     const bonusPerCritical = parseUnits(CONFIG.payments.bonusPerCritical.toString(), CONFIG.guardToken.decimals);
-    const reportFee = parseUnits(CONFIG.payments.reportFeeGuard.toString(), CONFIG.guardToken.decimals);
-
-    const scores = findingsArr.map((f) => ({
-      agentId: f.agentId,
-      evmAddress: f.evmAddress,
-      score: (f.findingsCount ?? 0) + 2 * (f.criticalCount ?? 0),
-      critical: f.criticalCount ?? 0,
-    }));
     const totalScore = scores.reduce((s, f) => s + f.score, 0) || 1;
+    const totalScoreBigInt = BigInt(totalScore);
 
     const payments = scores.map((f) => {
-      const share = BigInt(Math.floor(Number(totalPool) * (f.score / totalScore)));
+      const share = (totalPool * BigInt(f.score)) / totalScoreBigInt;
       const bonus = bonusPerCritical * BigInt(f.critical);
       return {
-        recipient: f.evmAddress ?? "0x0000000000000000000000000000000000000000",
+        recipient: f.recipient,
         basePayment: share,
         bonus,
-        reportFee,
+        reportFee: BigInt(0),
         paymentType: 0,
-        description: "Report-settlement",
+        description: `Report-settlement:${f.agentId}`,
       };
     });
+
+    const reportAgent = reportAgentAddress || this.orchestratorAddress;
+    if (!reportAgent || !ethers.isAddress(reportAgent)) {
+      this.log.warn(`Settlement skipped for job ${jobId}: invalid report agent address`);
+      return;
+    }
 
     try {
       await this.contracts.paymentSettlement.settleJob(
         Number(jobId ?? 0),
         payments,
-        this.orchestratorAddress || payments[0].recipient
+        reportAgent
       );
+      job.settled = true;
+      this.jobs.set(Number(jobId), job);
       await this.hcs.publishAuditLog({
         type: "PAYMENT_SETTLED",
         agentId: "orchestrator",
         timestamp: now(),
-        payload: { jobId, recipients: payments.map((p) => p.recipient) },
+        payload: {
+          jobId,
+          recipients: payments.map((p) => p.recipient),
+          reportAgent,
+          winnerCount: winnerSet.size
+        },
       });
       this.log.info(`Settled job ${jobId} to ${payments.length} recipients`);
     } catch (err) {
       this.log.warn(`Settlement failed for job ${jobId}: ${err}`);
+    }
+  }
+
+  resolveReportAgentAddress(msg) {
+    const payloadAddress = msg?.payload?.reportAgentAddress ?? msg?.payload?.reportAgentEvmAddress;
+    if (typeof payloadAddress === "string" && ethers.isAddress(payloadAddress)) return payloadAddress;
+
+    const fromRoster = this.roster.get(msg?.agentId ?? "")?.evmAddress;
+    if (typeof fromRoster === "string" && ethers.isAddress(fromRoster)) return fromRoster;
+
+    return this.orchestratorAddress;
+  }
+
+  async isJobAlreadySettledOnChain(jobId) {
+    try {
+      if (!this.contracts.paymentSettlement?.isJobSettled) return false;
+      return await this.contracts.paymentSettlement.isJobSettled(Number(jobId));
+    } catch {
+      return false;
     }
   }
 

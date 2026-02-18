@@ -1,7 +1,8 @@
 # AuditGuard Smart Contracts
 
-All 10 contracts are deployed on **Hedera Testnet** and immutable (no proxy/upgrade pattern).
-Testing runs on local Hardhat with `MockHTS` injected at `0x167`.
+All 10 contracts are implemented in this repo and deployed addresses are tracked in `packages/sdk/config.json`.
+Treat live Hedera deployment status as environment-dependent and verify at runtime.
+Testing targets local Hardhat with `MockHTS` injected at `0x167`.
 
 ---
 
@@ -19,6 +20,23 @@ Testing runs on local Hardhat with `MockHTS` injected at `0x167`.
 | VaultFactory       | CREATE2 vault deployment, monitoring automation | Ownable                        | ~180 | 3   |
 | AuditVault         | Per-contract budget management                  | Ownable                        | ~140 | 3   |
 | AuditBudgetVault   | Escrow with authorized drawer                   | Ownable                        | ~160 | 3   |
+
+---
+
+## Current Integration Snapshot (as of February 18, 2026)
+
+### Integrated
+- Contract source, ABI artifacts, and deployment configuration are present in the monorepo.
+- Cross-contract wiring expectations are documented (registry/auction/treasury/vault/staking links).
+- Hedera IDs, EVM addresses, HCS topics, and iNFT collection IDs are present in `packages/sdk/config.json`.
+
+### In Progress / Needs Cleanup
+- Local Hardhat test execution can fail if root dependency state is incomplete or `.env` key formats are incompatible.
+- Root-level script ergonomics were recently corrected; dependent docs and runbooks should be kept aligned.
+
+### Deferred (Tracked)
+- No proxy-based upgrade path (redeploy+migrate strategy if changes are required).
+- Single-owner admin model remains in place (no on-chain multisig/timelock governance yet).
 
 ---
 
@@ -157,7 +175,7 @@ Explorer: [HashScan Testnet](https://hashscan.io/testnet)
 ## Running Tests
 
 ```bash
-# Full test suite (local Hardhat, no testnet credentials needed)
+# Full test suite (local Hardhat)
 cd packages/contracts
 npx hardhat test
 

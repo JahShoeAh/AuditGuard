@@ -106,18 +106,38 @@ npm install
 # Copy and configure environment
 cp .env.example .env
 
-# Deploy contracts (requires Hedera testnet account)
-cd packages/contracts && npx hardhat run scripts/deploy-all.js --network hedera_testnet
+# Deploy GUARD token + contracts + HCS topics (requires Hedera testnet account)
+npm run deploy:token
+npm run deploy:contracts
+npm run setup:hcs
 
 # Run all agents
-cd agents && DEMO_MODE=true npx tsx run-all.ts
+npm run agents:demo
 
 # Run orchestrator
-cd orchestrator && npm start
+npm run orchestrator
 
 # Run dashboard
-cd packages/dashboard && npm run dev
+npm --prefix packages/dashboard run dev
 ```
+
+## Current Integration Items (as of February 18, 2026)
+
+### Integrated
+- Contract addresses, HCS topics, and iNFT collection IDs are centralized in `packages/sdk/config.json`.
+- Agent swarm includes all 7 roles with shared message types and health/restart supervision (`agents/run-all.ts`).
+- Orchestrator is wired for invites, heartbeat PING/PONG, findings intake, and report/alert flow.
+- iNFT discovery listener is wired to mint Audit Job and Contract Health iNFTs from discovery events.
+- Dashboard includes live-feed, agents, contracts, and analytics surfaces.
+
+### In Progress / Needs Cleanup
+- Root contract test path is valid, but local execution still depends on environment key format and dependency state.
+- Agent and dashboard test commands require their package dependencies to be installed locally.
+- Some docs still overstate readiness; this README section is now the canonical integration snapshot.
+
+### Deferred (Tracked)
+- Signature verification for PONG messages.
+- Persistent orchestrator roster/cache storage.
 
 ## Tech Stack
 

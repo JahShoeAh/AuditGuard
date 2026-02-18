@@ -24,7 +24,6 @@ Set `DEMO_MODE=true` to keep timeouts short.
 - Optionally add this folder to the root workspaces for dependency hoisting.
 - Swap local `types.js` for the shared `agents/shared/types.ts` once that branch lands.
 - Replace the placeholder `auction.createJob` call with the final ABI method name after contracts stabilize.
-- Hook settlement flow: collect `FINDINGS_SUBMITTED` and call `paymentSettlement.settleJob`.
 - Add signature verification for PONG messages (reuse agent helpers when available).
 - Persist roster/cache if desired; today it is in-memory only.
 - Replace the lightweight stub modules in `orchestrator/node_modules/` with real npm installs when permissions allow (stubs are only for local tests).

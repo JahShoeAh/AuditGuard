@@ -100,10 +100,10 @@ AuditGuard/
 - Protocol treasury management
 - Fee distribution: UCP validators (40%), protocol reserve (50%), burn (10%)
 
-**Deployment Status:**
-- All contracts deployed to Hedera Testnet
-- Contract addresses stored in `packages/sdk/config.json`
-- GUARD Token ID: `0.0.7936262`
+**Deployment Configuration Status:**
+- Hedera addresses, topic IDs, and token IDs are populated in `packages/sdk/config.json`
+- GUARD Token ID is configured as `0.0.7936262`
+- Live deployment health should be treated as environment-dependent and verified at runtime
 
 ---
 
@@ -534,28 +534,23 @@ Required in `.env` file:
 
 ---
 
-## Current Status & Deployment
+## Current Integration Snapshot (as of February 18, 2026)
 
-### Deployed Contracts (Hedera Testnet)
-All contracts are deployed and addresses stored in `packages/sdk/config.json`:
-- AgentRegistry: `0xe86218b5Bf5C21CA7a69cba04C5be0D3c2Be2303`
-- AuditAuction: `0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88`
-- AuditBudgetVault: `0x68780A12b36f3ed04CEF937EFc38b593683c5fCd`
-- SubAuction: `0x5FbDB2315678afecb367f032d93F642f64180aa3`
-- DataMarketplace: `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`
-- PaymentSettlement: `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0`
-- StakingManager: `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`
-- Treasury: `0x5FbDB2315678afecb367f032d93F642f64180aa3`
+### Integrated
+- Core contracts, HCS topics, and iNFT collection IDs are centralized in `packages/sdk/config.json`.
+- All seven agent roles and shared messaging infrastructure are present in `agents/`.
+- Orchestrator integration covers discovery intake, invite routing, heartbeat liveness, findings/report flow, and alert publishing.
+- iNFT discovery listener integration is present for Audit Job and Contract Health minting.
+- Dashboard integration surfaces are implemented across live feed, agents, contracts, and analytics views.
 
-### HCS Topics
-- Discovery: `0.0.7940144`
-- AuditLog: `0.0.7940145`
-- AgentComms: `0.0.7940146`
+### In Progress / Needs Cleanup
+- Root contract test command is correct, but local execution remains sensitive to private-key format and dependency state.
+- Agent and dashboard tests require package-local dependency installation in the current checkout context.
+- Some historical documentation still reflects stronger readiness than current runnable state.
 
-### iNFT Collections
-- Audit Job: `0.0.7946509`
-- Agent Profile: `0.0.7946510`
-- Contract Health: `0.0.7946511`
+### Deferred (Tracked)
+- Signature verification for PONG heartbeats.
+- Persistent orchestrator roster/cache instead of in-memory-only tracking.
 
 ---
 
@@ -586,7 +581,6 @@ Per `orchestrator/README.md`, the following are planned but deferred:
 - Integration with shared `agents/shared/types.ts`
 - Signature verification for PONG messages
 - Persistent roster/cache (currently in-memory)
-- Settlement flow hooks for `FINDINGS_SUBMITTED`
 - Replace stub modules with real npm installs
 
 ---
@@ -669,4 +663,4 @@ AuditGuard is a sophisticated autonomous agent economy platform that demonstrate
 
 The project is well-structured as a monorepo with clear separation of concerns, comprehensive smart contract infrastructure, and a modern React dashboard. The agent system is modular and extensible, supporting multiple agent types with shared infrastructure.
 
-**Status:** Fully functional prototype deployed to Hedera Testnet, ready for demonstration and further development.
+**Status:** Strong integrated prototype with partial local runability; final demo readiness depends on environment and dependency cleanup.

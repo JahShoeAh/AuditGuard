@@ -42,6 +42,7 @@ function makeMocks() {
         settledJobs.push({ jobId, payments });
       },
     },
+    getAddress: () => "0x0000000000000000000000000000000000000abc",
   };
 
   const inft = {
