@@ -55,9 +55,17 @@ export const CONFIG = {
     auctionDurationSeconds: 5 * 60,
   },
   payments: {
-    baseGuard: 10,            // base payment per job
+    baseGuard: 10,            // legacy single-settlement fallback
     bonusGuard: 0,            // optional bonus
     reportFeeGuard: 0.1,      // report fee for settlement
+    totalGuard: 30,           // total pool to split across agents per job
+    bonusPerCritical: 2,      // extra per critical finding
+  },
+  reporting: {
+    autoPublishAfterFindings: 1, // publish report once we have this many submissions
+  },
+  alerts: {
+    criticalThreshold: 1, // trigger alert if >= critical findings
   },
   stakes: {
     minStake: 25,   // GUARD; configurable

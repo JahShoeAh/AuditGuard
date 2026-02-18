@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { OrchestratorAgent } from "../src/orchestrator.js";
 import { Roster } from "../src/roster.js";
-import { MessageType, now } from "../src/types.js";
+import { MessageType, now } from "../../agents/shared/types.js";
 import { CONFIG } from "../src/config.js";
 
 function mockLog() {
@@ -25,7 +25,8 @@ function makeMocks() {
     subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
     paymentSettlement: { settleJob: async () => {} },
   };
-  return { hcs, contracts, auditLogMessages, agentCommsMessages };
+  const inft = { updateReputation: async () => {}, markJobCompleted: async () => {} };
+  return { hcs, contracts, auditLogMessages, agentCommsMessages, inft };
 }
 
 async function testAgentRegistration() {
@@ -161,20 +162,36 @@ async function testAcceptSubResult() {
 async function testSettlementOnFindings() {
   const log = mockLog();
   const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks();
+  const { hcs, contracts, auditLogMessages, inft } = makeMocks();
   let settled = false;
   contracts.paymentSettlement.settleJob = async () => { settled = true; };
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  let repUpdates = 0;
+  inft.updateReputation = async () => { repUpdates++; };
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, inft, enablePing: false });
 
+  // Findings alone should not trigger settlement now
   await orch.handleFindings({
     type: MessageType.FINDINGS_SUBMITTED,
     agentId: "static",
     timestamp: now(),
-    payload: { jobId: 99, findingsHash: "0xhash", evmAddress: "0xabc" },
+    payload: { jobId: 99, findingsHash: "0xhash", evmAddress: "0xabc", findingsCount: 2, criticalCount: 1 },
+  });
+
+  // Settlement happens when Report Agent publishes the report
+  // Simulate auditLog relay of REPORT_PUBLISHED
+  await orch.handleReportPublished({
+    type: MessageType.AUDIT_LOG,
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: { jobId: 99, totalFindings: 2, criticalFindings: 1, reportHash: "0xrep" },
   });
 
   assert.ok(settled, "should call settleJob");
   assert.ok(auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "logs settlement");
+  assert.ok(auditLogMessages.some((m) => m.type === "REPORT_PUBLISHED"), "publishes report");
+  assert.ok(auditLogMessages.some((m) => m.type === "REPUTATION_UPDATED"), "updates reputation");
+  assert.ok(auditLogMessages.some((m) => m.type === "ALERT_FIRED"), "fires alert on critical");
+  assert.equal(repUpdates, 1, "calls inft reputation hook");
 }
 
 async function run() {
@@ -185,7 +202,7 @@ async function run() {
     ["auto-buy data listing", testAutoBuyDataListing],
     ["create sub-auction", testCreateSubAuction],
     ["accept sub result", testAcceptSubResult],
-    ["settlement on findings", testSettlementOnFindings],
+    ["settlement/report/alert on findings", testSettlementOnFindings],
   ];
 
   let passed = 0;

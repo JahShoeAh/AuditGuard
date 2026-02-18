@@ -1,5 +1,5 @@
 import { CONFIG } from "./config.js";
-import { MessageType, now } from "./types.js";
+import { now } from "../../agents/shared/types.js";
 
 /**
  * Minimal in-memory roster with liveness and tiering.

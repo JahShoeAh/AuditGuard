@@ -34,4 +34,8 @@ export class ContractClient {
     log.info(`Using orchestrator wallet ${wallet.address}`);
     return new ContractClient(wallet);
   }
+
+  getAddress() {
+    return this.wallet.address;
+  }
 }
