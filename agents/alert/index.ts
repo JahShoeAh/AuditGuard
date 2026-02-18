@@ -94,8 +94,8 @@ if (!process.env.VITEST) {
 
 export function shouldAlert(msg: HCSMessage): boolean {
   if (msg.type !== "REPORT_PUBLISHED") return false;
-  const { criticalFindings } = msg.payload as any;
-  return criticalFindings > 0;
+  const { criticalCount } = msg.payload as any;
+  return criticalCount > 0;
 }
 
 export async function fireWebhook(data: Record<string, unknown>): Promise<void> {

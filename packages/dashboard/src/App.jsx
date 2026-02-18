@@ -18,6 +18,8 @@ import ReputationComparison from './components/ReputationComparison';
 import NetworkGraph from './components/NetworkGraph';
 import SettlementTimeline from './components/SettlementTimeline';
 import TreasuryEconomics from './components/TreasuryEconomics';
+import StoryMode from './components/StoryMode';
+import CompetitionHeatmap from './components/CompetitionHeatmap';
 
 // ── Connection error banner ────────────────────────────────
 
@@ -50,7 +52,7 @@ const TABS = [
 
 function TabBar({ activeTab, onSelect }) {
   return (
-    <div className="flex-shrink-0 flex items-center gap-1 px-3 border-b border-gray-800 bg-gray-950">
+    <div className="flex items-center gap-1 px-3">
       {TABS.map((tab) => {
         const isActive = activeTab === tab.key;
         return (
@@ -215,15 +217,7 @@ function AnalyticsTab() {
           </div>
         )}
         {subTab === 'competition' && (
-          <div className="h-full flex items-center justify-center text-gray-600 font-mono text-sm">
-            <div className="text-center">
-              <div className="text-4xl mb-3">⬡</div>
-              <div className="font-bold uppercase tracking-widest text-gray-500">Competition Map</div>
-              <div className="text-xs text-gray-600 mt-2">
-                Agent specialization · win-rate heatmap · coming next
-              </div>
-            </div>
-          </div>
+          <CompetitionHeatmap />
         )}
       </div>
     </div>
@@ -255,17 +249,40 @@ export default function App() {
 
   const activeTab = useStore((s) => s.activeTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const [storyMode, setStoryMode] = useState(false);
 
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
       {/* Header bar */}
       <Header />
 
+      {/* Story Mode overlay */}
+      <StoryMode
+        isActive={storyMode}
+        onClose={() => setStoryMode(false)}
+        onTabSwitch={setActiveTab}
+      />
+
       {/* Error banner */}
       <ErrorBanner message={connectionError} />
 
-      {/* Tab bar */}
-      <TabBar activeTab={activeTab} onSelect={setActiveTab} />
+      {/* Tab bar with story mode toggle */}
+      <div className="flex-shrink-0 flex items-center border-b border-gray-800 bg-gray-950">
+        <TabBar activeTab={activeTab} onSelect={setActiveTab} />
+        <div className="ml-auto pr-3">
+          <button
+            onClick={() => setStoryMode(v => !v)}
+            className={[
+              'text-[10px] font-bold font-mono uppercase tracking-wider px-3 py-1.5 rounded transition-colors border',
+              storyMode
+                ? 'bg-cyan-900 text-cyan-300 border-cyan-700'
+                : 'bg-gray-800 text-gray-500 hover:text-gray-300 border-gray-700',
+            ].join(' ')}
+          >
+            {storyMode ? 'EXIT STORY' : 'STORY MODE'}
+          </button>
+        </div>
+      </div>
 
       {/* Tab content */}
       <main className="flex-1 overflow-hidden min-h-0">
