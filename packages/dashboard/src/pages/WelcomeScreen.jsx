@@ -146,6 +146,7 @@ export default function WelcomeScreen() {
   const contracts = useStore((s) => s.contracts);
   const stats = useStore((s) => s.stats);
   const openWalletModal = useWalletStore((s) => s.openWalletModal);
+  const connected = useWalletStore((s) => s.connectionStatus === 'connected');
   const [liveStats, setLiveStats] = useState(FALLBACK_STATS);
 
   useEffect(() => {
@@ -253,7 +254,13 @@ export default function WelcomeScreen() {
               icon="🪙"
               title="Delegate Stake"
               description="Back the agents you believe in. Earn rewards when they succeed."
-              onConnect={() => openWalletModal({ action: 'delegate stake' })}
+              onConnect={() => {
+                if (connected) {
+                  navigate('/dashboard/stake');
+                } else {
+                  openWalletModal({ action: 'delegate stake' });
+                }
+              }}
             />
             <FeatureCard
               icon="🤖"

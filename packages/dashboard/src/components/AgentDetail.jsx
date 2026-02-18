@@ -1,8 +1,18 @@
+import { useState, useEffect } from 'react';
+import { formatUnits } from 'ethers';
+import { Link } from 'react-router-dom';
 import useStore from '../store/index';
+import useWalletStore from '../store/wallet';
 import { fmt } from '../utils/format';
 import { hashscan } from '../utils/hashscan';
 import ReputationGraph from './ReputationGraph';
 import StakingChart from './StakingChart';
+
+// GUARD uses 8 decimal places on Hedera (same precision as DelegatedStaking).
+function fmtG(raw) {
+  if (raw == null) return '0.00';
+  try { return parseFloat(formatUnits(BigInt(raw.toString()), 8)).toFixed(2); } catch { return '0.00'; }
+}
 
 // ── Slash reason labels + colors ───────────────────────────
 const SLASH_REASON_CONFIG = [
@@ -72,6 +82,37 @@ export default function AgentDetail({ addr }) {
   const history       = useStore((s) => s.reputationHistory[addr] || []);
   const allSlashes    = useStore((s) => s.slashEvents);
   const mySlashes     = allSlashes.filter((e) => e.agent?.toLowerCase() === addr?.toLowerCase());
+
+  const contracts      = useStore((s) => s.contracts);
+  const walletAddress  = useWalletStore((s) => s.address);
+  const [poolData,     setPoolData]     = useState(null);
+  const [myDelegation, setMyDelegation] = useState(null);
+
+  useEffect(() => {
+    const ds = contracts?.delegatedStakingContract;
+    if (!ds || !addr) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pool = await ds.getAgentPool(addr);
+        if (!cancelled) setPoolData({
+          totalDelegated:       pool.totalDelegated,
+          rewardShareBps:       pool.rewardShareBps,
+          delegatorCount:       Number(pool.delegatorCount),
+          acceptingDelegations: pool.acceptingDelegations,
+        });
+      } catch { /* contract not deployed */ }
+      if (walletAddress) {
+        try {
+          const del = await ds.getDelegation(walletAddress, addr);
+          if (!cancelled && del.amount > 0n) {
+            setMyDelegation({ amount: del.amount });
+          }
+        } catch { /* skip */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [contracts, addr, walletAddress]);
 
   if (!addr) {
     return (
@@ -169,6 +210,47 @@ export default function AgentDetail({ addr }) {
         <div className="text-gray-400 mt-1">
           Effective total: <span className="text-gray-200">{fmt.guard(effectiveStake)} GUARD</span>
         </div>
+      </Section>
+
+      {/* ── Delegation Pool ── */}
+      <Section title="Delegation Pool">
+        {poolData ? (
+          <div>
+            <div className="grid grid-cols-2 gap-1">
+              <span className="text-gray-500">Total Delegated</span>
+              <span className="text-amber-300 text-right font-semibold">{fmtG(poolData.totalDelegated)} GUARD</span>
+              <span className="text-gray-500">Delegators</span>
+              <span className="text-gray-300 text-right">{poolData.delegatorCount}</span>
+              <span className="text-gray-500">Reward Share</span>
+              <span className="text-green-400 text-right font-semibold">
+                {(Number(poolData.rewardShareBps) / 100).toFixed(0)}%
+              </span>
+              <span className="text-gray-500">Accepting</span>
+              <span className={`text-right font-semibold ${poolData.acceptingDelegations ? 'text-green-400' : 'text-red-400'}`}>
+                {poolData.acceptingDelegations ? '✓ Yes' : '✗ Closed'}
+              </span>
+              {myDelegation && (
+                <>
+                  <span className="text-gray-500">Your Stake</span>
+                  <span className="text-cyan-300 text-right font-semibold">{fmtG(myDelegation.amount)} GUARD</span>
+                </>
+              )}
+            </div>
+            <Link
+              to={`/dashboard/stake?agent=${addr}`}
+              className="mt-3 flex items-center justify-center gap-1.5 w-full text-[10px] font-bold uppercase tracking-wider font-mono py-2 rounded border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+            >
+              💎 Delegate to this Agent
+            </Link>
+          </div>
+        ) : (
+          <div className="text-gray-600">
+            Delegation data unavailable.{' '}
+            <Link to={`/dashboard/stake?agent=${addr}`} className="text-cyan-500 hover:underline">
+              Open delegation page →
+            </Link>
+          </div>
+        )}
       </Section>
 
       {/* ── Performance ── */}

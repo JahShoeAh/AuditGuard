@@ -42,6 +42,10 @@
     "treasury": {
       "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
       "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+    },
+    "delegatedStaking": {
+      "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
+      "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
     }
   },
   "seededAgents": {},
@@ -102,5 +106,17 @@
       }
     },
     "deployedAt": "2026-02-17T03:36:14.488Z"
+  },
+  "day4": {
+    "delegatedStakingAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "deployedAt": "2026-02-18T23:18:00.114Z",
+    "notes": [
+      "GUARD amounts use 8 decimal places (minDelegation = 10 * 10**8).",
+      "Frontend must use parseUnits(amount, 8) — NOT parseUnits(amount, 18).",
+      "StakingManager.propagateSlash → DelegatedStaking wiring: StakingManager",
+      "was deployed on Day 3 and has no setDelegatedStaking() function in its",
+      "current ABI. Either upgrade StakingManager or call propagateSlash manually",
+      "from an authorized EOA until StakingManager is upgraded."
+    ]
   }
 }

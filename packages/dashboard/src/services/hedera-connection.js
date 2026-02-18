@@ -12,6 +12,8 @@ import VaultFactoryABI from '@sdk/abis/VaultFactory.json';
 import AuditVaultABI from '@sdk/abis/AuditVault.json';
 import StakingManagerABI from '@sdk/abis/StakingManager.json';
 import TreasuryABI from '@sdk/abis/Treasury.json';
+// Day 4 ABIs
+import DelegatedStakingABI from '@sdk/abis/DelegatedStaking.json';
 
 // Config — static import via @sdk alias (Vite resolves at build time)
 import sdkConfig from '@sdk/config.json';
@@ -50,6 +52,10 @@ const MOCK_CONFIG = {
     paymentSettlement: {
       id: '0.0.mock-settlement',
       evmAddress: '0x0000000000000000000000000000000000000006',
+    },
+    delegatedStaking: {
+      id: '0.0.mock-delegated-staking',
+      evmAddress: '0x0000000000000000000000000000000000000010',
     },
   },
   seededAgents: {
@@ -141,6 +147,12 @@ export function createContractInstances(provider, config) {
     provider
   );
 
+  const delegatedStakingContract = new Contract(
+    config.contracts.delegatedStaking?.evmAddress || '0x0000000000000000000000000000000000000010',
+    DelegatedStakingABI.abi,
+    provider
+  );
+
   console.log('[AuditGuard] Contract instances created (read-only)');
   return {
     agentRegistryContract,
@@ -152,6 +164,7 @@ export function createContractInstances(provider, config) {
     vaultFactoryContract,
     stakingManagerContract,
     treasuryContract,
+    delegatedStakingContract,
   };
 }
 

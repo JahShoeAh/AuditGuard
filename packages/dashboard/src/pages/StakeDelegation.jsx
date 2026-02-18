@@ -1,35 +1,133 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { useConnection } from '../hooks/useConnection';
+import { useEventListeners } from '../hooks/useEventListeners';
 import Header from '../components/Header';
-import useRequireWallet from '../hooks/useRequireWallet';
+import DelegationPortfolio from '../components/stake/DelegationPortfolio';
+import AgentBrowser from '../components/stake/AgentBrowser';
+import DelegationWizard from '../components/stake/DelegationWizard';
+import { ToastContainer } from '../components/ui/Toast';
+import useWalletStore from '../store/wallet';
+import WalletButton from '../components/wallet/WalletButton';
+
+// ── Bootstrap hook (reuse connection + event listeners) ───
+
+function useBootstrap() {
+  const connection = useConnection();
+  useEventListeners(connection);
+}
+
+// ── Sub-header ─────────────────────────────────────────────
+
+function StakeHeader({ hasPortfolio, connected }) {
+  return (
+    <div className="flex-shrink-0 flex items-center gap-4 px-5 py-3 border-b border-gray-800 bg-gray-950">
+      {/* Back nav */}
+      <Link
+        to="/dashboard"
+        className="flex items-center gap-1.5 text-xs font-mono text-gray-500 hover:text-gray-300 transition-colors"
+      >
+        ← Dashboard
+      </Link>
+
+      <div className="h-4 w-px bg-gray-800" />
+
+      <div className="flex items-center gap-2">
+        <span className="text-amber-400 text-base">💎</span>
+        <h1 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-100">
+          Delegate Stake
+        </h1>
+      </div>
+
+      {connected && hasPortfolio && (
+        <span className="text-[10px] font-mono text-gray-500">
+          Back your favourite agents. Earn a share of their audit rewards.
+        </span>
+      )}
+
+      <div className="ml-auto">
+        <WalletButton />
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────
 
 export default function StakeDelegation() {
-  const { address, requireWallet } = useRequireWallet();
-  const [status, setStatus] = useState('');
+  useBootstrap();
 
-  const handleMockStake = () => {
-    if (!requireWallet('delegate stake')) return;
-    setStatus('Wallet unlocked. Stake delegation flow will be wired in Prompt 3.');
-  };
+  const [searchParams, setSearchParams] = useSearchParams();
+  const connected  = useWalletStore((s) => s.connectionStatus === 'connected');
+
+  // Pre-select agent from URL ?agent=0x…
+  const [selectedAgent, setSelectedAgent] = useState(
+    () => searchParams.get('agent') || null
+  );
+
+  // Keep URL in sync with selected agent
+  useEffect(() => {
+    if (selectedAgent) {
+      setSearchParams({ agent: selectedAgent }, { replace: true });
+    } else {
+      setSearchParams({}, { replace: true });
+    }
+  }, [selectedAgent, setSearchParams]);
+
+  const handleSelectAgent = (addr) => setSelectedAgent(addr);
+  const handleCloseWizard = ()    => setSelectedAgent(null);
 
   return (
-    <div className="h-screen bg-gray-950 text-gray-100 flex flex-col">
+    <div className="h-screen flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+      {/* Top nav */}
       <Header />
-      <main className="mx-auto w-full max-w-3xl px-6 py-8">
-        <Link to="/dashboard" className="text-sm text-cyan-300 hover:text-cyan-200">{'<-'} Back to dashboard</Link>
-        <h1 className="mt-4 font-mono text-2xl font-semibold uppercase tracking-wider">Stake Delegation</h1>
-        <p className="mt-2 text-sm text-gray-400">
-          Connected account: {address || 'none'}
-        </p>
-        <button
-          type="button"
-          onClick={handleMockStake}
-          className="mt-6 rounded border border-cyan-500/50 bg-cyan-500/10 px-4 py-2 text-sm font-mono uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/20"
-        >
-          Start Delegation
-        </button>
-        {status && <p className="mt-3 text-sm text-amber-300">{status}</p>}
+
+      {/* Stake sub-header */}
+      <StakeHeader hasPortfolio connected={connected} />
+
+      {/* Main content */}
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+
+        {/* Portfolio section (only when connected) */}
+        {connected && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            transition={{ duration: 0.25 }}
+            className="flex-shrink-0 px-4 pt-3"
+          >
+            <DelegationPortfolio onSelectAgent={handleSelectAgent} />
+          </motion.div>
+        )}
+
+        {/* Agent browser + wizard split */}
+        <div className="flex-1 flex gap-0 min-h-0 overflow-hidden mt-3">
+
+          {/* ── Left 55%: Agent Browser ── */}
+          <div className="w-[55%] flex flex-col min-h-0 px-4 pb-4 border-r border-gray-800">
+            <AgentBrowser
+              selectedAgent={selectedAgent}
+              onSelectAgent={handleSelectAgent}
+            />
+          </div>
+
+          {/* ── Right 45%: Delegation Wizard ── */}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden border-l border-gray-800 bg-gray-950">
+            <DelegationWizard
+              agentAddress={selectedAgent}
+              onClose={handleCloseWizard}
+              onSuccess={() => {
+                // Optionally clear selection after success to show updated portfolio
+              }}
+            />
+          </div>
+
+        </div>
       </main>
+
+      {/* Toast notifications */}
+      <ToastContainer />
     </div>
   );
 }
