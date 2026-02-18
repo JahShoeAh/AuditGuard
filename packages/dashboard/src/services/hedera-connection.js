@@ -1,4 +1,3 @@
-import { Client } from '@hashgraph/sdk';
 import { JsonRpcProvider, Contract } from 'ethers';
 
 // ABIs — resolved via @sdk Vite alias
@@ -75,14 +74,6 @@ export function loadConfig() {
   }
   console.warn('[AuditGuard] SDK config not available, using mock config');
   return MOCK_CONFIG;
-}
-
-// ---------- b) createHederaClient ----------
-export function createHederaClient() {
-  const client = Client.forTestnet();
-  // Dashboard is read-only — no operator needed for mirror node queries
-  console.log('[AuditGuard] Hedera Client initialized (testnet, read-only)');
-  return client;
 }
 
 // ---------- c) createEthersProvider ----------
@@ -182,7 +173,6 @@ export function getVaultInstance(vaultAddress, provider) {
 // ---------- e) initializeConnection ----------
 export async function initializeConnection() {
   const config = loadConfig();
-  const hederaClient = createHederaClient();
   const ethersProvider = createEthersProvider();
   const contracts = createContractInstances(ethersProvider, config);
 
@@ -194,5 +184,5 @@ export async function initializeConnection() {
     console.warn('[AuditGuard] Could not verify connection (contract may not be deployed yet):', err.message);
   }
 
-  return { config, hederaClient, ethersProvider, contracts };
+  return { config, hederaClient: null, ethersProvider, contracts };
 }

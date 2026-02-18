@@ -9,13 +9,21 @@ export default defineConfig({
       '@sdk': path.resolve(__dirname, '../sdk'),
     },
   },
-  define: {
-    // Required for @hashgraph/sdk to work in the browser
-    'process.env': {},
-    global: 'globalThis',
-  },
   server: {
     port: 5173,
     open: true,
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react':   ['react', 'react-dom'],
+          'vendor-ethers':  ['ethers'],
+          'vendor-motion':  ['framer-motion'],
+          'vendor-zustand': ['zustand'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600,
   },
 });
