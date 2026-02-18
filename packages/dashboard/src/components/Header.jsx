@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import useStore from '../store';
 import { hashscan } from '../utils/hashscan';
+import WalletButton from './wallet/WalletButton';
+import WalletGate from './wallet/WalletGate';
 
 // ── Stat chip with pulse on value change ───────────────────
 
@@ -133,6 +136,15 @@ export default function Header() {
 
       {/* Right — Live stats */}
       <div className="flex items-center gap-2">
+        <WalletGate>
+          <Link
+            to="/dashboard/agents/register"
+            className="rounded border border-cyan-500/50 bg-cyan-500/10 px-3 py-1.5 text-[10px] font-bold font-mono uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/20"
+          >
+            Deploy Agent
+          </Link>
+        </WalletGate>
+        <WalletButton />
         <StatChip
           label="Discoveries"
           value={stats.totalDiscoveries}
