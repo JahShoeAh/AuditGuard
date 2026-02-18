@@ -17,6 +17,10 @@ export class Roster {
     this.log.info(`Agent registered/updated: ${agent.agentId} stake=${agent.stake} rep=${agent.reputation ?? "?"}`);
   }
 
+  get(agentId) {
+    return this.agents.get(agentId) ?? null;
+  }
+
   recordPong(agentId) {
     const a = this.agents.get(agentId);
     if (!a) return;

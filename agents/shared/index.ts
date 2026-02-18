@@ -9,3 +9,5 @@ export {
 export type { PaymentItem, ListingDetails, AuctionDetails } from "./contract-client.js";
 export { createAgentWallet } from "./wallet.js";
 export { createAgentLogger } from "./logger.js";
+export { AgentMetrics } from "./metrics.js";
+export type { MetricsSummary } from "./metrics.js";

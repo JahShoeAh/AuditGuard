@@ -37,6 +37,23 @@ const pendingJobs = new Map<string, {
   loc: number;
 }>();
 
+// Dynamic pricing state — EMA of win rate adjusts bid multiplier
+let bidMultiplier = 1.0;
+let totalBids = 0;
+let totalWins = 0;
+const PRICING_ALPHA = 0.3; // EMA smoothing factor
+
+function updatePricingAfterOutcome(won: boolean) {
+  totalBids++;
+  if (won) totalWins++;
+  const winRate = totalBids > 0 ? totalWins / totalBids : 0.5;
+  // Win rate > 0.6 means we're too cheap, raise prices; < 0.3 means too expensive, lower
+  const target = 0.45;
+  bidMultiplier = bidMultiplier * (1 - PRICING_ALPHA) + (1 + (target - winRate)) * PRICING_ALPHA;
+  bidMultiplier = Math.max(0.5, Math.min(2.0, bidMultiplier));
+  log.info(`Dynamic pricing: winRate=${(winRate * 100).toFixed(0)}% multiplier=${bidMultiplier.toFixed(2)}`);
+}
+
 // ---- Bidding Logic ----
 
 export function calculateBid(
@@ -44,10 +61,9 @@ export function calculateBid(
   contractType: ContractType,
   riskScore: number
 ): { amount: number; collateral: number; estimatedTimeSec: number } | null {
-  let bid = 10 + estimatedLOC * 0.002; // cheap linear pricing
+  let bid = (10 + estimatedLOC * 0.002) * bidMultiplier;
 
   if (SPECIALIZATIONS.includes(contractType)) {
-    log.info(`Specialization match (${contractType}), applying 10% discount`);
     bid *= 0.9;
   }
 
@@ -106,6 +122,7 @@ async function main() {
     if (!pending) return;
 
     log.info(`WON auction for job #${jobKey}!`);
+    updatePricingAfterOutcome(true);
     pendingJobs.delete(jobKey);
 
     simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
@@ -172,6 +189,7 @@ async function main() {
     setTimeout(async () => {
       if (pendingJobs.has(String(jobIdNum))) {
         log.info(`No WinnersSelected event after ${WINNER_WAIT_MS / 1000}s — auto-simulating win`);
+        updatePricingAfterOutcome(true);
         pendingJobs.delete(String(jobIdNum));
         await simulateAuditCycle(contractAddress, contractType, estimatedLOC, hcs, contracts, wallet.evmAddress);
       }

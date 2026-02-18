@@ -37,6 +37,22 @@ const pendingJobs = new Map<string, {
   loc: number;
 }>();
 
+// Dynamic pricing state
+let bidMultiplier = 1.0;
+let totalBids = 0;
+let totalWins = 0;
+const PRICING_ALPHA = 0.3;
+
+function updatePricingAfterOutcome(won: boolean) {
+  totalBids++;
+  if (won) totalWins++;
+  const winRate = totalBids > 0 ? totalWins / totalBids : 0.5;
+  const target = 0.45;
+  bidMultiplier = bidMultiplier * (1 - PRICING_ALPHA) + (1 + (target - winRate)) * PRICING_ALPHA;
+  bidMultiplier = Math.max(0.5, Math.min(2.0, bidMultiplier));
+  log.info(`Dynamic pricing: winRate=${(winRate * 100).toFixed(0)}% multiplier=${bidMultiplier.toFixed(2)}`);
+}
+
 // Track available data listings for purchase
 const availableReports = new Map<string, {
   listingId: string;
@@ -52,7 +68,7 @@ export function calculateBid(
   contractType: ContractType,
   riskScore: number
 ): { amount: number; collateral: number; estimatedTimeSec: number } | null {
-  let bid = 15 + estimatedLOC * 0.005; // more expensive per LOC
+  let bid = (15 + estimatedLOC * 0.005) * bidMultiplier;
 
   if (riskScore > 70) {
     bid *= 1.2; // complex = charge more
@@ -135,6 +151,7 @@ async function main() {
     if (!pending) return;
 
     log.info(`WON auction for job #${jobKey}!`);
+    updatePricingAfterOutcome(true);
     pendingJobs.delete(jobKey);
 
     simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
@@ -201,6 +218,7 @@ async function main() {
     setTimeout(async () => {
       if (pendingJobs.has(String(jobIdNum))) {
         log.info(`No WinnersSelected event after ${WINNER_WAIT_MS / 1000}s — auto-simulating win`);
+        updatePricingAfterOutcome(true);
         pendingJobs.delete(String(jobIdNum));
         await simulateAuditCycle(contractAddress, contractType, estimatedLOC, hcs, contracts, wallet.evmAddress);
       }

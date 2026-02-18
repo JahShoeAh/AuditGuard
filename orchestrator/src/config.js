@@ -40,7 +40,7 @@ export const CONFIG = {
     agentComms: sdk?.hcsTopics?.agentComms ?? "0.0.7940146",
   },
   contracts: {
-    auction: sdk?.contracts?.auction?.evmAddress ?? "0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88",
+    auction: (sdk?.contracts?.auctionContract?.evmAddress ?? sdk?.contracts?.auction?.evmAddress) ?? "0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88",
     subAuction: sdk?.contracts?.subAuction?.evmAddress ?? "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     dataMarketplace: sdk?.contracts?.dataMarketplace?.evmAddress ?? "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     paymentSettlement: sdk?.contracts?.paymentSettlement?.evmAddress ?? "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
@@ -69,7 +69,8 @@ export const CONFIG = {
     bonusPerCritical: 2,      // extra per critical finding
   },
   reporting: {
-    autoPublishAfterFindings: 1, // publish report once we have this many submissions
+    autoPublishAfterFindings: 3,
+    autoPublishTimeoutMs: 120_000, // fallback: auto-publish 2 min after first finding
   },
   alerts: {
     criticalThreshold: 1, // trigger alert if >= critical findings

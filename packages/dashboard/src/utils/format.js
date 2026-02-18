@@ -116,4 +116,20 @@ export const fmt = {
   paymentType: (v) => PAYMENT_TYPES[Number(v)] || String(v),
   category:    (v) => DATA_CATEGORIES[Number(v)] || String(v),
   listingType: (v) => LISTING_TYPES[Number(v)]   || String(v),
+
+  /** Slash reason enum → label string */
+  slashReason: (v) => (
+    ['FALSE_POSITIVE', 'FALSE_NEGATIVE', 'MALICIOUS_REPORT',
+     'SLA_VIOLATION', 'COLLUSION', 'PLAGIARISM'][Number(v)] || String(v)
+  ),
+
+  /** Stake status enum → label string */
+  stakeStatus: (v) => (
+    ['ACTIVE', 'UNBONDING', 'WITHDRAWN', 'FROZEN'][Number(v)] || String(v)
+  ),
+
+  /** Agent tier enum → label string */
+  agentTier: (v) => (
+    ['COMMODITY', 'SPECIALIZED', 'PREMIUM'][Number(v)] || String(v)
+  ),
 };

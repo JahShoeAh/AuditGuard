@@ -48,6 +48,7 @@ export class OrchestratorAgent {
     this.subscribeDiscovery();
     this.subscribeAgentComms();
     this.subscribeAuditLog();
+    this.subscribeContractEvents();
     if (this.enablePing) this.startPingLoop();
     this.log.info("Orchestrator started (isolated branch)");
   }
@@ -77,6 +78,7 @@ export class OrchestratorAgent {
   subscribeAuditLog() {
     this.hcs.subscribeAuditLog((msg) => {
       if (msg.type === MessageType.AGENT_REGISTERED) this.handleAgentRegistered(msg);
+      if (msg.type === "BID_SUBMITTED") this.handleBidSubmitted(msg);
     });
     this.log.info(`Listening on auditLog topic ${CONFIG.hcsTopics.auditLog}`);
   }
@@ -93,6 +95,44 @@ export class OrchestratorAgent {
       reputation: payload.reputation ?? 0,
       endpoint: payload.ucpEndpoint,
     });
+  }
+
+  handleBidSubmitted(msg) {
+    const { contractAddress, bidAmount, collateral, estimatedTimeSec, reputation, evmAddress } = msg.payload || {};
+
+    // Find the job this bid belongs to (match by contractAddress across open jobs)
+    for (const [jobId, job] of this.jobs.entries()) {
+      if (job.contractAddress === contractAddress) {
+        const agent = this.roster.get(msg.agentId);
+        const minStake = CONFIG.stakes.minStake;
+        if (agent && (agent.stake ?? 0) < minStake) {
+          this.log.warn(`Bid rejected from ${msg.agentId}: stake ${agent.stake} < ${minStake}`);
+          return;
+        }
+        if (bidAmount <= 0) {
+          this.log.warn(`Bid rejected from ${msg.agentId}: invalid amount ${bidAmount}`);
+          return;
+        }
+
+        job.bidders.push({
+          agentId: msg.agentId,
+          evmAddress: evmAddress ?? agent?.evmAddress,
+          bidAmount: bidAmount ?? 0,
+          collateral: collateral ?? 0,
+          estimatedTimeSec: estimatedTimeSec ?? 0,
+          reputation: reputation ?? agent?.reputation ?? 0,
+          timestamp: msg.timestamp ?? now(),
+        });
+
+        this.log.info(
+          `Bid recorded: ${msg.agentId} bid ${bidAmount} GUARD for job ${jobId} ` +
+          `(total bids: ${job.bidders.length})`
+        );
+        return;
+      }
+    }
+
+    this.log.warn(`Bid from ${msg.agentId} — no matching open job for ${contractAddress?.slice(0, 12)}`);
   }
 
   async handleDiscovery(msg) {
@@ -152,21 +192,37 @@ export class OrchestratorAgent {
     this.log.info(`Findings submitted for job ${jobId}: ${findingsHash?.slice(0, 12)}…`);
 
     const key = Number(jobId);
-    const job = this.jobs.get(key) ?? { findings: [], winners: [], reportPublished: false };
+    const job = this.jobs.get(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false };
     job.findings.push({ agentId: msg.agentId, evmAddress, findingsHash, findingsCount, criticalCount });
     this.jobs.set(key, job);
 
-    // Safety net: auto-publish if Report Agent never responds
-    if (job.findings.length >= CONFIG.reporting.autoPublishAfterFindings && !job.reportPublished) {
-      await this.handleReportPublished({
-        payload: {
-          jobId,
-          totalFindings: job.findings.reduce((s, f) => s + (f.findingsCount ?? 0), 0),
-          criticalFindings: job.findings.reduce((s, f) => s + (f.criticalCount ?? 0), 0),
-          reportHash: job.findings.map((f) => f.findingsHash).join("|").slice(0, 66),
-        },
-      });
+    // Start time-based auto-publish timer on first finding
+    if (job.findings.length === 1 && !job.reportPublished) {
+      setTimeout(async () => {
+        const latest = this.jobs.get(key);
+        if (latest && !latest.reportPublished) {
+          this.log.info(`Auto-publish timeout for job ${jobId} — publishing report`);
+          await this.autoPublishReport(key, latest);
+        }
+      }, CONFIG.reporting.autoPublishTimeoutMs);
     }
+
+    // Threshold-based auto-publish
+    if (job.findings.length >= CONFIG.reporting.autoPublishAfterFindings && !job.reportPublished) {
+      await this.autoPublishReport(key, job);
+    }
+  }
+
+  async autoPublishReport(jobId, job) {
+    if (job.reportPublished) return;
+    await this.handleReportPublished({
+      payload: {
+        jobId,
+        totalFindings: job.findings.reduce((s, f) => s + (f.findingsCount ?? 0), 0),
+        criticalFindings: job.findings.reduce((s, f) => s + (f.criticalCount ?? 0), 0),
+        reportHash: job.findings.map((f) => f.findingsHash).join("|").slice(0, 66),
+      },
+    });
   }
 
   async handleReportPublished(msg) {
@@ -357,18 +413,44 @@ export class OrchestratorAgent {
   selectWinnersFallback(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return;
-    // Demo heuristic: pick up to 3 highest reputation agents
-    const candidates = this.roster.eligibleFor(job.contractType)
-      .sort((a, b) => (b.reputation ?? 0) - (a.reputation ?? 0))
-      .slice(0, 3);
 
-    if (!candidates.length) {
-      this.log.warn(`No eligible agents for job ${jobId}; leaving unassigned`);
-      return;
+    let winnerAddresses;
+
+    if (job.bidders && job.bidders.length > 0) {
+      // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
+      const maxBid = Math.max(...job.bidders.map(b => b.bidAmount || 1));
+      const maxTime = Math.max(...job.bidders.map(b => b.estimatedTimeSec || 1));
+
+      const scored = job.bidders.map(b => {
+        const repScore = ((b.reputation ?? 0) / 100) * 0.55;
+        const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
+        const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
+        return { ...b, score: repScore + priceScore + speedScore };
+      });
+
+      scored.sort((a, b) => b.score - a.score);
+      const winners = scored.slice(0, 3);
+      winnerAddresses = winners.map(w => w.evmAddress).filter(Boolean);
+      this.log.info(
+        `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
+        `${winnerAddresses.join(", ")}`
+      );
+    } else {
+      // No bids collected — fall back to roster reputation
+      const candidates = this.roster.eligibleFor(job.contractType)
+        .sort((a, b) => (b.reputation ?? 0) - (a.reputation ?? 0))
+        .slice(0, 3);
+
+      if (!candidates.length) {
+        this.log.warn(`No eligible agents for job ${jobId}; leaving unassigned`);
+        return;
+      }
+
+      winnerAddresses = candidates.map((c) => c.evmAddress);
+      this.log.info(`Roster-fallback winners for job ${jobId}: ${winnerAddresses.join(", ")}`);
     }
 
-    const winnerAddresses = candidates.map((c) => c.evmAddress);
-    this.log.info(`Fallback winners for job ${jobId}: ${winnerAddresses.join(", ")}`);
+    job.winners = winnerAddresses;
 
     this.hcs.publishAuditLog({
       type: MessageType.WINNERS_SELECTED_FALLBACK,
@@ -376,6 +458,31 @@ export class OrchestratorAgent {
       timestamp: now(),
       payload: { jobId, winners: winnerAddresses },
     }).catch((err) => this.log.warn(`Failed to publish fallback winners: ${err}`));
+  }
+
+  subscribeContractEvents() {
+    try {
+      if (!this.contracts.auction?.on) return;
+      this.contracts.auction.on("WinnersSelected", (jobId, winners, totalEscrowed, platformFee) => {
+        const key = Number(jobId);
+        const job = this.jobs.get(key);
+        if (!job) return;
+
+        const winnerAddrs = Array.isArray(winners) ? winners.map(String) : [];
+        job.winners = winnerAddrs;
+        this.log.info(`On-chain WinnersSelected for job ${key}: ${winnerAddrs.join(", ")}`);
+
+        this.hcs.publishAuditLog({
+          type: "WINNER_SELECTED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { jobId: key, winners: winnerAddrs, totalEscrowed: totalEscrowed?.toString(), platformFee: platformFee?.toString() },
+        }).catch(() => {});
+      });
+      this.log.info("Listening for on-chain WinnersSelected events");
+    } catch (err) {
+      this.log.warn(`Contract event subscription failed (fallback selection only): ${err.message}`);
+    }
   }
 
   startPingLoop() {
