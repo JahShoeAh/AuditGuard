@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { EventListenerService } from '../services/event-listener';
 import { startMockEventStream } from '../services/mock-events';
+import { startOfflineReplay } from '../services/offline-replay';
 import useStore from '../store';
 
 /**
@@ -22,6 +23,18 @@ export function useEventListeners(connection) {
     if (!config) return;
 
     if (store.useMockEvents) {
+      const useOfflineReplay = import.meta.env.VITE_OFFLINE_REPLAY === 'true';
+      if (useOfflineReplay) {
+        const stop = startOfflineReplay(useStore.getState);
+        cleanupRef.current = stop;
+        console.log('[useEventListeners] Offline replay started');
+        return () => {
+          if (cleanupRef.current) {
+            cleanupRef.current();
+            cleanupRef.current = null;
+          }
+        };
+      }
       // ── Mock mode ──
       const stop = startMockEventStream(useStore.getState, config);
       cleanupRef.current = stop;

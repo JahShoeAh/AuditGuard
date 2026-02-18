@@ -24,7 +24,8 @@
     "inft:create-collections": "npm --prefix packages/inft run create-collections",
     "inft:listen": "npm --prefix packages/inft run listen",
     "orchestrator": "node orchestrator/src/index.js",
-    "orchestrator:test": "npm --prefix orchestrator test"
+    "orchestrator:test": "npm --prefix orchestrator test",
+    "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test"
   },
   "repository": {
     "type": "git",

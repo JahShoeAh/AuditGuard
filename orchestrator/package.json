@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "npm run test:e2e",
     "test:e2e": "node test/e2e-simulation.test.js",
+    "test:offline": "node test/offline-live-flow.test.js",
     "test:mocks": "node test/run-tests.js",
     "seed:live-agents": "node scripts/seed-live-agents.js",
     "test:live-smoke": "node scripts/live-smoke-check.js"
