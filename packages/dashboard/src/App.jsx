@@ -15,6 +15,9 @@ import AgentLeaderboard from './components/AgentLeaderboard';
 import ContractHealth from './components/ContractHealth';
 import AuditJobTracker from './components/AuditJobTracker';
 import ReputationComparison from './components/ReputationComparison';
+import NetworkGraph from './components/NetworkGraph';
+import SettlementTimeline from './components/SettlementTimeline';
+import TreasuryEconomics from './components/TreasuryEconomics';
 
 // ── Connection error banner ────────────────────────────────
 
@@ -157,15 +160,72 @@ function ContractsTab() {
   );
 }
 
-// ── Analytics placeholder ──────────────────────────────────
+// ── Analytics sub-tabs config ──────────────────────────────
 
-function AnalyticsPlaceholder() {
+const ANALYTICS_TABS = [
+  { key: 'network',    label: 'Network Graph',       icon: '◈' },
+  { key: 'timeline',   label: 'Settlement Timeline', icon: '▬' },
+  { key: 'competition',label: 'Competition Map',     icon: '⬡' },
+];
+
+// ── Analytics tab ──────────────────────────────────────────
+
+function AnalyticsTab() {
+  const [subTab, setSubTab] = useState('network');
+
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-3 text-gray-600 font-mono">
-      <div className="text-5xl">📊</div>
-      <div className="text-sm font-bold uppercase tracking-widest text-gray-500">Analytics</div>
-      <div className="text-xs text-gray-600">Network graph · Settlement timeline · Heatmaps</div>
-      <div className="text-xs text-gray-700 mt-2">Coming in Prompts 3+4</div>
+    <div className="h-full flex flex-col min-h-0">
+      {/* Sub-tab bar */}
+      <div className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-gray-800 bg-gray-950">
+        {ANALYTICS_TABS.map((tab) => {
+          const isActive = subTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setSubTab(tab.key)}
+              className={[
+                'flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-bold font-mono uppercase tracking-wider transition-colors',
+                isActive
+                  ? 'bg-gray-800 text-cyan-300 border border-gray-700'
+                  : 'text-gray-500 hover:text-gray-300',
+              ].join(' ')}
+            >
+              <span className="text-[10px]">{tab.icon}</span>
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Sub-tab content */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {subTab === 'network' && (
+          <div className="h-full flex flex-col min-h-0">
+            <div className="flex-1 min-h-0">
+              <NetworkGraph />
+            </div>
+          </div>
+        )}
+        {subTab === 'timeline' && (
+          <div className="h-full flex flex-col min-h-0 overflow-auto">
+            <SettlementTimeline />
+            <div className="flex-shrink-0 border-t border-gray-800">
+              <TreasuryEconomics />
+            </div>
+          </div>
+        )}
+        {subTab === 'competition' && (
+          <div className="h-full flex items-center justify-center text-gray-600 font-mono text-sm">
+            <div className="text-center">
+              <div className="text-4xl mb-3">⬡</div>
+              <div className="font-bold uppercase tracking-widest text-gray-500">Competition Map</div>
+              <div className="text-xs text-gray-600 mt-2">
+                Agent specialization · win-rate heatmap · coming next
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -227,7 +287,7 @@ export default function App() {
           )}
           {activeTab === 'analytics' && (
             <TabContent key="analytics">
-              <AnalyticsPlaceholder />
+              <AnalyticsTab />
             </TabContent>
           )}
         </AnimatePresence>

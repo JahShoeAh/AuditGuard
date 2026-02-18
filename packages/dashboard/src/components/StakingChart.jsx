@@ -30,7 +30,11 @@ export default function StakingChart({ addr }) {
 
   const pts = history.slice().sort((a, b) => a.timestamp - b.timestamp);
 
-  const maxStake = Math.max(...pts.map((p) => p.stakeAmount || 0), 1);
+  // Mock events store totalStaked/lockedStake; normalize both field names
+  const stakeOf  = (p) => p.totalStaked  ?? p.stakeAmount  ?? 0;
+  const lockedOf = (p) => p.lockedStake  ?? p.lockedAmount ?? 0;
+
+  const maxStake = Math.max(...pts.map(stakeOf), 1);
   const yScale   = innerH / maxStake;
 
   const xOf = (i) => PAD.left + (i / Math.max(1, pts.length - 1)) * innerW;
@@ -41,7 +45,7 @@ export default function StakingChart({ addr }) {
   // Total stake area (green background): trace top edge, then back along bottom
   const totalAreaD = [
     `M ${xOf(0)},${PAD.top + innerH}`,
-    ...pts.map((p, i) => `L ${xOf(i)},${yOf(p.stakeAmount || 0)}`),
+    ...pts.map((p, i) => `L ${xOf(i)},${yOf(stakeOf(p))}`),
     `L ${xOf(pts.length - 1)},${PAD.top + innerH}`,
     'Z',
   ].join(' ');
@@ -49,14 +53,14 @@ export default function StakingChart({ addr }) {
   // Locked area (amber, stacked from baseline up to locked amount)
   const lockedAreaD = [
     `M ${xOf(0)},${PAD.top + innerH}`,
-    ...pts.map((p, i) => `L ${xOf(i)},${yOf(p.lockedAmount || 0)}`),
+    ...pts.map((p, i) => `L ${xOf(i)},${yOf(lockedOf(p))}`),
     `L ${xOf(pts.length - 1)},${PAD.top + innerH}`,
     'Z',
   ].join(' ');
 
   // Total stake polyline points
-  const totalPoly = pts.map((p, i) => `${xOf(i)},${yOf(p.stakeAmount || 0)}`).join(' ');
-  const lockedPoly = pts.map((p, i) => `${xOf(i)},${yOf(p.lockedAmount || 0)}`).join(' ');
+  const totalPoly = pts.map((p, i) => `${xOf(i)},${yOf(stakeOf(p))}`).join(' ');
+  const lockedPoly = pts.map((p, i) => `${xOf(i)},${yOf(lockedOf(p))}`).join(' ');
 
   // ── Slash markers: find nearest history index per slash ──
   const slashXs = mySlashes.map((slash) => {
@@ -69,7 +73,7 @@ export default function StakingChart({ addr }) {
     return xOf(best);
   });
 
-  // ── Y-axis ticks (0, 50%, 100%) ──────────────────────────
+  // ── Y-axis ticks (0, 50%, 100%) — displayed in GUARD ────────
   const yTicks = [0, maxStake * 0.5, maxStake];
 
   return (

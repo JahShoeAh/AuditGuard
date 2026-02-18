@@ -524,6 +524,42 @@ function runDay2Cycle(getState, cycleIndex) {
     });
   }, 44_000);
 
+  // ── Phase 7c: Every 2nd cycle — Static47 sells data to LLM3 (t=45s) ──
+  // Creates a cross-agent DATA_PURCHASE edge on the network graph
+  if (cycleIndex % 2 === 1) {
+    schedule(() => {
+      const s = getState();
+      const price        = 100_000_000n; // 1.00 GUARD
+      const platformFee  =   3_000_000n; // 0.03 GUARD
+      const netToSeller  =  97_000_000n; // 0.97 GUARD
+      s.addGuardFlow({
+        from: LLM3_ADDR,      fromName: AGENTS.llm3.name,
+        to: STATIC47_ADDR,    toName:   AGENTS.static47.name,
+        amount: netToSeller,
+        amountFormatted: parseGuardAmount(netToSeller),
+        type: 'DATA_PURCHASE',
+        jobId,
+        timestamp: Date.now(),
+      });
+      s.addGuardFlow({
+        from: LLM3_ADDR,      fromName: AGENTS.llm3.name,
+        to: TREASURY_ADDR,    toName: 'Treasury',
+        amount: platformFee,
+        amountFormatted: parseGuardAmount(platformFee),
+        type: 'PLATFORM_FEE',
+        jobId,
+        timestamp: Date.now(),
+      });
+      s.addLogEntry({
+        type: 'DATA_PURCHASED', source: 'mock',
+        buyerName: AGENTS.llm3.name, sellerName: AGENTS.static47.name,
+        pricePaidFormatted: parseGuardAmount(price),
+        note: 'LLM3 purchases scan intelligence from Static47',
+        timestamp: Date.now(),
+      });
+    }, 45_000);
+  }
+
   // ── Phase 8: Sub-contract delivery + acceptance (t=50s) ──
   schedule(() => {
     const s = getState();

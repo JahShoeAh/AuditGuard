@@ -23,7 +23,8 @@
       "Bash(ls:*)",
       "Bash(npx vite build)",
       "Bash(npm install:*)",
-      "Bash(npm info:*)"
+      "Bash(npm info:*)",
+      "Bash(wc:*)"
     ]
   }
 }
