@@ -25,7 +25,8 @@
       "Bash(npm install:*)",
       "Bash(npm info:*)",
       "Bash(wc:*)",
-      "Bash(npx hardhat test:*)"
+      "Bash(npx hardhat test:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }
