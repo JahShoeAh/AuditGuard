@@ -12,6 +12,7 @@
     "test": "test"
   },
   "scripts": {
+    "build": "npm run --workspaces --if-present build",
     "compile": "npx hardhat compile --config packages/contracts/hardhat.config.js",
     "test": "npx hardhat test --config packages/contracts/hardhat.config.js",
     "deploy:token": "node scripts/deploy-guard-token.js",

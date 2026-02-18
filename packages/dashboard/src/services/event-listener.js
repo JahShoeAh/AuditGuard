@@ -132,8 +132,7 @@ export class EventListenerService {
    * Returns array of { sequenceNumber, timestamp, parsedData }.
    */
   async fetchHCSMessages(topicId, afterSequence) {
-    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages`
-      + `?order=asc&limit=25&sequencenumber=gt:${afterSequence}`;
+    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages?order=desc&limit=100`;
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -143,7 +142,9 @@ export class EventListenerService {
     }
 
     const json = await res.json();
-    const items = json.messages || [];
+    const items = (json.messages || [])
+      .filter((m) => Number(m.sequence_number) > Number(afterSequence || 0))
+      .sort((a, b) => Number(a.sequence_number) - Number(b.sequence_number));
 
     return items.map((m) => {
       let parsedData = {};
@@ -175,7 +176,11 @@ export class EventListenerService {
   _routeHCSMessage(topicKey, msg) {
     const { parsedData, timestamp, sequenceNumber } = msg;
     const topicId = this.config?.hcsTopics?.[topicKey] || topicKey;
+    const payload = parsedData?.payload && typeof parsedData.payload === "object"
+      ? parsedData.payload
+      : {};
     const entry = {
+      ...payload,
       ...parsedData,
       _hcsTimestamp:  timestamp,
       _hcsSequence:   sequenceNumber,

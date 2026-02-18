@@ -25,6 +25,13 @@ function loadSdkConfig() {
 
 const sdk = loadSdkConfig();
 
+function getEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  return trimmed.replace(/^['"]|['"]$/g, "");
+}
+
 export const CONFIG = {
   network: "testnet",
   hcsTopics: {
@@ -84,10 +91,12 @@ export const CONFIG = {
 };
 
 export function getOperatorKeys() {
-  const accountId = process.env.OPERATOR_ACCOUNT_ID;
-  const privateKey = process.env.OPERATOR_PRIVATE_KEY;
+  const accountId = getEnv("OPERATOR_ACCOUNT_ID") ?? getEnv("HEDERA_ACCOUNT_ID");
+  const privateKey = getEnv("OPERATOR_PRIVATE_KEY") ?? getEnv("HEDERA_PRIVATE_KEY");
   if (!accountId || !privateKey) {
-    throw new Error("Set OPERATOR_ACCOUNT_ID and OPERATOR_PRIVATE_KEY in .env for orchestrator");
+    throw new Error(
+      "Set OPERATOR_ACCOUNT_ID/OPERATOR_PRIVATE_KEY or HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY in .env for orchestrator"
+    );
   }
   return { accountId, privateKey };
 }
