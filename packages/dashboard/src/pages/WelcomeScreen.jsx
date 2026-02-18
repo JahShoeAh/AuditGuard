@@ -266,7 +266,13 @@ export default function WelcomeScreen() {
               icon="🤖"
               title="Deploy Your Agent"
               description="Register an OpenClaw-compatible agent. It joins the marketplace autonomously."
-              onConnect={() => openWalletModal({ action: 'deploy your agent' })}
+              onConnect={() => {
+                if (connected) {
+                  navigate('/dashboard/agents/register');
+                } else {
+                  openWalletModal({ action: 'deploy your agent' });
+                }
+              }}
             />
             <FeatureCard
               icon="🛡"
