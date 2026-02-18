@@ -237,6 +237,7 @@ export class EventListenerService {
       const {
         auctionContract, agentRegistryContract,
         subAuctionContract, dataMarketplaceContract, paymentSettlementContract,
+        vaultFactoryContract, stakingManagerContract, treasuryContract,
       } = this.contracts;
 
       // Helper: safely query a contract that may not be deployed yet
@@ -250,6 +251,11 @@ export class EventListenerService {
         resultDelivered, resultAccepted,
         dataListed, dataPurchased, dataRated,
         jobSettled, subJobSettled,
+        // Day 3
+        vaultCreated, autoAuditTriggered,
+        staked, stakeLocked, stakeUnlocked,
+        slashInitiated, appealFiled, appealApproved, appealDenied,
+        feeReceived, feeDistributed,
       ] = await Promise.all([
         q(auctionContract, 'JobPosted'),
         q(auctionContract, 'BidSubmitted'),
@@ -268,6 +274,18 @@ export class EventListenerService {
         q(dataMarketplaceContract, 'DataRated'),
         q(paymentSettlementContract, 'JobSettled'),
         q(paymentSettlementContract, 'SubJobSettled'),
+        // Day 3
+        q(vaultFactoryContract, 'VaultCreated'),
+        q(vaultFactoryContract, 'AutoAuditTriggered'),
+        q(stakingManagerContract, 'Staked'),
+        q(stakingManagerContract, 'StakeLocked'),
+        q(stakingManagerContract, 'StakeUnlocked'),
+        q(stakingManagerContract, 'SlashInitiated'),
+        q(stakingManagerContract, 'AppealFiled'),
+        q(stakingManagerContract, 'AppealApproved'),
+        q(stakingManagerContract, 'AppealDenied'),
+        q(treasuryContract, 'FeeReceived'),
+        q(treasuryContract, 'FeeDistributed'),
       ]);
 
       // ── Process AuditAuction events ──
@@ -692,6 +710,182 @@ export class EventListenerService {
           agentName: resolveAgentName(a.agent, this.config),
           amountFormatted: parseGuardAmount(a.amount),
           timestamp: Date.now(),
+        });
+      }
+
+      // ── Process VaultFactory events ──
+
+      for (const ev of vaultCreated) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'VAULT_CREATED',
+          source: 'contract',
+          contractAddress: a.contractAddress,
+          vault: a.vault,
+          creator: a.creator,
+          contractChain: a.contractChain,
+          timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
+        });
+      }
+
+      for (const ev of autoAuditTriggered) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'AUTO_AUDIT_TRIGGERED',
+          source: 'contract',
+          contractAddress: a.contractAddress,
+          vault: a.vault,
+          reason: a.reason,
+          timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
+        });
+      }
+
+      // ── Process StakingManager events ──
+
+      for (const ev of staked) {
+        const a = ev.args;
+        const agentName = resolveAgentName(a.agent, this.config);
+        this.store.updateAgentStake(a.agent, a.newTotal);
+        this.store.addLogEntry({
+          type: 'STAKE_LOCKED',
+          source: 'contract',
+          agent: a.agent,
+          agentName,
+          amount: parseGuardAmount(a.amount),
+          newTotal: parseGuardAmount(a.newTotal),
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of stakeLocked) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'STAKE_LOCKED',
+          source: 'contract',
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          amount: parseGuardAmount(a.amount),
+          jobId: a.jobId.toString(),
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of stakeUnlocked) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'STAKE_UNLOCKED',
+          source: 'contract',
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          amount: parseGuardAmount(a.amount),
+          jobId: a.jobId.toString(),
+          timestamp: Date.now(),
+        });
+      }
+
+      const SLASH_REASONS = [
+        'FALSE_POSITIVE', 'FALSE_NEGATIVE', 'MALICIOUS_REPORT',
+        'SLA_VIOLATION', 'COLLUSION', 'PLAGIARISM',
+      ];
+
+      for (const ev of slashInitiated) {
+        const a = ev.args;
+        const slashId = a.slashId.toString();
+        const reasonStr = SLASH_REASONS[Number(a.reason)] || `REASON_${a.reason}`;
+        const slash = {
+          slashId,
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          reason: Number(a.reason),
+          reasonStr,
+          slashedAmount: a.slashedAmount,
+          slashedAmountFormatted: parseGuardAmount(a.slashedAmount),
+          slashBasisPoints: Number(a.slashBasisPoints),
+          jobId: a.jobId.toString(),
+          timestamp: Date.now(),
+          appealStatus: 'NONE',
+        };
+        this.store.addSlashEvent(slash);
+        this.store.addLogEntry({
+          type: 'SLASH_INITIATED',
+          source: 'contract',
+          ...slash,
+          _tx: this._mkTx(ev, blockTs),
+        });
+      }
+
+      for (const ev of appealFiled) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'APPEAL_FILED',
+          source: 'contract',
+          slashId: a.slashId.toString(),
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          reason: a.reason,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of appealApproved) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'APPEAL_APPROVED',
+          source: 'contract',
+          slashId: a.slashId.toString(),
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          restoredAmount: parseGuardAmount(a.restoredAmount),
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of appealDenied) {
+        const a = ev.args;
+        this.store.addLogEntry({
+          type: 'APPEAL_DENIED',
+          source: 'contract',
+          slashId: a.slashId.toString(),
+          agent: a.agent,
+          agentName: resolveAgentName(a.agent, this.config),
+          finalizedAmount: parseGuardAmount(a.finalizedAmount),
+          timestamp: Date.now(),
+        });
+      }
+
+      // ── Process Treasury events ──
+
+      for (const ev of feeReceived) {
+        const a = ev.args;
+        this.store.addTreasuryRevenue(Number(a.source), a.amount);
+        this.store.addLogEntry({
+          type: 'FEE_RECEIVED',
+          source: 'contract',
+          feeSource: Number(a.source),
+          amount: parseGuardAmount(a.amount),
+          jobId: a.jobId.toString(),
+          fromContract: a.fromContract,
+          timestamp: Date.now(),
+        });
+      }
+
+      for (const ev of feeDistributed) {
+        const a = ev.args;
+        const dist = {
+          distributionId: a.distributionId.toString(),
+          totalDistributed: parseGuardAmount(a.totalDistributed),
+          ucpAmount: parseGuardAmount(a.ucpAmount),
+          reserveAmount: parseGuardAmount(a.reserveAmount),
+          burnAmount: parseGuardAmount(a.burnAmount),
+          timestamp: Date.now(),
+        };
+        this.store.addTreasuryDistribution(dist);
+        this.store.addLogEntry({
+          type: 'FEE_DISTRIBUTED',
+          source: 'contract',
+          ...dist,
         });
       }
 

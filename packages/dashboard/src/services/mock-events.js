@@ -1,17 +1,18 @@
 /**
- * Mock event generator — full Day 2 cycle.
+ * Mock event generator — full Day 2+3 cycle.
  *
  * Reproduces the spec walkthrough:
- *   Phase 1  (t=0s)  Discovery
- *   Phase 2  (t=5s)  Auction posted
- *   Phase 3  (t=8/12/16s) Three bids
- *   Phase 4  (t=25s) Winner selection + platform fee flow
- *   Phase 5  (t=30s) Sub-auction created
- *   Phase 6  (t=35/40s) Sub-bid + contractor selected
- *   Phase 7  (t=38/44s) Data listing + purchase
- *   Phase 8  (t=50s) Sub-contract delivery + acceptance
- *   Phase 9  (t=60s) Data rating + settlement + GUARD flows
- *   Phase 10 (t=75s) New cycle begins (different contract type)
+ *   Phase 1    (t=0s)  Discovery
+ *   Phase 2    (t=5s)  Auction posted
+ *   Phase 3    (t=8/12/16s) Three bids
+ *   Phase 4    (t=25s) Winner selection + platform fee flow
+ *   Phase 5    (t=30s) Sub-auction created
+ *   Phase 6    (t=35/40s) Sub-bid + contractor selected
+ *   Phase 7    (t=38/44s) Data listing + purchase
+ *   Phase 8    (t=50s) Sub-contract delivery + acceptance
+ *   Phase 9    (t=60s) Data rating + settlement + GUARD flows
+ *   Phase 9.5  (t=65s) Day 3: reputation updates + audit recorded
+ *   Phase 10   (t=75s) New cycle begins (different contract type)
  *
  * CYCLE_DURATION_MS = 75000
  */
@@ -102,6 +103,73 @@ function mkTx() {
 function scaleBid(base, variancePercent = 8) {
   const factor = 1 + (Math.random() * 2 - 1) * (variancePercent / 100);
   return BigInt(Math.floor(Number(base) * factor));
+}
+
+// ── Seed agents into the store (once, before first cycle) ─
+
+function seedAgents(getState) {
+  const s = getState();
+  // Only seed if agents haven't been populated yet
+  if (Object.keys(s.agents || {}).length > 0) return;
+
+  const agentDefs = [
+    {
+      address: STATIC47_ADDR,
+      agentId: 'StaticAnalysis-47',
+      name: 'StaticAnalysis-47',
+      specialization: 'static_analysis',
+      reputationScore: 9400,
+      tier: 1, // SPECIALIZED
+      completedJobs: 12,
+      successfulFindings: 47,
+      falsePositives: 2,
+      falseNegatives: 0,
+      stakedAmount: 15_000_000_000n, // 150 GUARD
+    },
+    {
+      address: FUZZER12_ADDR,
+      agentId: 'Fuzzer-12',
+      name: 'Fuzzer-12',
+      specialization: 'fuzzing',
+      reputationScore: 8700,
+      tier: 1, // SPECIALIZED
+      completedJobs: 8,
+      successfulFindings: 31,
+      falsePositives: 4,
+      falseNegatives: 1,
+      stakedAmount: 10_000_000_000n, // 100 GUARD
+    },
+    {
+      address: LLM3_ADDR,
+      agentId: 'LLMContextual-3',
+      name: 'LLMContextual-3',
+      specialization: 'llm_contextual',
+      reputationScore: 8700,
+      tier: 1, // SPECIALIZED
+      completedJobs: 10,
+      successfulFindings: 38,
+      falsePositives: 3,
+      falseNegatives: 0,
+      stakedAmount: 12_000_000_000n, // 120 GUARD
+    },
+    {
+      address: DEP8_ADDR,
+      agentId: 'DependencyAgent-8',
+      name: 'DependencyAgent-8',
+      specialization: 'dependency_analysis',
+      reputationScore: 6500,
+      tier: 0, // COMMODITY
+      completedJobs: 4,
+      successfulFindings: 15,
+      falsePositives: 1,
+      falseNegatives: 2,
+      stakedAmount: 5_000_000_000n, // 50 GUARD
+    },
+  ];
+
+  for (const agent of agentDefs) {
+    s.setAgent(agent.address, agent);
+  }
 }
 
 // ── The full Day 2 cycle ──────────────────────────────────
@@ -574,6 +642,71 @@ function runDay2Cycle(getState, cycleIndex) {
     }, 100);
   }, 60_000);
 
+  // ── Phase 9.5: Day 3 reputation + audit recorded (t=65s) ─
+  schedule(() => {
+    const s = getState();
+
+    // Reputation snapshot for StaticAnalysis-47 (+300 delta)
+    const static47Rep = (s.agents[STATIC47_ADDR]?.reputationScore || 9400) + 300;
+    s.addReputationSnapshot(STATIC47_ADDR, {
+      timestamp: Date.now(),
+      reputation: static47Rep,
+      delta: 300,
+      jobId,
+    });
+    s.addLogEntry({
+      type: 'REPUTATION_UPDATED',
+      source: 'mock',
+      agent: STATIC47_ADDR,
+      agentName: AGENTS.static47.name,
+      delta: '+300',
+      newReputation: static47Rep,
+      timestamp: Date.now(),
+    });
+
+    // Reputation snapshot for LLMContextual-3 (+400 delta)
+    const llm3Rep = (s.agents[LLM3_ADDR]?.reputationScore || 8700) + 400;
+    s.addReputationSnapshot(LLM3_ADDR, {
+      timestamp: Date.now(),
+      reputation: llm3Rep,
+      delta: 400,
+      jobId,
+    });
+    s.addLogEntry({
+      type: 'REPUTATION_UPDATED',
+      source: 'mock',
+      agent: LLM3_ADDR,
+      agentName: AGENTS.llm3.name,
+      delta: '+400',
+      newReputation: llm3Rep,
+      timestamp: Date.now(),
+    });
+
+    // AuditRecorded: random security score 65–90
+    const securityScore = 65 + Math.floor(Math.random() * 25);
+    const existingHealth = s.contractHealth[contractAddr] || {};
+    s.setContractHealth(contractAddr, {
+      ...existingHealth,
+      contractAddress: contractAddr,
+      securityScore,
+      totalAudits: (existingHealth.totalAudits || 0) + 1,
+      lastAudit: Date.now(),
+      reauditDue: false,
+      auditHistory: [
+        ...(existingHealth.auditHistory || []),
+        { timestamp: Date.now(), securityScore, jobId },
+      ].slice(-20),
+    });
+    s.addLogEntry({
+      type: 'AUDIT_RECORDED',
+      source: 'mock',
+      contractAddress: contractAddr,
+      securityScore,
+      totalAudits: (existingHealth.totalAudits || 0) + 1,
+      timestamp: Date.now(),
+    });
+  }, 65_000);
+
   return () => timeouts.forEach(clearTimeout);
 }
 
@@ -611,6 +744,9 @@ let _cycleIndex = 0;
 export function startMockEventStream(getState, config) {
   const cleanups = [];
   _cycleIndex = 0;
+
+  // Seed agents into leaderboard before first cycle
+  seedAgents(getState);
 
   // Fire first cycle immediately
   cleanups.push(runDay2Cycle(getState, _cycleIndex++));

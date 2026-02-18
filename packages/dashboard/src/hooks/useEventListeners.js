@@ -51,6 +51,12 @@ export function useEventListeners(connection) {
         addSettlement:             useStore.getState().addSettlement,
         // Day 2 — GUARD flows
         addGuardFlow:              useStore.getState().addGuardFlow,
+        // Day 3 — StakingManager
+        updateAgentStake:          useStore.getState().updateAgentStake,
+        addSlashEvent:             useStore.getState().addSlashEvent,
+        // Day 3 — Treasury
+        addTreasuryRevenue:        useStore.getState().addTreasuryRevenue,
+        addTreasuryDistribution:   useStore.getState().addTreasuryDistribution,
       };
       const service = new EventListenerService(config, contracts, storeActions, ethersProvider);
       const stop = service.startAll();

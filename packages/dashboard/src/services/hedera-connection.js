@@ -8,6 +8,11 @@ import AuditBudgetVaultABI from '@sdk/abis/AuditBudgetVault.json';
 import SubAuctionABI from '@sdk/abis/SubAuction.json';
 import DataMarketplaceABI from '@sdk/abis/DataMarketplace.json';
 import PaymentSettlementABI from '@sdk/abis/PaymentSettlement.json';
+// Day 3 ABIs
+import VaultFactoryABI from '@sdk/abis/VaultFactory.json';
+import AuditVaultABI from '@sdk/abis/AuditVault.json';
+import StakingManagerABI from '@sdk/abis/StakingManager.json';
+import TreasuryABI from '@sdk/abis/Treasury.json';
 
 // Config — static import via @sdk alias (Vite resolves at build time)
 import sdkConfig from '@sdk/config.json';
@@ -126,6 +131,25 @@ export function createContractInstances(provider, config) {
     provider
   );
 
+  // Day 3 contracts
+  const vaultFactoryContract = new Contract(
+    config.contracts.vaultFactory?.evmAddress || '0x0000000000000000000000000000000000000007',
+    VaultFactoryABI.abi,
+    provider
+  );
+
+  const stakingManagerContract = new Contract(
+    config.contracts.stakingManager?.evmAddress || '0x0000000000000000000000000000000000000008',
+    StakingManagerABI.abi,
+    provider
+  );
+
+  const treasuryContract = new Contract(
+    config.contracts.treasury?.evmAddress || '0x0000000000000000000000000000000000000009',
+    TreasuryABI.abi,
+    provider
+  );
+
   console.log('[AuditGuard] Contract instances created (read-only)');
   return {
     agentRegistryContract,
@@ -134,7 +158,25 @@ export function createContractInstances(provider, config) {
     subAuctionContract,
     dataMarketplaceContract,
     paymentSettlementContract,
+    vaultFactoryContract,
+    stakingManagerContract,
+    treasuryContract,
   };
+}
+
+// ── Vault instance cache (address → Contract) ──────────────
+const _vaultInstances = {};
+
+/**
+ * Returns (and caches) an AuditVault contract instance for the given address.
+ * @param {string} vaultAddress  EVM address of the AuditVault
+ * @param {import('ethers').JsonRpcProvider} provider
+ */
+export function getVaultInstance(vaultAddress, provider) {
+  if (!_vaultInstances[vaultAddress]) {
+    _vaultInstances[vaultAddress] = new Contract(vaultAddress, AuditVaultABI.abi, provider);
+  }
+  return _vaultInstances[vaultAddress];
 }
 
 // ---------- e) initializeConnection ----------

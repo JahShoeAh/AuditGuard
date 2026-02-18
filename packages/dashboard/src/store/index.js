@@ -139,6 +139,71 @@ const useStore = create((set) => ({
       stats: { ...s.stats, [key]: (s.stats[key] || 0) + amount },
     })),
 
+  // ── Day 3: Agent enriched profiles (from StakingManager) ─
+  agentProfiles: {},
+  setAgentProfile: (addr, profile) =>
+    set((s) => ({ agentProfiles: { ...s.agentProfiles, [addr]: profile } })),
+
+  // ── Day 3: Reputation history (sparklines + graphs) ──────
+  reputationHistory: {},
+  addReputationSnapshot: (addr, snapshot) =>
+    set((s) => ({
+      reputationHistory: {
+        ...s.reputationHistory,
+        [addr]: [...(s.reputationHistory[addr] || []), snapshot].slice(-50),
+      },
+    })),
+
+  // ── Day 3: Vault / contract health data ──────────────────
+  contractHealth: {},
+  setContractHealth: (addr, health) =>
+    set((s) => ({ contractHealth: { ...s.contractHealth, [addr]: health } })),
+
+  // ── Day 3: Slash events (newest first, max 50) ────────────
+  slashEvents: [],
+  addSlashEvent: (slash) =>
+    set((s) => ({ slashEvents: [slash, ...s.slashEvents].slice(0, 50) })),
+
+  // ── Day 3: Treasury revenue tracking ─────────────────────
+  treasuryRevenue: {
+    total: 0, auditFees: 0, marketplaceFees: 0,
+    reportFees: 0, slashingProceeds: 0, subAuctionFees: 0,
+  },
+  addTreasuryRevenue: (source, amount) =>
+    set((s) => {
+      const sourceKey = [
+        'auditFees', 'marketplaceFees', 'reportFees', 'slashingProceeds', 'subAuctionFees',
+      ][source] || 'auditFees';
+      const amt = Number(amount) || 0;
+      return {
+        treasuryRevenue: {
+          ...s.treasuryRevenue,
+          total: s.treasuryRevenue.total + amt,
+          [sourceKey]: (s.treasuryRevenue[sourceKey] || 0) + amt,
+        },
+      };
+    }),
+  treasuryDistributions: [],
+  addTreasuryDistribution: (dist) =>
+    set((s) => ({ treasuryDistributions: [dist, ...s.treasuryDistributions].slice(0, 50) })),
+
+  // ── Day 3: Tab + selection state ─────────────────────────
+  activeTab: 'liveFeed',
+  setActiveTab: (tab) => set({ activeTab: tab }),
+  selectedAgent: null,
+  setSelectedAgent: (addr) => set({ selectedAgent: addr }),
+  selectedContract: null,
+  setSelectedContract: (addr) => set({ selectedContract: addr }),
+
+  // ── Day 3: Agent stake update (from StakingManager.Staked) ─
+  updateAgentStake: (addr, newTotal) =>
+    set((s) => ({
+      agents: {
+        ...s.agents,
+        [addr]: { ...(s.agents[addr] || {}), stakedAmount: newTotal },
+      },
+    })),
+
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,
@@ -146,6 +211,13 @@ const useStore = create((set) => ({
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],
+    agentProfiles: {}, reputationHistory: {}, contractHealth: {},
+    slashEvents: [], treasuryDistributions: [],
+    treasuryRevenue: {
+      total: 0, auditFees: 0, marketplaceFees: 0,
+      reportFees: 0, slashingProceeds: 0, subAuctionFees: 0,
+    },
+    selectedAgent: null, selectedContract: null,
     stats: {
       totalDiscoveries: 0, totalAuctions: 0, totalBids: 0,
       guardTransacted: 0, totalSubAuctions: 0, totalDataSales: 0,
