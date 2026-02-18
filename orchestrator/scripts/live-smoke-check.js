@@ -15,7 +15,7 @@ function randomAddress() {
 
 async function run() {
   const hcs = new HCSClient();
-  const contractAddress = randomAddress();
+  const contractAddress = process.env.SMOKE_CONTRACT_ADDRESS || randomAddress();
   const testAgentId = `live-smoke-${randomHex(4)}`;
 
   console.log(`Using discovery topic: ${CONFIG.hcsTopics.discovery}`);
@@ -71,6 +71,7 @@ async function run() {
   const invite = await invitePromise;
   console.log("✅ Live smoke passed");
   console.log(`Received ${invite.type} for ${invite.payload.contractAddress}`);
+  process.exit(0);
 }
 
 run().catch((err) => {
