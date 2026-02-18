@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import useStore from '../store';
 import { hashscan } from '../utils/hashscan';
+import WalletGate from './wallet/WalletGate';
 
 // ── Category + listing type config ───────────────────────────
 
@@ -161,6 +163,17 @@ export default function MarketplaceListingRow({ listing, isNew }) {
           </span>
         )}
       </div>
+
+      <WalletGate>
+        <div className="mt-2 flex justify-end">
+          <Link
+            to="/dashboard/reports"
+            className="rounded border border-emerald-500/50 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20"
+          >
+            Purchase
+          </Link>
+        </div>
+      </WalletGate>
     </motion.div>
   );
 }
