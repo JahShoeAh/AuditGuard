@@ -20,6 +20,10 @@ import type {
   SubResultDeliveredEvent,
 } from "../shared/types.js";
 import { ethers } from "ethers";
+import { callInference, ZGClientError, initZgClient } from "./zg-client.js";
+import { buildMessages } from "./prompt-builder.js";
+import { parseFindings } from "./response-parser.js";
+import type { AuditContext } from "./prompt-builder.js";
 
 // ---- Config ----
 const AGENT_ID = "llm-contextual-003";
@@ -99,10 +103,9 @@ export function calculateBid(
   };
 }
 
-// ---- Mock Audit ----
+// ---- Mock Audit (fallback) ----
 
-export function generateFindings(contractType: ContractType, hasDepAnalysis: boolean): Finding[] {
-  // LLM agent finds fewer but higher-severity issues
+export function generateMockFindings(contractType: ContractType, hasDepAnalysis: boolean): Finding[] {
   const count = randomInt(1, 5);
   const findings: Finding[] = [];
 
@@ -121,6 +124,65 @@ export function generateFindings(contractType: ContractType, hasDepAnalysis: boo
   return findings;
 }
 
+/** Backward-compatible alias so existing tests and callers keep working. */
+export const generateFindings = generateMockFindings;
+
+// ---- AI-Powered Audit via 0g ----
+
+function isZgEnabled(): boolean {
+  if (process.env.ZG_ENABLED === "false") return false;
+  const privateKey = process.env.ZG_PRIVATE_KEY ?? "";
+  const providerAddress = process.env.ZG_PROVIDER_ADDRESS ?? "";
+  return privateKey.length > 0 && providerAddress.length > 0;
+}
+
+export async function analyzeWithAI(
+  ctx: AuditContext
+): Promise<{ findings: Finding[]; usedFallback: boolean }> {
+  if (!isZgEnabled()) {
+    log.info("[0g fallback] 0g inference disabled — using mock findings");
+    return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
+  }
+
+  const cfg = (CONFIG as any).zgInference ?? {};
+  const model = cfg.model || process.env.ZG_MODEL || "qwen-2.5-7b-instruct";
+  const messages = buildMessages(ctx);
+  const maxAttempts = 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const raw = await callInference({
+        model,
+        messages,
+        temperature: 0.3,
+        max_tokens: 4000,
+      });
+
+      const result = parseFindings(raw, AGENT_ID, ctx.contractType);
+
+      if (result.parseError) {
+        log.warn(`[0g] Parse error (attempt ${attempt}): ${result.parseError}`);
+        if (attempt < maxAttempts) continue;
+        log.info("[0g fallback] All attempts failed to parse — using mock findings");
+        return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
+      }
+
+      log.info(`[0g] AI analysis complete: ${result.findings.length} findings`);
+      return { findings: result.findings, usedFallback: false };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.warn(`[0g] Inference error (attempt ${attempt}): ${errMsg}`);
+      if (attempt < maxAttempts) {
+        await sleep(2000);
+        continue;
+      }
+    }
+  }
+
+  log.info("[0g fallback] All retry attempts exhausted — using mock findings");
+  return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
+}
+
 // ---- Main ----
 
 async function main() {
@@ -134,6 +196,15 @@ async function main() {
   const contracts = new ContractClient(wallet.evmWallet);
 
   log.info(`Wallet: ${wallet.evmAddress}`);
+
+  // Initialize 0g inference broker (deposit funds, acknowledge provider)
+  if (isZgEnabled()) {
+    log.info("Initializing 0g Compute Network broker...");
+    await initZgClient();
+    log.info("0g broker ready");
+  } else {
+    log.info("0g inference disabled — will use mock fallback");
+  }
 
   // Register with the orchestrator so our bids are accepted
   await hcs.publishAuditLog({
@@ -358,7 +429,16 @@ async function simulateAuditCycle(
   log.info(`Running deep semantic analysis... (${auditTime}s)`);
   await sleep(auditTime * 1000);
 
-  const findings = generateFindings(contractType, hasDepAnalysis);
+  const { findings, usedFallback } = await analyzeWithAI({
+    contractAddress,
+    contractType,
+    estimatedLOC: loc,
+    riskScore: 0,
+    hasDepAnalysis,
+  });
+  if (usedFallback) {
+    log.info("Used mock fallback for this audit cycle");
+  }
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
 
   log.info(

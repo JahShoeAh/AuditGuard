@@ -94,7 +94,7 @@ async function main() {
 
     // ── Public Discovery: broadcast to all agents ──
     await hcs.publishDiscovery(discovery);
-    log.info(`Published discovery to HCS topic ${CONFIG.hcs.discoveryTopic}`);
+    log.info(`Published discovery to HCS topic ${CONFIG.hcsTopics.discovery}`);
 
     await hcs.publishAuditLog({
       type: "AUCTION_CREATED",

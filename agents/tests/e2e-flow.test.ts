@@ -9,7 +9,19 @@
  * No Hedera/HCS connection needed — this exercises the economic logic.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("@0glabs/0g-serving-broker", () => ({
+  createZGComputeNetworkBroker: vi.fn().mockResolvedValue({
+    inference: {
+      getServiceMetadata: vi.fn().mockResolvedValue({ endpoint: "http://mock", model: "mock-model" }),
+      getRequestHeaders: vi.fn().mockResolvedValue({ "X-0G-Auth": "mock" }),
+      acknowledgeProviderSigner: vi.fn().mockResolvedValue(undefined),
+      listService: vi.fn().mockResolvedValue([]),
+    },
+    ledger: { depositFund: vi.fn().mockResolvedValue(undefined) },
+  }),
+}));
 
 // ─── Import every agent's exported logic ───────────────────────────────────
 
@@ -360,7 +372,7 @@ describe("🔄 End-to-End: Full Audit Lifecycle", () => {
                     jobId: contractAddress,
                     reportHash: report.reportHash,
                     totalFindings: report.totalFindings,
-                    criticalFindings: totalCritical,
+                    criticalCount: totalCritical,
                     agentCount: 3,
                 },
             };

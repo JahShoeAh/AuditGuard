@@ -8,6 +8,18 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("@0glabs/0g-serving-broker", () => ({
+  createZGComputeNetworkBroker: vi.fn().mockResolvedValue({
+    inference: {
+      getServiceMetadata: vi.fn().mockResolvedValue({ endpoint: "http://mock", model: "mock-model" }),
+      getRequestHeaders: vi.fn().mockResolvedValue({ "X-0G-Auth": "mock" }),
+      acknowledgeProviderSigner: vi.fn().mockResolvedValue(undefined),
+      listService: vi.fn().mockResolvedValue([]),
+    },
+    ledger: { depositFund: vi.fn().mockResolvedValue(undefined) },
+  }),
+}));
+
 // =========================================================================
 // AGENT 1: SCANNER
 // =========================================================================
@@ -738,7 +750,7 @@ describe("Alert Agent", () => {
                 type: "REPORT_PUBLISHED",
                 agentId: "report-001",
                 timestamp: Date.now(),
-                payload: { jobId: "j1", criticalFindings: 2, totalFindings: 10, reportHash: "0xabc" },
+                payload: { jobId: "j1", criticalCount: 2, totalFindings: 10, reportHash: "0xabc" },
             };
             expect(shouldAlert(msg)).toBe(true);
         });
@@ -749,7 +761,7 @@ describe("Alert Agent", () => {
                 type: "REPORT_PUBLISHED",
                 agentId: "report-001",
                 timestamp: Date.now(),
-                payload: { jobId: "j1", criticalFindings: 0, totalFindings: 10, reportHash: "0xabc" },
+                payload: { jobId: "j1", criticalCount: 0, totalFindings: 10, reportHash: "0xabc" },
             };
             expect(shouldAlert(msg)).toBe(false);
         });
@@ -1004,7 +1016,7 @@ describe("Inter-Agent Interactions", () => {
                 timestamp: Date.now(),
                 payload: {
                     jobId: report.jobId,
-                    criticalFindings: 3,
+                    criticalCount: 3,
                     totalFindings: report.totalFindings,
                     reportHash: report.reportHash,
                 },
@@ -1022,7 +1034,7 @@ describe("Inter-Agent Interactions", () => {
                 timestamp: Date.now(),
                 payload: {
                     jobId: "j2",
-                    criticalFindings: 0,
+                    criticalCount: 0,
                     totalFindings: 5,
                     reportHash: "0xabc",
                 },
