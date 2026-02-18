@@ -17,6 +17,7 @@
     "test": "npx hardhat test --config packages/contracts/hardhat.config.js",
     "deploy:token": "node scripts/deploy-guard-token.js",
     "deploy:contracts": "node scripts/deploy-all.js",
+    "deploy:timelock": "node scripts/deploy-timelock.js",
     "setup:hcs": "node scripts/setup-hcs-topics.js",
     "scanner": "npm --prefix agents run scanner",
     "agents": "npm --prefix agents run all",

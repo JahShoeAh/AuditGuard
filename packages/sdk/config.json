@@ -118,5 +118,12 @@
       "current ABI. Either upgrade StakingManager or call propagateSlash manually",
       "from an authorized EOA until StakingManager is upgraded."
     ]
+  },
+  "timelockVault": {
+    "evmAddress": "0x6121D1B63E349D26Fd147FDCa791c515FfdDbE60",
+    "contractId": "0.0.6121d1b63e349d26fd147fdca791c515ffddbe60",
+    "deployedAt": "2026-02-18T23:34:26.979Z",
+    "deployer": "0x49b10D6983BFB1BcA4706E34151fd83e7FEC8B9b",
+    "description": "HBAR time-lock vault — AuditGuard pipeline demo target"
   }
 }
