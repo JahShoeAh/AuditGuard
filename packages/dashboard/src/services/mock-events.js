@@ -191,6 +191,7 @@ function runDay2Cycle(getState, cycleIndex) {
   const contractAddr = randHexAddr();
   const riskScore    = 55 + Math.floor(cycleIndex * 7 % 30); // 55-84
   const lineCount    = 3500 + cycleIndex * 200;
+  const cycleStartMs = Date.now(); // track for timing bar in AuditJobCard
 
   // ── Phase 1: Discovery (t=0) ─────────────────────────────
   {
@@ -228,6 +229,8 @@ function runDay2Cycle(getState, cycleIndex) {
       initialRiskScore: riskScore,
       lineCount,
       blockNumber: Math.floor(Math.random() * 900_000) + 100_000,
+      discoveredAt: cycleStartMs,
+      postedAt: Date.now(),
     };
     s.setJob(jobId, job);
     s.incrementStat('totalAuctions');
@@ -292,7 +295,11 @@ function runDay2Cycle(getState, cycleIndex) {
       totalEscrowedFormatted: parseGuardAmount(totalEscrowed),
       platformFee,
       platformFeeFormatted: parseGuardAmount(platformFee),
+      winnersAt: Date.now(),
     });
+    // Also stamp the job with winnersAt
+    const currentJob = s.activeJobs?.[jobId];
+    if (currentJob) s.setJob(jobId, { ...currentJob, winnersAt: Date.now() });
     const tx = mkTx();
     s.addLogEntry({
       type: 'WinnersSelected',
@@ -324,6 +331,21 @@ function runDay2Cycle(getState, cycleIndex) {
       type: 'PLATFORM_FEE',
       jobId,
       timestamp: Date.now(),
+    });
+    // StakeLocked snapshots for winners
+    const static47Stake = Number(s.agents[STATIC47_ADDR]?.stakedAmount || 15_000_000_000n);
+    s.addStakeSnapshot(STATIC47_ADDR, {
+      timestamp: Date.now(), event: 'STAKE_LOCKED', jobId,
+      totalStaked: static47Stake,
+      lockedStake: 5_000_000_000,   // 50 GUARD collateral
+      availableStake: static47Stake - 5_000_000_000,
+    });
+    const llm3Stake = Number(s.agents[LLM3_ADDR]?.stakedAmount || 12_000_000_000n);
+    s.addStakeSnapshot(LLM3_ADDR, {
+      timestamp: Date.now(), event: 'STAKE_LOCKED', jobId,
+      totalStaked: llm3Stake,
+      lockedStake: 5_000_000_000,
+      availableStake: llm3Stake - 5_000_000_000,
     });
   }, 25_000);
 
@@ -584,7 +606,11 @@ function runDay2Cycle(getState, cycleIndex) {
       recipientCount: 3,
       blockNumber: Math.floor(Math.random() * 900_000) + 100_000,
       timestamp: Date.now(),
+      settledAt: Date.now(),
     });
+    // Stamp the job with settledAt
+    const jobAtSettle = s.activeJobs?.[jobId];
+    if (jobAtSettle) s.setJob(jobId, { ...jobAtSettle, settledAt: Date.now() });
     s.incrementStat('totalSettlements');
     s.incrementStat('totalGuardTransacted', 52.50);
     s.addLogEntry({
@@ -640,49 +666,119 @@ function runDay2Cycle(getState, cycleIndex) {
         timestamp: Date.now(),
       });
     }, 100);
+
+    // StakeUnlocked after settlement
+    setTimeout(() => {
+      const s2 = getState();
+      const s47Stake = Number(s2.agents[STATIC47_ADDR]?.stakedAmount || 15_000_000_000n);
+      s2.addStakeSnapshot(STATIC47_ADDR, {
+        timestamp: Date.now(), event: 'STAKE_UNLOCKED', jobId,
+        totalStaked: s47Stake, lockedStake: 0, availableStake: s47Stake,
+      });
+      const l3Stake = Number(s2.agents[LLM3_ADDR]?.stakedAmount || 12_000_000_000n);
+      s2.addStakeSnapshot(LLM3_ADDR, {
+        timestamp: Date.now(), event: 'STAKE_UNLOCKED', jobId,
+        totalStaked: l3Stake, lockedStake: 0, availableStake: l3Stake,
+      });
+    }, 500);
   }, 60_000);
 
-  // ── Phase 9.5: Day 3 reputation + audit recorded (t=65s) ─
+  // ── Phase 9.5: Day 3 reputation (granular) + audit (t=65s) ─
+  // StaticAnalysis-47: 8 findings × +50 each at 1s intervals
+  // LLMContextual-3:   3 findings × +50 + 1 uniqueness bonus × +200
+  // Every 3rd cycle: false positive for Fuzzer-12 (-100 rep)
+  for (let i = 0; i < 8; i++) {
+    schedule(() => {
+      const s = getState();
+      const prev = s.reputationHistory[STATIC47_ADDR];
+      const baseRep = prev?.length
+        ? prev[prev.length - 1].reputation
+        : (s.agents[STATIC47_ADDR]?.reputationScore || 9400);
+      const newRep = baseRep + 50;
+      s.addReputationSnapshot(STATIC47_ADDR, {
+        timestamp: Date.now(), reputation: newRep, delta: 50,
+        jobId, eventType: 'FINDING', label: `Finding #${i + 1}`,
+      });
+      s.addLogEntry({
+        type: 'REPUTATION_UPDATED', source: 'mock',
+        agent: STATIC47_ADDR, agentName: AGENTS.static47.name,
+        delta: '+50', newReputation: newRep, timestamp: Date.now(),
+      });
+    }, 65_000 + i * 1_000);
+  }
+
+  for (let i = 0; i < 3; i++) {
+    schedule(() => {
+      const s = getState();
+      const prev = s.reputationHistory[LLM3_ADDR];
+      const baseRep = prev?.length
+        ? prev[prev.length - 1].reputation
+        : (s.agents[LLM3_ADDR]?.reputationScore || 8700);
+      const newRep = baseRep + 50;
+      s.addReputationSnapshot(LLM3_ADDR, {
+        timestamp: Date.now(), reputation: newRep, delta: 50,
+        jobId, eventType: 'FINDING', label: `Finding #${i + 1}`,
+      });
+      s.addLogEntry({
+        type: 'REPUTATION_UPDATED', source: 'mock',
+        agent: LLM3_ADDR, agentName: AGENTS.llm3.name,
+        delta: '+50', newReputation: newRep, timestamp: Date.now(),
+      });
+    }, 65_000 + i * 1_000);
+  }
+
+  // LLM3 uniqueness bonus at t=68s
   schedule(() => {
     const s = getState();
-
-    // Reputation snapshot for StaticAnalysis-47 (+300 delta)
-    const static47Rep = (s.agents[STATIC47_ADDR]?.reputationScore || 9400) + 300;
-    s.addReputationSnapshot(STATIC47_ADDR, {
-      timestamp: Date.now(),
-      reputation: static47Rep,
-      delta: 300,
-      jobId,
-    });
-    s.addLogEntry({
-      type: 'REPUTATION_UPDATED',
-      source: 'mock',
-      agent: STATIC47_ADDR,
-      agentName: AGENTS.static47.name,
-      delta: '+300',
-      newReputation: static47Rep,
-      timestamp: Date.now(),
-    });
-
-    // Reputation snapshot for LLMContextual-3 (+400 delta)
-    const llm3Rep = (s.agents[LLM3_ADDR]?.reputationScore || 8700) + 400;
+    const prev = s.reputationHistory[LLM3_ADDR];
+    const baseRep = prev?.length
+      ? prev[prev.length - 1].reputation
+      : (s.agents[LLM3_ADDR]?.reputationScore || 8700);
+    const newRep = baseRep + 200;
     s.addReputationSnapshot(LLM3_ADDR, {
-      timestamp: Date.now(),
-      reputation: llm3Rep,
-      delta: 400,
-      jobId,
+      timestamp: Date.now(), reputation: newRep, delta: 200,
+      jobId, eventType: 'JOB_COMPLETED', label: 'Uniqueness Bonus',
     });
     s.addLogEntry({
-      type: 'REPUTATION_UPDATED',
-      source: 'mock',
-      agent: LLM3_ADDR,
-      agentName: AGENTS.llm3.name,
-      delta: '+400',
-      newReputation: llm3Rep,
-      timestamp: Date.now(),
+      type: 'REPUTATION_UPDATED', source: 'mock',
+      agent: LLM3_ADDR, agentName: AGENTS.llm3.name,
+      delta: '+200', newReputation: newRep, timestamp: Date.now(),
     });
+  }, 68_000);
 
-    // AuditRecorded: random security score 65–90
+  // Every 3rd cycle: false positive event for Fuzzer-12
+  if (cycleIndex % 3 === 2) {
+    schedule(() => {
+      const s = getState();
+      const prev = s.reputationHistory[FUZZER12_ADDR];
+      const baseRep = prev?.length
+        ? prev[prev.length - 1].reputation
+        : (s.agents[FUZZER12_ADDR]?.reputationScore || 8700);
+      const newRep = Math.max(0, baseRep - 100);
+      s.addReputationSnapshot(FUZZER12_ADDR, {
+        timestamp: Date.now(), reputation: newRep, delta: -100,
+        jobId, eventType: 'FALSE_POSITIVE', label: 'False Positive Penalty',
+      });
+      s.addSlashEvent({
+        slashId: `mock-${jobId}-fp`,
+        agent: FUZZER12_ADDR, agentName: AGENTS.fuzzer12.name,
+        reason: 0, reasonStr: 'FALSE_POSITIVE',
+        slashedAmount: 500_000_000n,
+        slashedAmountFormatted: '5.00 GUARD',
+        slashBasisPoints: 500, jobId, timestamp: Date.now(),
+        appealStatus: 'NONE',
+      });
+      s.addLogEntry({
+        type: 'REPUTATION_UPDATED', source: 'mock',
+        agent: FUZZER12_ADDR, agentName: AGENTS.fuzzer12.name,
+        delta: '-100', newReputation: newRep, timestamp: Date.now(),
+      });
+    }, 66_000);
+  }
+
+  // AuditRecorded: random security score 65–90 at t=70s
+  schedule(() => {
+    const s = getState();
     const securityScore = 65 + Math.floor(Math.random() * 25);
     const existingHealth = s.contractHealth[contractAddr] || {};
     s.setContractHealth(contractAddr, {
@@ -698,14 +794,12 @@ function runDay2Cycle(getState, cycleIndex) {
       ].slice(-20),
     });
     s.addLogEntry({
-      type: 'AUDIT_RECORDED',
-      source: 'mock',
-      contractAddress: contractAddr,
-      securityScore,
+      type: 'AUDIT_RECORDED', source: 'mock',
+      contractAddress: contractAddr, securityScore,
       totalAudits: (existingHealth.totalAudits || 0) + 1,
       timestamp: Date.now(),
     });
-  }, 65_000);
+  }, 70_000);
 
   return () => timeouts.forEach(clearTimeout);
 }

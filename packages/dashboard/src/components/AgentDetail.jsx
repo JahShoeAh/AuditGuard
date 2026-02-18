@@ -1,6 +1,8 @@
 import useStore from '../store/index';
 import { fmt } from '../utils/format';
 import { hashscan } from '../utils/hashscan';
+import ReputationGraph from './ReputationGraph';
+import StakingChart from './StakingChart';
 
 // ── Slash reason labels + colors ───────────────────────────
 const SLASH_REASON_CONFIG = [
@@ -36,32 +38,6 @@ const TIER_BADGE  = [
   'bg-cyan-900 text-cyan-300',
   'bg-amber-900 text-amber-300',
 ];
-
-// ── Reputation sparkline (20 pts, green/red segments) ──────
-function RepSparkline({ history }) {
-  const pts = (history || []).slice(-20);
-  if (pts.length < 2) return null;
-  const reps = pts.map((p) => p.reputation || 0);
-  const min = Math.min(...reps);
-  const max = Math.max(...reps);
-  const range = max - min || 1;
-  const W = 200, H = 40;
-  const xStep = W / (pts.length - 1);
-  return (
-    <svg width={W} height={H} className="block">
-      {pts.slice(1).map((pt, i) => {
-        const x1 = i * xStep, x2 = (i + 1) * xStep;
-        const y1 = H - ((pts[i].reputation - min) / range) * (H - 6) - 3;
-        const y2 = H - ((pt.reputation - min) / range) * (H - 6) - 3;
-        const color = pt.delta >= 0 ? '#4ade80' : '#f87171';
-        return (
-          <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
-            stroke={color} strokeWidth="2" strokeLinecap="round" />
-        );
-      })}
-    </svg>
-  );
-}
 
 // ── Stacked stake bar ──────────────────────────────────────
 function StakeBar({ effective, locked, available }) {
@@ -165,24 +141,18 @@ export default function AgentDetail({ addr }) {
 
       {/* ── Reputation ── */}
       <Section title="Reputation">
-        <div className={`text-3xl font-bold mb-2 ${
-          repNum >= 85 ? 'text-green-400' : repNum >= 70 ? 'text-yellow-300' : repNum >= 50 ? 'text-amber-400' : 'text-red-400'
-        }`}>
-          {repNum.toFixed(2)}
-        </div>
-        <div className="h-2 rounded bg-gray-700 overflow-hidden mb-3">
-          <div
-            className="h-full rounded bg-cyan-400 transition-all"
-            style={{ width: `${Math.min(100, repNum)}%` }}
-          />
-        </div>
-        <RepSparkline history={history} />
+        <ReputationGraph history={history} currentReputation={repRaw} />
         {history.length > 0 && (
-          <div className="text-gray-500 mt-1">
+          <div className="text-gray-500 mt-1 text-[10px]">
             Last update:{' '}
             <span className="text-gray-400">{fmt.relativeTime(history[history.length - 1]?.timestamp)}</span>
           </div>
         )}
+      </Section>
+
+      {/* ── Staking History ── */}
+      <Section title="Staking History">
+        <StakingChart addr={addr} />
       </Section>
 
       {/* ── Staking ── */}

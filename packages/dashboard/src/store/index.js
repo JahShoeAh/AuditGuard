@@ -204,6 +204,17 @@ const useStore = create((set) => ({
       },
     })),
 
+  // ── Day 3: Stake history (for StakingChart) ───────────────
+  // { timestamp, totalStaked, lockedStake, availableStake, event, jobId }
+  stakeHistory: {},
+  addStakeSnapshot: (addr, snapshot) =>
+    set((s) => ({
+      stakeHistory: {
+        ...s.stakeHistory,
+        [addr]: [...(s.stakeHistory[addr] || []), snapshot].slice(-50),
+      },
+    })),
+
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,
@@ -212,7 +223,7 @@ const useStore = create((set) => ({
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],
     agentProfiles: {}, reputationHistory: {}, contractHealth: {},
-    slashEvents: [], treasuryDistributions: [],
+    slashEvents: [], treasuryDistributions: [], stakeHistory: {},
     treasuryRevenue: {
       total: 0, auditFees: 0, marketplaceFees: 0,
       reportFees: 0, slashingProceeds: 0, subAuctionFees: 0,

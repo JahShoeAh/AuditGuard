@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import useStore from './store/index';
 import { useConnection } from './hooks/useConnection';
@@ -12,6 +13,8 @@ import DebugPanel from './components/DebugPanel';
 import ActivityTicker from './components/ActivityTicker';
 import AgentLeaderboard from './components/AgentLeaderboard';
 import ContractHealth from './components/ContractHealth';
+import AuditJobTracker from './components/AuditJobTracker';
+import ReputationComparison from './components/ReputationComparison';
 
 // ── Connection error banner ────────────────────────────────
 
@@ -97,6 +100,63 @@ function LiveFeedTab() {
   );
 }
 
+// ── Agents tab (leaderboard + optional comparison chart) ───
+
+function AgentsTab() {
+  const [showComparison, setShowComparison] = useState(false);
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      {/* Top control bar */}
+      <div className="flex-shrink-0 px-3 py-1.5 border-b border-gray-800 flex items-center justify-end bg-gray-950">
+        <button
+          onClick={() => setShowComparison((v) => !v)}
+          className={[
+            'text-[10px] font-bold uppercase tracking-wider font-mono px-3 py-1 rounded transition-colors',
+            showComparison
+              ? 'bg-cyan-900 text-cyan-300 border border-cyan-700'
+              : 'bg-gray-800 text-gray-500 hover:text-gray-300 border border-gray-700',
+          ].join(' ')}
+        >
+          📈 Compare Agents
+        </button>
+      </div>
+
+      {/* Comparison chart (collapsible) */}
+      <AnimatePresence initial={false}>
+        {showComparison && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22 }}
+            className="flex-shrink-0 overflow-hidden border-b border-gray-800 bg-gray-950 px-3 py-2"
+          >
+            <ReputationComparison />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Leaderboard fills remaining space */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <AgentLeaderboard />
+      </div>
+    </div>
+  );
+}
+
+// ── Contracts tab (health grid + audit job tracker) ─────────
+
+function ContractsTab() {
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <ContractHealth />
+      </div>
+      <AuditJobTracker />
+    </div>
+  );
+}
+
 // ── Analytics placeholder ──────────────────────────────────
 
 function AnalyticsPlaceholder() {
@@ -157,12 +217,12 @@ export default function App() {
           )}
           {activeTab === 'agents' && (
             <TabContent key="agents">
-              <AgentLeaderboard />
+              <AgentsTab />
             </TabContent>
           )}
           {activeTab === 'contracts' && (
             <TabContent key="contracts">
-              <ContractHealth />
+              <ContractsTab />
             </TabContent>
           )}
           {activeTab === 'analytics' && (
