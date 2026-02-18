@@ -1,6 +1,28 @@
 require("@nomicfoundation/hardhat-toolbox");
 const path = require("path");
+const { PrivateKey } = require("@hashgraph/sdk");
 require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
+
+function normalizeEvmPrivateKey(raw) {
+  const value = String(raw || "").trim().replace(/^['"]|['"]$/g, "");
+  if (!value) return null;
+
+  const noPrefix = value.startsWith("0x") ? value.slice(2) : value;
+  if (/^[0-9a-fA-F]{64}$/.test(noPrefix)) {
+    return `0x${noPrefix}`;
+  }
+
+  try {
+    const parsed = PrivateKey.fromString(value);
+    return `0x${parsed.toStringRaw()}`;
+  } catch {
+    return null;
+  }
+}
+
+const normalizedPk = normalizeEvmPrivateKey(
+  process.env.HEDERA_PRIVATE_KEY || process.env.OPERATOR_PRIVATE_KEY
+);
 
 module.exports = {
   solidity: {
@@ -13,7 +35,7 @@ module.exports = {
   networks: {
     hedera_testnet: {
       url: process.env.HEDERA_JSON_RPC_URL || "https://testnet.hashio.io/api",
-      accounts: process.env.HEDERA_PRIVATE_KEY ? [process.env.HEDERA_PRIVATE_KEY] : [],
+      accounts: normalizedPk ? [normalizedPk] : [],
       chainId: 296, // Hedera Testnet chain ID
       timeout: 120000, // 2 minutes for Hedera mirror node delays
       httpHeaders: {
