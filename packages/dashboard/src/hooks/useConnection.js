@@ -41,7 +41,7 @@ export function useConnection() {
     if (!isConnected && !connectionError) init();
 
     return () => { cancelled = true; };
-  }, []); // run once on mount
+  }, [isConnected, connectionError, setConnected, setConnectionError]);
 
   return { isConnected, connectionError, config, contracts, ethersProvider, hederaClient };
 }

@@ -19,14 +19,29 @@ export class OrchestratorAgent {
   constructor(opts = {}) {
     this.log = opts.log ?? createLogger("orchestrator");
     this.hcs = opts.hcs ?? new HCSClient();
-    this.contracts =
-      opts.contracts ??
-      ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
+    this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
     this.jobs = new Map(); // jobId -> state
     this.enablePing = opts.enablePing ?? true;
+  }
+
+  buildContractClientWithFallback() {
+    try {
+      return ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
+    } catch (err) {
+      this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
+      return {
+        auction: {},
+        subAuction: {},
+        dataMarketplace: {},
+        paymentSettlement: {},
+        agentRegistry: {},
+        budgetVault: {},
+        getAddress: () => "",
+      };
+    }
   }
 
   start() {
