@@ -124,8 +124,28 @@ async function main() {
 
   log.info(`Wallet: ${wallet.evmAddress}`);
 
-  // Listen for data listings from other agents
-  hcs.subscribeAgentComms((msg: HCSMessage) => {
+  // Register with the orchestrator so our bids are accepted
+  await hcs.publishAuditLog({
+    type: "AGENT_REGISTERED",
+    agentId: AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      evmAddress: wallet.evmAddress,
+      specializations: SPECIALIZATIONS,
+      stake: 100,
+      reputation: BASE_REPUTATION,
+    },
+  });
+  log.info("Published AGENT_REGISTERED to auditLog");
+
+  // Queue discoveries until AUCTION_INVITE arrives with real jobId
+  const discoveryQueue = new Map<string, {
+    contractType: ContractType;
+    loc: number;
+  }>();
+
+  // Listen for data listings + AUCTION_INVITE from other agents / orchestrator
+  hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "DATA_LISTING_CREATED" && msg.agentId !== AGENT_ID) {
       const { listingId, price, description, jobId, category } = msg.payload as any;
       if (category === "SCAN_REPORT" && price <= MAX_DATA_PURCHASE_PRICE) {
@@ -137,6 +157,61 @@ async function main() {
           jobId,
         });
       }
+    }
+
+    if (msg.type === "AUCTION_INVITE") {
+      const { jobId, contractAddress, contractType } = (msg as any).payload;
+      const queued = discoveryQueue.get(contractAddress);
+      if (!queued) return;
+      discoveryQueue.delete(contractAddress);
+
+      const bid = calculateBid(queued.loc, queued.contractType, 50);
+      if (!bid) return;
+
+      log.info(`AUCTION_INVITE for job #${jobId} — bidding ${bid.amount} GUARD`);
+
+      try {
+        const tx = await contracts.submitBid(
+          jobId,
+          ethers.parseUnits(bid.amount.toString(), 8),
+          ethers.parseUnits(bid.collateral.toString(), 8),
+          bid.estimatedTimeSec,
+          SPECIALIZATIONS[0]
+        );
+        log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
+      } catch (err) {
+        log.warn(`On-chain bid failed (continuing via HCS): ${err}`);
+      }
+
+      pendingJobs.set(String(jobId), {
+        contractAddress,
+        contractType: queued.contractType,
+        loc: queued.loc,
+      });
+
+      await hcs.publishAuditLog({
+        type: "BID_SUBMITTED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {
+          jobId,
+          contractAddress,
+          bidAmount: bid.amount,
+          collateral: bid.collateral,
+          estimatedTimeSec: bid.estimatedTimeSec,
+          reputation: BASE_REPUTATION,
+          evmAddress: wallet.evmAddress,
+        },
+      });
+
+      setTimeout(async () => {
+        if (pendingJobs.has(String(jobId))) {
+          log.info(`No WinnersSelected after ${WINNER_WAIT_MS / 1000}s — auto-simulating`);
+          updatePricingAfterOutcome(true);
+          pendingJobs.delete(String(jobId));
+          await simulateAuditCycle(contractAddress, queued.contractType, queued.loc, hcs, contracts, wallet.evmAddress);
+        }
+      }, WINNER_WAIT_MS);
     }
   });
 
@@ -158,7 +233,7 @@ async function main() {
       .catch(err => log.error(`Audit cycle failed: ${err}`));
   });
 
-  // Listen for contract discovery events
+  // Listen for discoveries — queue until AUCTION_INVITE arrives
   hcs.subscribeDiscovery(async (msg: HCSMessage) => {
     if (msg.type !== "CONTRACT_DISCOVERED") return;
 
@@ -173,59 +248,14 @@ async function main() {
     const bid = calculateBid(estimatedLOC, contractType, riskScore);
     if (!bid) return;
 
-    log.info(
-      `Bidding: ${bid.amount} GUARD (collateral: ${bid.collateral}) ` +
-      `est. ${bid.estimatedTimeSec}s`
-    );
-
-    // Submit bid on-chain
-    let jobIdNum = 0;
-    try {
-      const tx = await contracts.submitBid(
-        0,
-        ethers.parseUnits(bid.amount.toString(), 8),
-        ethers.parseUnits(bid.collateral.toString(), 8),
-        bid.estimatedTimeSec,
-        SPECIALIZATIONS[0] // primary specialization
-      );
-      log.info(`Bid submitted on-chain (tx: ${tx.hash?.slice(0, 14)}...)`);
-    } catch (err) {
-      log.warn(`On-chain bid failed (continuing via HCS): ${err}`);
-    }
-
-    // Track for winner selection
-    pendingJobs.set(String(jobIdNum), {
-      contractAddress,
+    log.info(`Queuing bid intent: ${bid.amount} GUARD — waiting for AUCTION_INVITE`);
+    discoveryQueue.set(contractAddress, {
       contractType,
       loc: estimatedLOC,
     });
-
-    await hcs.publishAuditLog({
-      type: "BID_SUBMITTED",
-      agentId: AGENT_ID,
-      timestamp: Date.now(),
-      payload: {
-        contractAddress,
-        bidAmount: bid.amount,
-        collateral: bid.collateral,
-        estimatedTimeSec: bid.estimatedTimeSec,
-        reputation: BASE_REPUTATION,
-        evmAddress: wallet.evmAddress,
-      },
-    });
-
-    // Auto-simulate fallback
-    setTimeout(async () => {
-      if (pendingJobs.has(String(jobIdNum))) {
-        log.info(`No WinnersSelected event after ${WINNER_WAIT_MS / 1000}s — auto-simulating win`);
-        updatePricingAfterOutcome(true);
-        pendingJobs.delete(String(jobIdNum));
-        await simulateAuditCycle(contractAddress, contractType, estimatedLOC, hcs, contracts, wallet.evmAddress);
-      }
-    }, WINNER_WAIT_MS);
   });
 
-  log.info("Subscribed to discovery + agent comms. Waiting for contracts...");
+  log.info("Subscribed to discovery + agentComms. Waiting for contracts...");
 }
 
 async function simulateAuditCycle(

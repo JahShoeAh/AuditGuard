@@ -140,7 +140,18 @@ export class OrchestratorAgent {
     let jobId = Date.now(); // fallback
     this.log.info(`New discovery ${contractAddress.slice(0, 12)}… type=${contractType}`);
 
-    // Open auction on-chain using real ABI
+    // Store job FIRST so incoming bids can be matched immediately
+    this.jobs.set(jobId, {
+      contractAddress,
+      contractType,
+      bidders: [],
+      openedAt: now(),
+      winners: [],
+      findings: [],
+      reportPublished: false,
+    });
+
+    // Open auction on-chain (async — bids can arrive while this runs)
     try {
       const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
       const budgetWei = parseUnits(String(budget ?? 0), CONFIG.guardToken.decimals);
@@ -154,34 +165,32 @@ export class OrchestratorAgent {
         auctionDurationSec
       );
       const receipt = await tx?.wait?.();
+      let onChainJobId = null;
       if (receipt?.logs) {
         for (const log of receipt.logs) {
           try {
             const parsed = this.contracts.auction.interface.parseLog(log);
             if (parsed?.name === "JobPosted") {
-              jobId = Number(parsed.args.jobId);
+              onChainJobId = Number(parsed.args.jobId);
               break;
             }
           } catch { /* ignore */ }
         }
       }
+      if (onChainJobId != null && onChainJobId !== jobId) {
+        const existing = this.jobs.get(jobId);
+        this.jobs.delete(jobId);
+        existing.onChainJobId = onChainJobId;
+        this.jobs.set(onChainJobId, existing);
+        jobId = onChainJobId;
+      }
       this.log.info(`Auction opened on-chain for job ${jobId}`);
     } catch (err) {
-      this.log.warn(`Auction create failed (continuing off-chain demo): ${err}`);
+      this.log.warn(`Auction create failed (continuing off-chain): ${err}`);
     }
 
     const eligible = this.roster.eligibleFor(contractType);
     await this.inviteAgents(jobId, eligible, msg.payload);
-
-    this.jobs.set(jobId, {
-      contractAddress,
-      contractType,
-      bidders: [],
-      openedAt: now(),
-      winners: [],
-      findings: [],
-      reportPublished: false,
-    });
 
     // Fallback timer if no WinnersSelected event arrives
     setTimeout(() => this.selectWinnersFallback(jobId), CONFIG.timeouts.winnerWaitMs);
