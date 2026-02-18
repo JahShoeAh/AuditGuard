@@ -143,13 +143,20 @@ export default function ContractHealthCard({ health, isSelected, onSelect }) {
       </AnimatePresence>
 
       <WalletGate>
-        <div className="mt-2">
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
           <Link
             to="/dashboard/stake"
             onClick={(e) => e.stopPropagation()}
             className="inline-flex rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
           >
             Deposit to Vault
+          </Link>
+          <Link
+            to={`/dashboard/reports?contract=${contractAddress}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300 hover:bg-cyan-500/20"
+          >
+            View Reports →
           </Link>
         </div>
       </WalletGate>
