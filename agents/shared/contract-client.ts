@@ -207,6 +207,10 @@ export class ContractClient {
     return this.auction.MIN_BID_COLLATERAL();
   }
 
+  async getCommodityMinStake(): Promise<bigint> {
+    return this.agentRegistry.COMMODITY_MIN_STAKE();
+  }
+
   async getAuction(jobId: ChainUint): Promise<AuctionDetails> {
     return this.auction.getJob(jobId);
   }

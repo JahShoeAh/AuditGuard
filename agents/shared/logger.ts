@@ -22,6 +22,13 @@ function resolveLogFilePath(role: AgentRole): string {
 export function createAgentLogger(agentId: string, role: AgentRole) {
   const tag = `[${role.toUpperCase().padEnd(16)}][${agentId}]`;
   const logFilePath = resolveLogFilePath(role);
+  const transports: winston.transport[] = [
+    new winston.transports.File({ filename: logFilePath }),
+  ];
+
+  if ((process.env.AGENT_LOG_STDOUT ?? "true") !== "false") {
+    transports.push(new winston.transports.Console());
+  }
 
   return winston.createLogger({
     level: process.env.AGENT_LOG_LEVEL ?? "info",
@@ -32,6 +39,6 @@ export function createAgentLogger(agentId: string, role: AgentRole) {
         return `${timestamp} ${tag} ${lvl} ${String(message)}`;
       })
     ),
-    transports: [new winston.transports.File({ filename: logFilePath })],
+    transports,
   });
 }
