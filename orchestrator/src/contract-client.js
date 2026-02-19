@@ -46,7 +46,12 @@ export class ContractClient {
   }
 
   static fromOperatorKey(hexKey) {
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC);
+    // Disable batching to avoid "eth_newFilter is not permitted as part of batch requests"
+    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, undefined, {
+      batchMaxCount: 1,
+    });
+    provider.pollingInterval = 5000; // Poll every 5s
+
     const pk = hexKey.startsWith("0x") ? hexKey : `0x${hexKey}`;
     const wallet = new ethers.Wallet(pk, provider);
     log.info(`Using orchestrator wallet ${wallet.address}`);

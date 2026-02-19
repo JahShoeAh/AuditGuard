@@ -9,7 +9,7 @@ import { useAutoScroll } from '../hooks/useAutoScroll';
 // ── Contract type config ───────────────────────────────────
 
 const TYPE_COLORS = {
-  lending_protocol: 'var(--accent-cyan)',
+  lending_protocol: 'var(--accent-amber)',
   dex: 'var(--accent-amber)',
   staking_pool: 'var(--accent-purple)',
   yield_aggregator: 'var(--accent-green)',
@@ -94,7 +94,7 @@ function DiscoveryCard({ discovery }) {
     timestamp,
   } = discovery;
 
-  const accentColor = TYPE_COLORS[contractType] || 'var(--accent-cyan)';
+  const accentColor = TYPE_COLORS[contractType] || 'var(--accent-amber)';
   const typeLabel = TYPE_LABELS[contractType] || contractType?.toUpperCase() || 'UNKNOWN';
   const ts = discoveryTimestamp || timestamp;
 
@@ -199,17 +199,17 @@ function ScanningEmptyState() {
         {[0, 0.6, 1.2].map((delay) => (
           <div
             key={delay}
-            className="absolute inset-0 border border-guard-cyan/20 rounded-full animate-radar-ring"
+            className="absolute inset-0 border border-guard-amber/20 rounded-full animate-radar-ring"
             style={{ animationDelay: `${delay}s` }}
           />
         ))}
         {/* Center dot */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-2 h-2 rounded-full bg-guard-cyan animate-pulse-glow" />
+          <div className="w-2 h-2 rounded-full bg-guard-amber animate-pulse-glow" />
         </div>
         {/* Sweep line */}
         <div className="absolute inset-0 flex items-center justify-center animate-scan-sweep origin-center">
-          <div className="w-10 h-px bg-gradient-to-r from-guard-cyan/60 to-transparent" />
+          <div className="w-10 h-px bg-gradient-to-r from-guard-amber/60 to-transparent" />
         </div>
       </div>
       <p className="text-xs text-gray-500 font-sans tracking-wider uppercase">
@@ -236,10 +236,10 @@ export default function DiscoveryFeed() {
         <div className="flex items-center gap-2">
           {/* Radar icon */}
           <div className="relative w-4 h-4 flex items-center justify-center">
-            <div className="absolute w-3 h-3 border border-guard-cyan/30 rounded-full animate-radar-ring" />
-            <div className="w-1 h-1 rounded-full bg-guard-cyan" />
+            <div className="absolute w-3 h-3 border border-guard-amber/30 rounded-full animate-radar-ring" />
+            <div className="w-1 h-1 rounded-full bg-guard-amber" />
           </div>
-          <h2 className="text-xs font-semibold tracking-wider uppercase font-sans text-guard-cyan">
+          <h2 className="text-xs font-semibold tracking-wider uppercase font-sans text-guard-amber">
             Contract Discoveries
           </h2>
           <span className="text-[10px] text-gray-600 font-mono ml-1">

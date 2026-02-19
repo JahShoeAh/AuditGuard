@@ -29,14 +29,14 @@ function FilterPill({ label, icon, active, count, onClick }) {
       className={[
         'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-mono font-semibold transition-all whitespace-nowrap',
         active
-          ? 'bg-cyan-500/15 border border-cyan-500/50 text-cyan-300'
-          : 'bg-gray-900 border border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300',
+          ? 'bg-guard-amber/15 border border-guard-amber/50 text-guard-amber'
+          : 'bg-gray-900/80 border border-gray-900 text-gray-500 hover:border-gray-700 hover:text-gray-300',
       ].join(' ')}
     >
       {icon && <span>{icon}</span>}
       {label}
       {count != null && count > 0 && (
-        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-gray-800 text-gray-500'}`}>
+        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${active ? 'bg-guard-amber/20 text-guard-amber' : 'bg-gray-800 text-gray-500'}`}>
           {count}
         </span>
       )}
@@ -76,7 +76,7 @@ function EmptyState({ contractSearch }) {
         </p>
         <Link
           to="/dashboard"
-          className="inline-block mt-4 text-xs font-mono text-cyan-400 hover:text-cyan-200 hover:underline"
+          className="inline-block mt-4 text-xs font-mono text-guard-amber hover:text-amber-300 hover:underline"
         >
           ← Set up an audit vault
         </Link>
@@ -210,11 +210,11 @@ export default function ReportMarketplace() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-950 text-gray-100">
+    <div className="min-h-screen flex flex-col bg-black text-gray-100">
       <Header />
 
       {/* ── Sub-header ── */}
-      <div className="flex-shrink-0 flex items-center gap-4 px-5 py-3 border-b border-gray-800 bg-gray-950">
+      <div className="flex-shrink-0 flex items-center gap-4 px-5 py-3 border-b border-gray-900 bg-black">
         <Link
           to="/dashboard"
           className="text-xs font-mono text-gray-500 hover:text-gray-300 transition-colors"
@@ -236,7 +236,7 @@ export default function ReportMarketplace() {
       </div>
 
       {/* ── Search + Filters ── */}
-      <div className="flex-shrink-0 px-5 py-4 border-b border-gray-800 space-y-3">
+      <div className="flex-shrink-0 px-5 py-4 border-b border-gray-900 space-y-3">
         {/* Contract address search */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</span>
@@ -245,7 +245,7 @@ export default function ReportMarketplace() {
             value={contractSearch}
             onChange={(e) => updateContractSearch(e.target.value)}
             placeholder="Find reports for your contract: 0x…"
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-4 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-colors"
+            className="w-full bg-gray-900/80 border border-gray-900 rounded-lg pl-9 pr-4 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-guard-amber transition-colors"
           />
           {contractSearch && (
             <button
@@ -325,7 +325,7 @@ export default function ReportMarketplace() {
           <p className="text-[11px] font-mono text-gray-600">
             {displayedListings.length} report{displayedListings.length !== 1 ? 's' : ''} found
             {contractSearch && (
-              <span className="ml-1 text-cyan-500">
+              <span className="ml-1 text-guard-amber">
                 for <span className="font-semibold">{fmt.address(contractSearch)}</span>
               </span>
             )}

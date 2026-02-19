@@ -114,15 +114,15 @@ export default function Header() {
       className="panel px-5 py-3 flex items-center justify-between gap-4"
     >
       {/* Left — Wordmark */}
-      <div className="flex-shrink-0">
-        <h1 className="text-lg font-bold tracking-tight font-mono leading-tight">
-          <span className="text-guard-cyan glow-text-subtle">AUDIT</span>
+      <Link to="/" className="flex-shrink-0 group">
+        <h1 className="text-lg font-bold tracking-tight font-mono leading-tight group-hover:opacity-80 transition-opacity">
+          <span className="text-guard-amber glow-text-subtle">AUDIT</span>
           <span className="text-gray-200">GUARD</span>
         </h1>
         <p className="text-[10px] text-gray-500 tracking-[0.2em] uppercase font-sans">
           Autonomous Security Marketplace
         </p>
-      </div>
+      </Link>
 
       {/* Center — Network status */}
       <div className="flex items-center gap-4">

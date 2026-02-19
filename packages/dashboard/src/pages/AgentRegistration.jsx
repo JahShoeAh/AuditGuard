@@ -40,13 +40,13 @@ function ProgressBar({ step }) {
             <div className={[
               'w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all',
               done    ? 'bg-green-500 border-green-500'  :
-              current ? 'bg-cyan-400 border-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.4)]' :
+              current ? 'bg-guard-amber border-guard-amber shadow-[0_0_10px_rgba(245,158,11,0.4)]' :
                         'bg-gray-800 border-gray-600',
             ].join(' ')}>
               {done ? (
                 <span className="text-[10px] text-white font-bold">✓</span>
               ) : (
-                <span className={`text-[10px] font-bold ${current ? 'text-gray-900' : 'text-gray-600'}`}>
+                <span className={`text-[10px] font-bold ${current ? 'text-black' : 'text-gray-600'}`}>
                   {s.number}
                 </span>
               )}
@@ -71,7 +71,7 @@ function NotConnectedGate() {
   const openWallet = useWalletStore((s) => s.openWalletModal);
   return (
     <div className="flex-1 flex items-center justify-center px-6">
-      <div className="max-w-sm w-full text-center border border-gray-700 rounded-xl p-8 bg-gray-900">
+      <div className="max-w-sm w-full text-center border border-gray-900 rounded-xl p-8 bg-gray-900/80">
         <div className="text-4xl mb-4">🔒</div>
         <h2 className="text-sm font-bold font-mono uppercase tracking-wider text-gray-200 mb-2">
           Wallet Required
@@ -81,7 +81,7 @@ function NotConnectedGate() {
         </p>
         <button
           onClick={() => openWallet({ action: 'deploy an agent' })}
-          className="w-full py-2.5 text-xs font-bold font-mono uppercase tracking-wider rounded border border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+          className="w-full py-2.5 text-xs font-bold font-mono uppercase tracking-wider rounded border border-guard-amber/50 bg-guard-amber/10 text-guard-amber hover:bg-guard-amber/20 transition-colors"
         >
           Connect Wallet
         </button>
@@ -168,11 +168,11 @@ export default function AgentRegistration() {
   const isLastStep       = step === 4;
 
   return (
-    <div className="h-screen flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+    <div className="h-screen flex flex-col bg-black text-gray-100 overflow-hidden">
       <Header />
 
       {/* Sub-header */}
-      <div className="flex-shrink-0 flex items-center gap-4 px-5 py-3 border-b border-gray-800 bg-gray-950">
+      <div className="flex-shrink-0 flex items-center gap-4 px-5 py-3 border-b border-gray-900 bg-black">
         <Link
           to="/dashboard"
           className="flex items-center gap-1.5 text-xs font-mono text-gray-500 hover:text-gray-300 transition-colors"
@@ -213,7 +213,7 @@ export default function AgentRegistration() {
             </div>
 
             {/* Step content */}
-            <div className="border border-gray-800 rounded-xl bg-gray-950 p-6 min-h-[420px]">
+            <div className="border border-gray-900 rounded-xl bg-gray-900/80 p-6 min-h-[420px]">
               <AnimatePresence mode="wait">
                 {step === 1 && (
                   <motion.div
@@ -298,7 +298,7 @@ export default function AgentRegistration() {
                 <button
                   type="button"
                   onClick={handleNext}
-                  className="flex-1 py-2.5 rounded-lg border border-cyan-500/50 bg-cyan-500/10 text-xs font-bold font-mono uppercase tracking-wider text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+                  className="flex-1 py-2.5 rounded-lg border border-guard-amber/50 bg-guard-amber/10 text-xs font-bold font-mono uppercase tracking-wider text-guard-amber hover:bg-guard-amber/20 transition-colors"
                 >
                   {step === 3 ? 'Review →' : 'Continue →'}
                 </button>

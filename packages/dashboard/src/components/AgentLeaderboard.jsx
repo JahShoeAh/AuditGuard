@@ -82,7 +82,7 @@ export default function AgentLeaderboard() {
       </div>
 
       {/* ── Right 40%: Agent Detail ── */}
-      <div className="flex-1 min-h-0 border border-gray-800 rounded bg-gray-950 overflow-hidden">
+      <div className="flex-1 min-h-0 border border-gray-900 rounded bg-gray-900/80 overflow-hidden">
         {selectedAgent ? (
           <AgentDetail addr={selectedAgent} />
         ) : (

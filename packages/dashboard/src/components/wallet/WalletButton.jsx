@@ -38,7 +38,7 @@ export default function WalletButton() {
         type="button"
         disabled={isConnecting}
         onClick={() => openWalletModal({ action: 'unlock interactive features' })}
-        className="rounded-md border border-cyan-500/60 px-3 py-1.5 text-xs font-mono font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:bg-cyan-500/10 disabled:opacity-60"
+        className="rounded-md border border-guard-amber/60 px-3 py-1.5 text-xs font-mono font-semibold uppercase tracking-wider text-guard-amber transition-colors hover:bg-guard-amber/10 disabled:opacity-60"
       >
         {isConnecting ? 'Connecting...' : 'Connect Wallet'}
       </button>
@@ -50,10 +50,10 @@ export default function WalletButton() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-left transition-colors hover:bg-cyan-500/20"
+        className="rounded-md border border-guard-amber/40 bg-guard-amber/10 px-3 py-1.5 text-left transition-colors hover:bg-guard-amber/20"
       >
         <div className="flex items-center gap-3">
-          <span className="font-mono text-xs font-semibold text-cyan-200">{displayName}</span>
+          <span className="font-mono text-xs font-semibold text-amber-200">{displayName}</span>
           <span className="font-mono text-[11px] text-amber-300">
             {fmtBalance(guardBalance)} GUARD
           </span>
