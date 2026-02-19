@@ -89,56 +89,20 @@ export class EventListenerService {
   async _syncHistoricalAgents() {
     if (!this.contracts?.agentRegistryContract) return;
     
-    console.log('[EventListener] Syncing historical agents via view functions...');
+    console.log('[EventListener] Syncing historical agents...');
+    const agents = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
     
-    try {
-      // 1. Get all registered agent addresses
-      const agentAddresses = await this.contracts.agentRegistryContract.getAllAgents();
-      console.log(`[EventListener] Found ${agentAddresses.length} registered agents.`);
-
-      // 2. Fetch profiles in parallel (with concurrency limit if needed, but 10-20 is fine)
-      const profiles = await Promise.all(
-        agentAddresses.map(addr => this.contracts.agentRegistryContract.getAgent(addr))
-      );
-
-      // 3. Populate store
-      for (const p of profiles) {
-        // p is a struct-array from ethers: [dist, agentId, ucp, specializations, tier, status, staked, rep, ...]
-        // We need to map it correctly based on the struct definition in AgentRegistry.sol
-        // struct AgentProfile {
-        //   address agentAddress; string agentId; string ucpEndpoint; string[] specializations;
-        //   AgentTier tier; AgentStatus status; uint256 stakedAmount; uint256 reputationScore; ...
-        // }
-        
-        // Ethers returns a Result object that behaves like an array/object mixed
-        const agentAddress = p.agentAddress; // or p[0]
-        const agentId = p.agentId;
-        const ucpEndpoint = p.ucpEndpoint;
-        const stakedAmount = p.stakedAmount;
-        const reputationScore = p.reputationScore;
-        const tier = Number(p.tier); // enum
-        const status = Number(p.status); // enum
-
-        this.store.setAgent(agentAddress, {
-          address: agentAddress,
-          agentId: agentId,
-          ucpEndpoint: ucpEndpoint,
-          stakedAmount: stakedAmount,
-          stakedFormatted: parseGuardAmount(stakedAmount),
-          reputation: Number(reputationScore),
-          tier: tier,
-          status: status,
-          // We can also sync stats if we want
-          completedJobs: Number(p.completedJobs),
-          successfulFindings: Number(p.successfulFindings),
-          falsePositives: Number(p.falsePositives),
-        });
-      }
-      
-      console.log(`[EventListener] Successfully synced ${profiles.length} historical agents`);
-    } catch (err) {
-      console.error('[EventListener] Failed to sync historical agents:', err);
+    for (const ev of agents) {
+      const a = ev.args;
+      this.store.setAgent(a.agent, {
+        address: a.agent,
+        agentId: a.agentId,
+        ucpEndpoint: a.ucpEndpoint,
+        stakedAmount: a.stakedAmount,
+        stakedFormatted: parseGuardAmount(a.stakedAmount),
+      });
     }
+    console.log(`[EventListener] Synced ${agents.length} historical agents`);
   }
 
   stopAll() {
