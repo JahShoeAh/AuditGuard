@@ -355,12 +355,29 @@ class StorageAdapter {
    * All callers share the same Promise chain, guaranteeing strictly serial
    * execution — no two 0g transactions can be in-flight at once.
    *
+   * If the operation fails with REPLACEMENT_UNDERPRICED (a stale pending tx
+   * from a previous session is occupying the nonce), we wait 20 s for the
+   * mempool to clear and retry once before propagating the error.
+   *
    * @param {() => Promise<T>} fn
    * @returns {Promise<T>}
    */
   _enqueueWrite(fn) {
-    const next = this._writeQueue.then(fn);
-    // Keep the chain alive even if fn rejects — callers handle their own errors
+    const runWithRetry = async () => {
+      try {
+        return await fn();
+      } catch (err) {
+        const msg = err?.message || String(err);
+        if (msg.includes("replacement") || msg.includes("underpriced")) {
+          console.warn("  [storage] Stale pending tx detected — waiting 20s for mempool to clear, then retrying...");
+          await new Promise((r) => setTimeout(r, 20000));
+          return await fn();
+        }
+        throw err;
+      }
+    };
+    const next = this._writeQueue.then(runWithRetry);
+    // Keep the chain alive even if runWithRetry rejects
     this._writeQueue = next.catch(() => {});
     return next;
   }
