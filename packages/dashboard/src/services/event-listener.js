@@ -215,7 +215,21 @@ export class EventListenerService {
       this.store.incrementStat('totalDiscoveries');
       this.store.addLogEntry({ ...entry, source: 'discovery' });
     } else if (topicKey === 'auditLog') {
-      this.store.addLogEntry({ ...entry, source: 'auditLog' });
+      // Normalize HCS snake_case bid type to match the contract event name so the
+      // TX explorer displays it with the correct BID badge and AUCTIONS filter.
+      let displayEntry = entry;
+      if (parsedData.type === 'BID_SUBMITTED') {
+        const agentName = payload.agentId ?? 'unknown';
+        const bidAmount = payload.bidAmount ?? 0;
+        displayEntry = {
+          ...entry,
+          type: 'BidSubmitted',
+          agentName,
+          bidFormatted: parseGuardAmount(bidAmount),
+          jobId: String(payload.jobId ?? sequenceNumber),
+        };
+      }
+      this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
       // Also update specific slices based on type
       if (parsedData.type === 'JOB_CREATED') {
         const jobId = String(payload.jobId ?? sequenceNumber);
