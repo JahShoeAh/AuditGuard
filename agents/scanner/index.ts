@@ -22,6 +22,7 @@ const SCAN_INTERVAL_MS = DEMO_MODE ? 30 * 1000 : 300 * 1000; // 30s demo, 5m pro
 const HOT_LEAD_RISK_THRESHOLD = 80;
 const HOT_LEAD_PRICE = ethers.parseUnits("0.1", 8);   // 0.1 GUARD
 const HOT_LEAD_DELAY_MS = DEMO_MODE ? 10 * 1000 : 60 * 1000; // delay before public
+const DEFAULT_BUDGET_GUARD = Number(process.env.SCANNER_DISCOVERY_BUDGET_GUARD ?? "30");
 const DEFAULT_DISCOVERY_BUDGET_GUARD = Number(process.env.DEFAULT_DISCOVERY_BUDGET_GUARD ?? "100");
 const MIRROR_NODE = process.env.SCANNER_MIRROR_NODE || "https://testnet.mirrornode.hedera.com";
 const CONTRACT_FETCH_LIMIT = Number(process.env.SCANNER_CONTRACT_FETCH_LIMIT ?? "25");
@@ -53,20 +54,30 @@ let lastSeenTimestamp: string | null = makeInitialTimestamp();
 // Backward-compatible helper for tests that import generateDiscovery().
 // Runtime scanning now uses mirror-node discovery instead.
 export function generateDiscovery() {
+  const pick = nextDiscoveryContract();
+  const isTestMode = process.env.TEST_MODE === "true";
   const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault"];
+  const riskScore = isTestMode ? 75 : randomInt(20, 95);
+  const estimatedLOC = isTestMode ? 150 : randomInt(500, 10000);
+  const discoveryTimestamp = Math.floor(Date.now() / 1000);
+
   return {
     type: "CONTRACT_DISCOVERED" as const,
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
-      contractAddress: `0x${randomHex(20)}`,
+      contractAddress: pick.address,
       chain: "hedera-testnet",
-      deployerAddress: `0x${randomHex(20)}`,
-      estimatedLOC: randomInt(500, 10000),
-      contractType: randomChoice(types),
-      riskScore: randomInt(20, 95),
-      budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
+      deployerAddress: pick.deployer,
+      estimatedLOC,
+      estimatedLineCount: estimatedLOC,
+      contractType: isTestMode ? "vault" : randomChoice(types),
+      riskScore,
+      initialRiskScore: riskScore,
+      budget: DEFAULT_BUDGET_GUARD,
+      discoveryTimestamp,
       txHash: `0x${randomHex(64)}`,
+      sourceRef: pick.key,
     },
   };
 }

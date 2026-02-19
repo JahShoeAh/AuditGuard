@@ -31,6 +31,7 @@ import {
 import { buildMessages } from "./prompt-builder.js";
 import { parseFindings } from "./response-parser.js";
 import type { AuditContext } from "./prompt-builder.js";
+import { loadContractSource } from "../shared/contract-source.js";
 
 // ---- Config ----
 const AGENT_ID = "llm-contextual-003";
@@ -59,7 +60,9 @@ const pendingJobs = new Map<string, {
   contractAddress: string;
   contractType: ContractType;
   loc: number;
+  sourceRef?: string;
 }>();
+const startedJobs = new Set<string>();
 
 // Dynamic pricing state
 let bidMultiplier = 1.0;
@@ -174,6 +177,7 @@ export interface InviteResolutionInput {
     contractType: ContractType;
     loc: number;
     riskScore: number;
+    sourceRef?: string;
   };
   invite: {
     contractType?: unknown;
@@ -432,6 +436,7 @@ async function main() {
     contractType: ContractType;
     loc: number;
     riskScore: number;
+    sourceRef?: string;
   }>();
 
   // Listen for sub-contract result deliveries + AUCTION_INVITE
@@ -634,6 +639,7 @@ async function main() {
         contractAddress,
         contractType: resolved.contractType,
         loc: resolved.loc,
+        sourceRef: queued?.sourceRef ?? (msg as any)?.payload?.sourceRef,
       });
 
       await hcs.publishAuditLog({
@@ -662,12 +668,50 @@ async function main() {
             contractAddress,
             resolved.contractType,
             resolved.loc,
+            queued?.sourceRef ?? (msg as any)?.payload?.sourceRef,
             hcs,
             contracts,
             wallet.evmAddress
           );
         }
       }, WINNER_WAIT_MS);
+      return;
+    }
+
+    if (msg.type === "WINNERS_SELECTED_FALLBACK") {
+      const { jobId, winners, selectionEpoch } = (msg as any).payload ?? {};
+      const jobKey = String(jobId);
+      const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
+      if (startedJobs.has(dedupKey)) {
+        log.info(`Already processing job ${jobKey}, skipping`);
+        return;
+      }
+      const isWinner = Array.isArray(winners) && winners.some((w: any) => {
+        const winnerAddress = typeof w === "string" ? w : w?.evmAddress;
+        return typeof winnerAddress === "string" && winnerAddress.toLowerCase() === wallet.evmAddress.toLowerCase();
+      });
+      if (!isWinner) return;
+
+      const pending = pendingJobs.get(jobKey);
+      if (!pending) {
+        log.warn(`Fallback winner notification for job #${jobKey} but no pending context`);
+        return;
+      }
+
+      log.info(`Won job ${jobKey} via fallback notification`);
+      startedJobs.add(dedupKey);
+      updatePricingAfterOutcome(true);
+      pendingJobs.delete(jobKey);
+      simulateAuditCycle(
+        pending.jobId,
+        pending.contractAddress,
+        pending.contractType,
+        pending.loc,
+        pending.sourceRef,
+        hcs,
+        contracts,
+        wallet.evmAddress
+      ).catch((err) => log.error(`Audit cycle failed: ${err}`));
     }
   });
 
@@ -690,6 +734,7 @@ async function main() {
       pending.contractAddress,
       pending.contractType,
       pending.loc,
+      pending.sourceRef,
       hcs,
       contracts,
       wallet.evmAddress
@@ -702,7 +747,7 @@ async function main() {
     if (msg.type !== "CONTRACT_DISCOVERED") return;
 
     const discovery = msg as ContractDiscoveryEvent;
-    const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
+    const { contractAddress, contractType, riskScore, estimatedLOC, sourceRef } = discovery.payload;
 
     log.info(
       `Evaluating: ${contractAddress.slice(0, 10)}... ` +
@@ -718,6 +763,7 @@ async function main() {
       contractType,
       loc: estimatedLOC,
       riskScore,
+      sourceRef,
     });
   });
 
@@ -729,6 +775,7 @@ async function simulateAuditCycle(
   contractAddress: string,
   contractType: ContractType,
   loc: number,
+  sourceRef: string | undefined,
   hcs: HCSClient,
   contracts: ContractClient,
   evmAddress: string
@@ -866,6 +913,15 @@ async function simulateAuditCycle(
   const auditTime = DEMO_MODE ? randomInt(10, 30) : randomInt(60, 180);
   log.info(`Running deep semantic analysis... (${auditTime}s)`);
   await sleep(auditTime * 1000);
+
+  let contractSource: string | undefined;
+  if (sourceRef) {
+    const src = loadContractSource(sourceRef);
+    if (src) {
+      contractSource = src;
+      log.info(`Loaded ${src.length} chars of source for ${sourceRef}`);
+    }
+  }
 
   const inferenceStartedAt = Date.now();
   await hcs.publishAuditLog({

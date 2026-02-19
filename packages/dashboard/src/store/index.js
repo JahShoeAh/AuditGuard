@@ -73,6 +73,12 @@ const useStore = create((set) => ({
   addLogEntry: (entry) =>
     set((s) => ({ auditLog: [entry, ...s.auditLog].slice(0, 200) })),
 
+  // ── Report metadata (from HCS REPORT_METADATA messages) ─
+  reportMetadata: {},
+  addReportMetadata: (jobId, meta) => set((s) => ({
+    reportMetadata: { ...s.reportMetadata, [jobId]: meta },
+  })),
+
   // ── Winners (from AuditAuction.WinnersSelected events) ───
   winners: {},
   setWinners: (jobId, w) =>
@@ -253,6 +259,7 @@ const useStore = create((set) => ({
   resetAll: () => set({
     isConnected: false, connectionError: null,
     discoveries: [], activeJobs: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
+    reportMetadata: {},
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],

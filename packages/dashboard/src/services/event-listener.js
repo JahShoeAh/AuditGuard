@@ -60,6 +60,20 @@ export class EventListenerService {
     this.store     = store;
     this.provider  = provider;
 
+    this.onlyTestDiscoveries = import.meta.env.VITE_TEST_MODE === 'true';
+    const testContracts = Array.isArray(config?.testContracts) ? config.testContracts : [];
+    this.allowedDiscoveryContracts = new Set(
+      testContracts
+        .map((tc) => String(tc?.address || '').toLowerCase())
+        .filter(Boolean)
+    );
+    this.seenTestDiscoveries = new Set();
+    this.hcsHistorySkipped = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
+    };
+
     // HCS state — last seen sequence number per topic
     this.lastSeq = {
       discovery:  0,
@@ -71,6 +85,13 @@ export class EventListenerService {
     this.lastProcessedBlock = null;
 
     this._intervals = [];
+
+    if (this.onlyTestDiscoveries) {
+      console.log(
+        `[EventListener] TEST_MODE discovery filter enabled ` +
+        `(${this.allowedDiscoveryContracts.size} configured test contracts)`
+      );
+    }
   }
 
   // ── public ───────────────────────────────────────────────
@@ -138,6 +159,15 @@ export class EventListenerService {
 
   async _pollHCSTopic(topicId, topicKey) {
     try {
+      if (this.onlyTestDiscoveries && !this.hcsHistorySkipped[topicKey]) {
+        const history = await this.fetchHCSMessages(topicId, 0);
+        if (history.length > 0) {
+          this.lastSeq[topicKey] = history[history.length - 1].sequenceNumber;
+        }
+        this.hcsHistorySkipped[topicKey] = true;
+        return;
+      }
+
       const messages = await this.fetchHCSMessages(topicId, this.lastSeq[topicKey]);
       if (messages.length === 0) return;
 
@@ -211,6 +241,19 @@ export class EventListenerService {
     };
 
     if (topicKey === 'discovery') {
+      if (this.onlyTestDiscoveries) {
+        const contractAddress = String(entry.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
+        if (!contractAddress) return;
+        if (
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          return;
+        }
+        if (this.seenTestDiscoveries.has(contractAddress)) return;
+        this.seenTestDiscoveries.add(contractAddress);
+      }
+
       this.store.addDiscovery(entry);
       this.store.incrementStat('totalDiscoveries');
       this.store.addLogEntry({ ...entry, source: 'discovery' });
@@ -276,9 +319,38 @@ export class EventListenerService {
           reason: payload.reason ?? payload.reasonCode ?? 'Inference failed',
         };
       }
-      this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
+      if (parsedData.type !== 'REPORT_METADATA') {
+        this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
+      }
       // Also update specific slices based on type
-      if (parsedData.type === 'JOB_CREATED') {
+      if (parsedData.type === 'REPORT_METADATA') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.addReportMetadata?.(jobId, {
+          cid: payload.cid,
+          listingId: payload.listingId,
+          contentHash: payload.contentHash,
+          deployer: payload.deployer,
+          agentCount: payload.agentCount,
+          findingCount: payload.findingCount,
+        });
+        this.store.addLogEntry({
+          type: 'REPORT_PUBLISHED',
+          jobId,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { cid: payload.cid, findingCount: payload.findingCount },
+          source: 'auditLog',
+        });
+        console.log(`[EventListener] REPORT_METADATA for job ${jobId}, CID: ${payload.cid}`);
+      } else if (parsedData.type === 'JOB_CREATED') {
+        const contractAddress = String(payload.contractAddress ?? '').toLowerCase();
+        if (
+          this.onlyTestDiscoveries &&
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          return;
+        }
+
         const jobId = String(payload.jobId ?? sequenceNumber);
         this.store.setJob(jobId, {
           jobId,
@@ -454,8 +526,10 @@ export class EventListenerService {
       const currentBlock = await this.provider.getBlockNumber();
 
       if (this.lastProcessedBlock === null) {
-        // Catch the last ~100 blocks of history on first run
-        this.lastProcessedBlock = Math.max(0, currentBlock - 100);
+        // In test mode, skip historical backfill to avoid stale jobs on page load.
+        this.lastProcessedBlock = this.onlyTestDiscoveries
+          ? currentBlock
+          : Math.max(0, currentBlock - 100);
       }
 
       if (currentBlock <= this.lastProcessedBlock) return; // no new blocks
@@ -529,6 +603,15 @@ export class EventListenerService {
 
       for (const ev of jobPosted) {
         const a = ev.args;
+        const contractAddress = String(a.contractAddress ?? '').toLowerCase();
+        if (
+          this.onlyTestDiscoveries &&
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          continue;
+        }
+
         this.store.setJob(a.jobId.toString(), {
           jobId: a.jobId.toString(),
           contractAddress: a.contractAddress,

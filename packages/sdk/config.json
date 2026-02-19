@@ -53,6 +53,23 @@
       "deployedAt": "2026-02-19T04:40:23.961Z"
     }
   },
+    "testContracts": [
+    {
+      "key": "vault1",
+      "address": "0xd0b7116765F967A7E9631013c6460fCFbf2Fc1D8",
+      "deployer": "0x80e6576E69ad55E9AA75FBc627555762F52040F2"
+    },
+    {
+      "key": "vault2",
+      "address": "0xfEAf890aA7D08912a8F0Ef53658945aD3F95817B",
+      "deployer": "0x80e6576E69ad55E9AA75FBc627555762F52040F2"
+    },
+    {
+      "key": "vault3",
+      "address": "0x27FC237E0A0a8bdA8c175962498b1833180c9Dda",
+      "deployer": "0x80e6576E69ad55E9AA75FBc627555762F52040F2"
+    }
+  ],
   "seededAgents": {},
   "demoVault": {
     "contractAddress": "0x000000000000000000000000000000000000dEaD",

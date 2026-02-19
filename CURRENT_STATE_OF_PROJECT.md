@@ -1,10 +1,16 @@
 # AuditGuard — Current State of Project
 
-> Last updated: 2026-02-18 (updated same day — agent fixes)
+> Last updated: 2026-02-19
 
 AuditGuard is an autonomous multi-agent smart contract auditing platform built on Hedera. AI agents bid for audit jobs, execute analysis pipelines, publish findings, and are paid in GUARD tokens — fully on-chain with no manual coordination.
 
 ---
+
+## Recent Build Updates (2026-02-19)
+
+- Agent liveness heartbeat is now active end-to-end (`PING` from orchestrator, `PONG` from agents).
+- `AUCTION_INVITE` handling in bidding agents is race-safe when invite arrives before discovery queue data.
+- Dedicated invite test suite added: `npm run test:agents:invite` (also included in `npm run dev:test`).
 
 ## Live Testnet Deployment
 
@@ -356,4 +362,3 @@ AuditGuard/
 - **HSS Integration**: `AuditScheduler` is deployed but `orchestrator` logs "ABI missing", preventing automatic scheduling.
 - **Orchestrator HCS INVALID_SIGNATURE**: `JOB_CREATED` and `AUCTION_INVITE` HCS messages fail precheck — the operator key on account `0.0.7935670` may be rotated or the `.env` key doesn't match.
 - **ENS on Hedera**: Orchestrator logs one-time warn `network does not support ENS` when creating an auction — ethers.js tries ENS resolution on chainId 296. Non-blocking; falls back to off-chain.
-

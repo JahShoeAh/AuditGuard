@@ -60,6 +60,7 @@ export function useEventListeners(connection) {
         addDataListing:            useStore.getState().addDataListing,
         addDataPurchase:           useStore.getState().addDataPurchase,
         updateDataPurchaseRating:  useStore.getState().updateDataPurchaseRating,
+        addReportMetadata:         useStore.getState().addReportMetadata,
         // Day 2 — PaymentSettlement
         addSettlement:             useStore.getState().addSettlement,
         // Day 2 — GUARD flows

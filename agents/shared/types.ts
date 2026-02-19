@@ -24,6 +24,7 @@ export interface ContractDiscoveryEvent extends HCSMessage {
     riskScore: number;
     budget: number;
     txHash: string;
+    sourceRef?: string;
   };
 }
 

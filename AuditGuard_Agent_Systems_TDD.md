@@ -1,5 +1,7 @@
 # Agent Systems — Technical Design Document
 
+> Current build notes (2026-02-19): production agent scripts now respond to orchestrator `PING` with `PONG`, and bidding agents support invite-first context resolution for `AUCTION_INVITE`.
+
 **Role:** Person 2 — Agent Systems & Orchestration Lead  
 **Scope:** The agent network, economy logic, and inter-agent interactions. NOT the Orchestrator Agent (handled separately).  
 **Purpose:** Everything you need to vibe-code this. Copy-paste sections into your AI coding tool as context.

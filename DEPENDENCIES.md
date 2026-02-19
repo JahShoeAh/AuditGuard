@@ -1,5 +1,7 @@
 ## 1.4 — Full Dependency Manifest
 
+> Current build notes (2026-02-19): canonical dependency/script versions should be read from root `package.json` and `agents/package.json`; this manifest remains a planning reference.
+
 | Package | Version | Purpose | Used By |
 |---|---|---|---|
 | `@hashgraph/sdk` | ^2.46.0 | Hedera native SDK (HTS, HCS, HSCS) | All packages |

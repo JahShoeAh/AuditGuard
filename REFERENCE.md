@@ -1,5 +1,7 @@
 # Blockchain Infrastructure Reference
 
+> Current build notes (2026-02-19): live orchestration now relies on `JOB_CREATED` + `AUCTION_INVITE` publish flow, and agents are expected to answer orchestrator heartbeats with `PONG`.
+
 ## Day 1
 
 | Artifact | Location | What It Is |

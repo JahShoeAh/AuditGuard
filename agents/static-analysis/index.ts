@@ -40,6 +40,15 @@ const pendingJobs = new Map<string, {
   contractType: ContractType;
   loc: number;
 }>();
+const startedJobs = new Set<string>();
+
+function hasStartedJob(jobId: string): boolean {
+  const prefix = `${jobId}:`;
+  for (const key of startedJobs) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 // Dynamic pricing state — EMA of win rate adjusts bid multiplier
 let bidMultiplier = 1.0;
@@ -223,12 +232,12 @@ async function main() {
     const queued = discoveryQueue.get(contractAddress);
     if (queued) discoveryQueue.delete(contractAddress);
 
-    const resolved = resolveAuctionInviteContext({
-      queued,
-      invite: { contractType, riskScore, estimatedLOC, estimatedLineCount },
-    });
-    const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
-    if (!bid) return;
+      const resolved = resolveAuctionInviteContext({
+        queued,
+        invite: { contractType, riskScore, estimatedLOC, estimatedLineCount },
+      });
+      const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
+      if (!bid) return;
 
     const computed = computeLiveBid(bid, budget, {
       ...CONFIG.bidPolicy,
@@ -355,12 +364,12 @@ async function main() {
       }
     }
 
-    // Submit bid on-chain with real jobId
-    try {
-      // Add jitter to avoid race conditions (nonce/gas collisions) with other agents
-      const jitter = randomInt(1000, 5000);
-      log.info(`Waiting ${jitter}ms jitter before bidding...`);
-      await sleep(jitter);
+      // Submit bid on-chain with real jobId
+      try {
+        // Add jitter to avoid race conditions (nonce/gas collisions) with other agents
+        const jitter = randomInt(1000, 5000);
+        log.info(`Waiting ${jitter}ms jitter before bidding...`);
+        await sleep(jitter);
 
       const tx = await contracts.submitBid(
         jobId,
@@ -391,13 +400,13 @@ async function main() {
       }
     }
 
-    // Track for winner selection
-    pendingJobs.set(String(jobId), {
-      jobId: String(jobId),
-      contractAddress,
-      contractType: resolved.contractType,
-      loc: resolved.loc,
-    });
+      // Track for winner selection
+      pendingJobs.set(String(jobId), {
+        jobId: String(jobId),
+        contractAddress,
+        contractType: resolved.contractType,
+        loc: resolved.loc,
+      });
 
     await hcs.publishAuditLog({
       type: "BID_SUBMITTED",
@@ -414,23 +423,63 @@ async function main() {
       },
     });
 
-    // Auto-simulate fallback if no winner event arrives
-    setTimeout(async () => {
-      if (pendingJobs.has(String(jobId))) {
-        log.info(`No WinnersSelected after ${WINNER_WAIT_MS / 1000}s — auto-simulating`);
-        updatePricingAfterOutcome(true);
-        pendingJobs.delete(String(jobId));
-        await simulateAuditCycle(
-          String(jobId),
-          contractAddress,
-          resolved.contractType,
-          resolved.loc,
-          hcs,
-          contracts,
-          wallet.evmAddress
-        );
+      // Auto-simulate fallback if no winner event arrives
+      setTimeout(async () => {
+        const pendingJobId = String(jobId);
+        if (hasStartedJob(pendingJobId)) return;
+        if (pendingJobs.has(pendingJobId)) {
+          log.info(`No WinnersSelected after ${WINNER_WAIT_MS / 1000}s — auto-simulating`);
+          updatePricingAfterOutcome(true);
+          startedJobs.add(`${pendingJobId}:timeout`);
+          pendingJobs.delete(pendingJobId);
+          await simulateAuditCycle(
+            pendingJobId,
+            contractAddress,
+            resolved.contractType,
+            resolved.loc,
+            hcs,
+            contracts,
+            wallet.evmAddress
+          );
+        }
+      }, WINNER_WAIT_MS);
+      return;
+    }
+
+    if (msg.type === "WINNERS_SELECTED_FALLBACK") {
+      const { jobId, winners, selectionEpoch } = (msg as any).payload ?? {};
+      const jobKey = String(jobId);
+      const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
+      if (startedJobs.has(dedupKey) || hasStartedJob(jobKey)) {
+        log.info(`Already processing job ${jobKey}, skipping`);
+        return;
       }
-    }, WINNER_WAIT_MS);
+      const isWinner = Array.isArray(winners) && winners.some((w: any) => {
+        const winnerAddress = typeof w === "string" ? w : w?.evmAddress;
+        return typeof winnerAddress === "string" && winnerAddress.toLowerCase() === wallet.evmAddress.toLowerCase();
+      });
+      if (!isWinner) return;
+
+      const pending = pendingJobs.get(jobKey);
+      if (!pending) {
+        log.warn(`Fallback winner notification for job #${jobKey} but no pending context`);
+        return;
+      }
+
+      log.info(`Won job ${jobKey} via fallback notification`);
+      startedJobs.add(dedupKey);
+      updatePricingAfterOutcome(true);
+      pendingJobs.delete(jobKey);
+      simulateAuditCycle(
+        pending.jobId,
+        pending.contractAddress,
+        pending.contractType,
+        pending.loc,
+        hcs,
+        contracts,
+        wallet.evmAddress
+      ).catch((err) => log.error(`Audit cycle failed: ${err}`));
+    }
   });
 
   // Listen for winner selection events on-chain

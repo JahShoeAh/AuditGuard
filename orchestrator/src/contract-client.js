@@ -78,4 +78,10 @@ export class ContractClient {
   getAddress() {
     return this.wallet.address;
   }
+
+  async selectWinners(jobId, winningBidIndices) {
+    const tx = await this.auction.selectWinners(jobId, winningBidIndices);
+    const receipt = await tx.wait();
+    return receipt;
+  }
 }

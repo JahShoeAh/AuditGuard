@@ -1,5 +1,7 @@
 # Orchestrator Agent (isolated branch-safe scaffold)
 
+> Current build notes (2026-02-19): `JOB_CREATED` is published for dashboard/live listeners; orchestrator key precedence favors `ORCHESTRATOR_*` then `HEDERA_*` then `OPERATOR_*`.
+
 This folder contains a self-contained orchestrator implementation so we avoid touching the in-flight sub-agent files.
 
 ## What’s here

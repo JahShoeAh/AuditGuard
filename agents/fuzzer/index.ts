@@ -40,6 +40,7 @@ const pendingJobs = new Map<string, {
   contractType: ContractType;
   loc: number;
 }>();
+const startedJobs = new Set<string>();
 
 // Dynamic pricing state
 let bidMultiplier = 1.0;
@@ -459,6 +460,42 @@ async function main() {
           );
         }
       }, WINNER_WAIT_MS);
+      return;
+    }
+
+    if (msg.type === "WINNERS_SELECTED_FALLBACK") {
+      const { jobId, winners, selectionEpoch } = (msg as any).payload ?? {};
+      const jobKey = String(jobId);
+      const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
+      if (startedJobs.has(dedupKey)) {
+        log.info(`Already processing job ${jobKey}, skipping`);
+        return;
+      }
+      const isWinner = Array.isArray(winners) && winners.some((w: any) => {
+        const winnerAddress = typeof w === "string" ? w : w?.evmAddress;
+        return typeof winnerAddress === "string" && winnerAddress.toLowerCase() === wallet.evmAddress.toLowerCase();
+      });
+      if (!isWinner) return;
+
+      const pending = pendingJobs.get(jobKey);
+      if (!pending) {
+        log.warn(`Fallback winner notification for job #${jobKey} but no pending context`);
+        return;
+      }
+
+      log.info(`Won job ${jobKey} via fallback notification`);
+      startedJobs.add(dedupKey);
+      updatePricingAfterOutcome(true);
+      pendingJobs.delete(jobKey);
+      simulateAuditCycle(
+        pending.jobId,
+        pending.contractAddress,
+        pending.contractType,
+        pending.loc,
+        hcs,
+        contracts,
+        wallet.evmAddress
+      ).catch((err) => log.error(`Audit cycle failed: ${err}`));
     }
   });
 

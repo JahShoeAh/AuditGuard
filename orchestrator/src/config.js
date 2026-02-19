@@ -97,15 +97,15 @@ export const CONFIG = {
 
 export function getOperatorKeys() {
   // Prefer dedicated orchestrator creds, then Hedera operator creds.
-  // Keep OPERATOR_* as a final fallback for older setups.
+  // Keep HEDERA_* as a final fallback for older setups.
   const accountId =
     getEnv("ORCHESTRATOR_ACCOUNT_ID") ??
-    getEnv("HEDERA_ACCOUNT_ID") ??
-    getEnv("OPERATOR_ACCOUNT_ID");
+    getEnv("OPERATOR_ACCOUNT_ID") ??
+    getEnv("HEDERA_ACCOUNT_ID");
   const privateKey =
     getEnv("ORCHESTRATOR_PRIVATE_KEY") ??
-    getEnv("HEDERA_PRIVATE_KEY") ??
-    getEnv("OPERATOR_PRIVATE_KEY");
+    getEnv("OPERATOR_PRIVATE_KEY") ??
+    getEnv("HEDERA_PRIVATE_KEY");
   if (!accountId || !privateKey) {
     throw new Error(
       "Set ORCHESTRATOR_ACCOUNT_ID/ORCHESTRATOR_PRIVATE_KEY, HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY, or OPERATOR_ACCOUNT_ID/OPERATOR_PRIVATE_KEY in .env for orchestrator"

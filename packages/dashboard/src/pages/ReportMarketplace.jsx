@@ -114,10 +114,12 @@ export default function ReportMarketplace() {
   const [purchaseModal,  setPurchaseModal]  = useState(null); // listing | null
   const [viewerListing,  setViewerListing]  = useState(null); // listing | null
   const [sessionPurchasedIds, setSessionPurchasedIds] = useState(new Set());
+  const [showMineOnly, setShowMineOnly] = useState(false);
 
   const dataListings  = useStore((s) => s.dataListings);
   const jobListings   = useStore((s) => s.jobListings);   // parentJobId → listingId[]
   const activeJobs    = useStore((s) => s.activeJobs);
+  const reportMeta    = useStore((s) => s.reportMetadata);
   const dataPurchases = useStore((s) => s.dataPurchases);
   const myAddress     = useWalletStore((s) => s.address);
   const ratings       = useRatings();
@@ -188,8 +190,16 @@ export default function ReportMarketplace() {
       // Default: newest first (by listingId descending or listedAt)
       list = [...list].sort((a, b) => (b.listingId > a.listingId ? 1 : -1));
     }
+    if (showMineOnly) {
+      if (!myAddress) return [];
+      list = list.filter((l) => {
+        const key = l.parentJobId != null ? String(l.parentJobId) : '';
+        const m = reportMeta[key];
+        return m?.deployer?.toLowerCase() === myAddress?.toLowerCase();
+      });
+    }
     return list;
-  }, [candidateIds, dataListings, catFilter, typeFilter, ratingMin, priceSort, ratings]);
+  }, [candidateIds, dataListings, catFilter, typeFilter, ratingMin, priceSort, ratings, showMineOnly, reportMeta, myAddress]);
 
   // Per-category counts (unfiltered, for pills)
   const categoryCounts = useMemo(() => {
@@ -330,6 +340,24 @@ export default function ReportMarketplace() {
               </span>
             )}
           </p>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '0px' }}>
+            <button
+              type="button"
+              onClick={() => setShowMineOnly(false)}
+              style={{ opacity: showMineOnly ? 0.5 : 1 }}
+              className="text-[11px] font-mono px-2 py-1 rounded border border-gray-700 text-gray-300"
+            >
+              All Reports
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowMineOnly(true)}
+              style={{ opacity: showMineOnly ? 1 : 0.5 }}
+              className="text-[11px] font-mono px-2 py-1 rounded border border-gray-700 text-gray-300"
+            >
+              My Contracts
+            </button>
+          </div>
           {(catFilter !== null || typeFilter !== null || priceSort !== null || ratingMin !== null || contractSearch) && (
             <button
               type="button"
@@ -337,6 +365,7 @@ export default function ReportMarketplace() {
                 setCatFilter(null); setTypeFilter(null);
                 setPriceSort(null); setRatingMin(null);
                 updateContractSearch('');
+                setShowMineOnly(false);
               }}
               className="text-[11px] font-mono text-gray-500 hover:text-gray-300"
             >
@@ -344,6 +373,11 @@ export default function ReportMarketplace() {
             </button>
           )}
         </div>
+        {showMineOnly && !myAddress && (
+          <p className="text-[11px] font-mono text-amber-300">
+            Connect your wallet to see reports for your contracts.
+          </p>
+        )}
       </div>
 
       {/* ── Main content ── */}

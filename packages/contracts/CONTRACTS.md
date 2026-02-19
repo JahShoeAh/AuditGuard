@@ -23,12 +23,13 @@ Testing targets local Hardhat with `MockHTS` injected at `0x167`.
 
 ---
 
-## Current Integration Snapshot (as of February 18, 2026)
+## Current Integration Snapshot (as of February 19, 2026)
 
 ### Integrated
 - Contract source, ABI artifacts, and deployment configuration are present in the monorepo.
 - Cross-contract wiring expectations are documented (registry/auction/treasury/vault/staking links).
 - Hedera IDs, EVM addresses, HCS topics, and iNFT collection IDs are present in `packages/sdk/config.json`.
+- Hardhat config supports key normalization for testnet account input compatibility.
 
 ### In Progress / Needs Cleanup
 - Local Hardhat test execution can fail if root dependency state is incomplete or `.env` key formats are incompatible.

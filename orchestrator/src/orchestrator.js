@@ -19,8 +19,7 @@ export class OrchestratorAgent {
   constructor(opts = {}) {
     this.log = opts.log ?? createLogger("orchestrator");
     this.hcs = opts.hcs ?? new HCSClient();
-    this.strictLive = opts.strictLive ?? CONFIG.strictLive;
-    this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
+    this.contracts = opts.contracts ?? this.buildContractClient();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
@@ -28,13 +27,19 @@ export class OrchestratorAgent {
     this.enablePing = opts.enablePing ?? true;
   }
 
-  buildContractClientWithFallback() {
+  buildContractClient() {
     try {
-      return ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
-    } catch (err) {
-      if (this.strictLive && !CONFIG.demoMode) {
-        throw new Error(`Contract client init failed in strict live mode: ${err.message}`);
+      const client = ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
+      const missing = [];
+      if (typeof client.auction?.createAuditJob !== "function") missing.push("auction.createAuditJob");
+      if (typeof client.selectWinners !== "function") missing.push("selectWinners");
+      if (typeof client.dataMarketplace?.purchaseData !== "function") missing.push("dataMarketplace.purchaseData");
+      if (typeof client.paymentSettlement?.settleJob !== "function") missing.push("paymentSettlement.settleJob");
+      if (missing.length) {
+        throw new Error(`Contract client missing required methods: ${missing.join(", ")}`);
       }
+      return client;
+    } catch (err) {
       this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
       return {
         auction: {},
@@ -215,6 +220,10 @@ export class OrchestratorAgent {
 
     let jobId = this.normalizeJobId(Date.now()); // fallback
     let auctionOpenedOnChain = false;
+    const budgetGuardRaw = Number(budget ?? CONFIG.payments.totalGuard ?? 0);
+    const budgetGuard = Number.isFinite(budgetGuardRaw) && budgetGuardRaw > 0
+      ? budgetGuardRaw
+      : Number(CONFIG.payments.totalGuard);
     this.log.info(`New discovery ${contractAddress.slice(0, 12)}… type=${contractType}`);
 
     // Store job FIRST so incoming bids can be matched immediately
@@ -231,8 +240,11 @@ export class OrchestratorAgent {
     // Open auction on-chain (async — bids can arrive while this runs)
     try {
       const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
-      const budgetWei = parseUnits(String(budget ?? 0), CONFIG.guardToken.decimals);
-      const tx = await this.contracts.auction.createAuditJob?.(
+      const budgetWei = parseUnits(String(budgetGuard), CONFIG.guardToken.decimals);
+      const expectedJobIdRaw = await this.contracts.auction.nextJobId?.();
+      const expectedOnChainJobId = expectedJobIdRaw != null ? Number(expectedJobIdRaw) : null;
+
+      const tx = await this.contracts.auction.createAuditJob(
         contractAddress,
         "hedera-testnet",
         contractType ?? "unknown",
@@ -241,8 +253,12 @@ export class OrchestratorAgent {
         estimatedLOC ?? 0,
         auctionDurationSec
       );
-      const receipt = await tx?.wait?.();
-      let onChainJobId = null;
+      const receipt = await tx.wait();
+      if (!receipt || receipt.status !== 1) {
+        throw new Error(`createAuditJob tx failed: ${tx.hash}`);
+      }
+
+      let onChainJobId = Number.isFinite(expectedOnChainJobId) ? expectedOnChainJobId : null;
       if (receipt?.logs) {
         for (const log of receipt.logs) {
           try {
@@ -254,18 +270,21 @@ export class OrchestratorAgent {
           } catch { /* ignore */ }
         }
       }
+
+      if (onChainJobId == null || !Number.isFinite(onChainJobId)) {
+        throw new Error("createAuditJob succeeded but JobPosted jobId could not be resolved");
+      }
+
       if (onChainJobId != null && onChainJobId !== jobId) {
         const existing = this.getJobByKey(jobId);
         this.jobs.delete(this.normalizeJobId(jobId));
         this.jobs.delete(jobId);
-        if (existing) {
-          existing.onChainJobId = onChainJobId;
-          this.setJobByKey(onChainJobId, existing);
-        }
+        existing.onChainJobId = onChainJobId;
+        this.jobs.set(onChainJobId, existing);
         jobId = onChainJobId;
       }
       auctionOpenedOnChain = true;
-      this.log.info(`Auction opened on-chain for job ${jobId}`);
+      this.log.info(`Auction opened on-chain for job ${jobId} (tx: ${tx.hash})`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log.warn(`Auction create failed: ${message}`);
@@ -314,7 +333,7 @@ export class OrchestratorAgent {
           jobId,
           contractAddress,
           contractType: contractType ?? "unknown",
-          budget: budget ?? 0,
+          budget: budgetGuard,
           riskScore: riskScore ?? 0,
           estimatedLOC: estimatedLOC ?? 0,
           onChain: auctionOpenedOnChain,
@@ -481,47 +500,14 @@ export class OrchestratorAgent {
     const { listingId, category, price, jobId } = payload;
     if (!CONFIG.dataMarketplace.allowedCategories.includes(category)) return;
     if (price > CONFIG.dataMarketplace.maxAutoBuyGuard) return;
-
-    if (this.strictLive) {
-      const buyer = this.orchestratorAddress;
-      if (!buyer || !ethers.isAddress(buyer)) {
-        this.log.warn(`Strict live: skipping auto-buy for listing ${listingId}, invalid orchestrator buyer address`);
-        await this.hcs.publishAuditLog({
-          type: "DATA_PURCHASE_SKIPPED",
-          agentId: "orchestrator",
-          timestamp: now(),
-          payload: { listingId, price, jobId, reason: "invalid_buyer_address" },
-        });
-        return;
-      }
-
-      if (!this.contracts.agentRegistry?.isActiveAgent) {
-        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, cannot verify buyer activity`);
-        await this.hcs.publishAuditLog({
-          type: "DATA_PURCHASE_SKIPPED",
-          agentId: "orchestrator",
-          timestamp: now(),
-          payload: { listingId, price, jobId, reason: "agent_registry_unavailable", buyer },
-        });
-        return;
-      }
-
-      const isActive = await this.contracts.agentRegistry.isActiveAgent(buyer);
-      if (!isActive) {
-        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, buyer ${buyer} is not an active agent`);
-        await this.hcs.publishAuditLog({
-          type: "DATA_PURCHASE_SKIPPED",
-          agentId: "orchestrator",
-          timestamp: now(),
-          payload: { listingId, price, jobId, reason: "inactive_buyer_agent", buyer },
-        });
-        return;
-      }
+    const numericListingId = Number(listingId);
+    if (!Number.isFinite(numericListingId) || numericListingId <= 0) {
+      this.log.warn(`Auto-buy skipped: invalid listingId ${listingId}`);
+      return;
     }
 
     try {
-      const listingKey = this.toChainUint(listingId, "listingId");
-      await this.contracts.dataMarketplace.purchaseData(listingKey);
+      await this.contracts.dataMarketplace.purchaseData(Number(listingId ?? 0));
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
       await this.hcs.publishAuditLog({
         type: "DATA_PURCHASED",
@@ -778,8 +764,8 @@ export class OrchestratorAgent {
           jobId,
           contractAddress: payload.contractAddress,
           contractType: payload.contractType,
-          budget: payload.budget ?? 0,
-          riskScore: payload.riskScore ?? 0,
+          budget: payload.budget ?? CONFIG.payments.totalGuard,
+          riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
           estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
           estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
         },
@@ -789,27 +775,40 @@ export class OrchestratorAgent {
   }
 
   selectWinnersFallback(jobId) {
-    const key = this.normalizeJobId(jobId);
-    const job = this.getJobByKey(key);
+    const job = this.jobs.get(jobId);
     if (!job) return;
 
+    let selectedWinners;
     let winnerAddresses;
 
     if (job.bidders && job.bidders.length > 0) {
       // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
-      const maxBid = Math.max(...job.bidders.map(b => b.bidAmount || 1));
-      const maxTime = Math.max(...job.bidders.map(b => b.estimatedTimeSec || 1));
+      const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
+      const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
 
-      const scored = job.bidders.map(b => {
+      const scored = job.bidders.map((b, bidIndex) => {
         const repScore = ((b.reputation ?? 0) / 100) * 0.55;
         const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
         const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
-        return { ...b, score: repScore + priceScore + speedScore };
+        return { ...b, bidIndex, score: repScore + priceScore + speedScore };
       });
 
       scored.sort((a, b) => b.score - a.score);
-      const winners = scored.slice(0, 3);
-      winnerAddresses = winners.map(w => w.evmAddress).filter(Boolean);
+
+      const deduped = [];
+      const seenWinnerKeys = new Set();
+      for (const bid of scored) {
+        const key = bid.evmAddress
+          ? String(bid.evmAddress).toLowerCase()
+          : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
+        if (!key || seenWinnerKeys.has(key)) continue;
+        seenWinnerKeys.add(key);
+        deduped.push(bid);
+        if (deduped.length >= 3) break;
+      }
+
+      selectedWinners = deduped;
+      winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
       this.log.info(
         `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
         `${winnerAddresses.join(", ")}`
@@ -825,7 +824,11 @@ export class OrchestratorAgent {
         return;
       }
 
-      winnerAddresses = candidates.map((c) => c.evmAddress);
+      selectedWinners = candidates.map((c) => ({
+        agentId: c.agentId,
+        evmAddress: c.evmAddress,
+      }));
+      winnerAddresses = selectedWinners.map((w) => w.evmAddress);
       this.log.info(`Roster-fallback winners for job ${jobId}: ${winnerAddresses.join(", ")}`);
     }
 
@@ -835,7 +838,7 @@ export class OrchestratorAgent {
       type: MessageType.WINNERS_SELECTED_FALLBACK,
       agentId: "orchestrator",
       timestamp: now(),
-      payload: { jobId: key, winners: winnerAddresses },
+      payload: { jobId, winners: winnerAddresses },
     }).catch((err) => this.log.warn(`Failed to publish fallback winners: ${err}`));
   }
 

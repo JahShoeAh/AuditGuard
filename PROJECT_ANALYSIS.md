@@ -1,12 +1,13 @@
 # AuditGuard - Comprehensive Project Analysis
 
-**Generated:** February 18, 2026  
+**Generated:** February 19, 2026  
 **Project Type:** Monorepo (NPM Workspaces)  
 **Primary Blockchain:** Hedera Hashgraph (Testnet)  
 **Purpose:** Autonomous Agent-Based Smart Contract Security Audit Marketplace
 
 ---
-yes 
+> Current build notes (2026-02-19): agent liveness now includes explicit `PING`/`PONG`; invite processing includes fallback context resolution to prevent dropped bids during discovery/invite ordering races.
+
 ## Executive Summary
 
 **AuditGuard** is an innovative autonomous agent economy platform where intelligent Auditor Agents compete to discover, evaluate, and audit smart contracts across multiple chains. The system operates entirely autonomously—agents negotiate prices, bid for jobs, purchase specialized analysis from other agents, and settle payments without human intervention. Humans are passive observers who can only deposit audit budgets and view activity through a read-only dashboard.
