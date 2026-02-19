@@ -139,6 +139,7 @@ export class OrchestratorAgent {
   async handleDiscovery(msg) {
     const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
     let jobId = Date.now(); // fallback
+    let auctionOpenedOnChain = false;
     this.log.info(`New discovery ${contractAddress.slice(0, 12)}… type=${contractType}`);
 
     // Store job FIRST so incoming bids can be matched immediately
@@ -185,10 +186,27 @@ export class OrchestratorAgent {
         this.jobs.set(onChainJobId, existing);
         jobId = onChainJobId;
       }
+      auctionOpenedOnChain = true;
       this.log.info(`Auction opened on-chain for job ${jobId}`);
     } catch (err) {
       this.log.warn(`Auction create failed (continuing off-chain): ${err}`);
     }
+
+    // Publish a normalized auction-opened signal for dashboard/live listeners.
+    await this.hcs.publishAuditLog({
+      type: "JOB_CREATED",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId,
+        contractAddress,
+        contractType: contractType ?? "unknown",
+        budget: budget ?? 0,
+        riskScore: riskScore ?? 0,
+        estimatedLOC: estimatedLOC ?? 0,
+        onChain: auctionOpenedOnChain,
+      },
+    });
 
     const eligible = this.roster.eligibleFor(contractType);
     await this.inviteAgents(jobId, eligible, msg.payload);
