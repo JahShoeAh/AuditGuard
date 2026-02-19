@@ -14,6 +14,7 @@ import { ethers } from "ethers";
 const AGENT_ID = "dependency-analyzer-008";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 let currentBacklog = 0;
+const startedJobs = new Set<string>();
 
 const log = createAgentLogger(AGENT_ID, "dependency");
 
@@ -75,6 +76,18 @@ async function main() {
         timestamp: Date.now(),
         payload: {},
       });
+      return;
+    }
+
+    if (msg.type === "WINNERS_SELECTED_FALLBACK") {
+      const { jobId, selectionEpoch } = (msg as any).payload ?? {};
+      const dedupKey = `${String(jobId)}:${selectionEpoch ?? "0"}`;
+      if (startedJobs.has(dedupKey)) {
+        console.log("[DependencyAgent-8] Already processing job " + String(jobId) + ", skipping");
+        return;
+      }
+      startedJobs.add(dedupKey);
+      console.log("[DependencyAgent-8] Received main job fallback — ignoring (sub-contractor only)");
       return;
     }
 

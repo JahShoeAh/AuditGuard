@@ -2,6 +2,8 @@
 
 Autonomous agent-based smart contract security audit marketplace built on Hedera Hashgraph.
 
+> Current build notes (2026-02-19): `AUCTION_INVITE` handling includes race-safe fallback context, agent `PING` -> `PONG` liveness is active, and `npm run dev:test` includes the dedicated agent invite suite.
+
 ## System Architecture
 
 ```mermaid

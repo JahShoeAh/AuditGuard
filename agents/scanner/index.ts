@@ -27,6 +27,31 @@ const log = createAgentLogger(AGENT_ID, "scanner");
 // ---- Discovery Generator ----
 
 export function generateDiscovery() {
+  if (process.env.TEST_MODE === "true") {
+    const config = CONFIG;
+    const testContracts = config.testContracts;
+    if (testContracts && testContracts.length > 0) {
+      const pick = testContracts[Math.floor(Math.random() * testContracts.length)];
+      if (pick?.address && pick?.deployer) {
+        return {
+          type: "CONTRACT_DISCOVERED" as const,
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {
+            contractAddress: pick.address,
+            chain: "hedera-testnet",
+            deployerAddress: pick.deployer,
+            estimatedLOC: 150,
+            contractType: "vault" as const,
+            riskScore: 75,
+            txHash: `0x${randomHex(64)}`,
+            sourceRef: pick.key,
+          },
+        };
+      }
+    }
+  }
+
   const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault"];
   return {
     type: "CONTRACT_DISCOVERED" as const,

@@ -9,6 +9,8 @@ import {
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
 import { ethers } from "ethers";
+import { formatReport, type Finding as ReportFinding } from "../shared/report-formatter.js";
+import { uploadToIPFSSafe } from "../shared/ipfs-client.js";
 
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
@@ -196,9 +198,10 @@ async function aggregateAndPublish(
   if (DIRECT_SETTLEMENT) {
     try {
       await contracts.settleJob(0, payments, myAddress);
-      log.info("Direct settlement executed by report agent");
+      log.info(`[ReportAgent] On-chain settlement succeeded for job ${jobId}`);
     } catch (err) {
-      log.warn(`Direct settlement failed (continuing): ${err}`);
+      const errMessage = err instanceof Error ? err.message : String(err);
+      log.warn(`[ReportAgent] Settlement failed for job ${jobId}: ${errMessage}. Continuing with report.`);
     }
   } else {
     log.info("Settlement execution delegated to orchestrator");
@@ -237,6 +240,99 @@ async function aggregateAndPublish(
       agentCount: job.submissions.length,
     },
   });
+
+  // --- Generate, upload, and list real audit report ---
+  const agentFindings = job.submissions as any[];
+  const allFindings: ReportFinding[] = agentFindings.flatMap((af: any) =>
+    (af?.findings || af?.results || af?.payload?.findings || af?.payload?.results || []).map((f: any) => ({
+      severity: String(f?.severity || f?.level || "MEDIUM").toUpperCase(),
+      title: f?.title || f?.name || "Unnamed Finding",
+      description: f?.description || f?.details || "",
+      location: f?.location || f?.function || undefined,
+      recommendation: f?.recommendation || f?.fix || undefined,
+    }))
+  );
+
+  const jobMeta = job as any;
+  const firstPayload = (job.submissions[0] as any)?.payload ?? {};
+  const contractAddr =
+    jobMeta?.contractAddress ||
+    jobMeta?.payload?.contractAddress ||
+    firstPayload?.contractAddress ||
+    "unknown";
+  const chain = jobMeta?.chain || jobMeta?.payload?.chain || firstPayload?.chain || "hedera";
+  const contractType =
+    jobMeta?.contractType ||
+    jobMeta?.payload?.contractType ||
+    firstPayload?.contractType ||
+    "unknown";
+  const agents = agentFindings.map((af: any) => af?.agentId || af?.agent || "unknown");
+
+  const markdownContent = formatReport(jobId, contractAddr, chain, contractType, agents, allFindings);
+  log.info(`[ReportAgent] Generated ${markdownContent.length} char report with ${allFindings.length} findings`);
+
+  const contentHash = ethers.keccak256(ethers.toUtf8Bytes(markdownContent));
+  const cid = await uploadToIPFSSafe(markdownContent);
+  log.info(`[ReportAgent] IPFS CID: ${cid}`);
+
+  // Create DataMarketplace listing
+  const numericJobId = Number(jobId);
+  const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
+  let listingId: number | null = null;
+  try {
+    const priceRaw = ethers.parseUnits("0.5", 8);
+    const tx = await contracts.dataMarketplace.createListing(
+      parentJobId,
+      `Audit Report — Job #${jobId}`,
+      "Comprehensive vulnerability audit report",
+      6,
+      0,
+      priceRaw,
+      0,
+      contentHash,
+      0,
+      30 * 24 * 60 * 60
+    );
+    const receipt = await tx.wait();
+    if (receipt?.logs) {
+      for (const logItem of receipt.logs) {
+        try {
+          const parsed = contracts.dataMarketplace.interface.parseLog(logItem);
+          if (parsed?.name === "DataListed") {
+            listingId = Number(parsed.args?.listingId ?? parsed.args?.[0]);
+            break;
+          }
+        } catch {
+          // Ignore unrelated logs.
+        }
+      }
+    }
+    log.info(`[ReportAgent] Marketplace listing: #${listingId}`);
+  } catch (err) {
+    log.warn(`[ReportAgent] Marketplace listing failed: ${err}`);
+  }
+
+  // Publish REPORT_METADATA for dashboard
+  const deployer =
+    jobMeta?.deployerAddress ||
+    jobMeta?.payload?.deployerAddress ||
+    firstPayload?.deployerAddress ||
+    null;
+  await hcs.publishAuditLog({
+    type: "REPORT_METADATA",
+    agentId: AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      jobId,
+      cid,
+      listingId,
+      contentHash,
+      deployer,
+      agentCount: agents.length,
+      findingCount: allFindings.length,
+    },
+  });
+  log.info(`[ReportAgent] Published REPORT_METADATA for job ${jobId}`);
 
   log.info(`Report published to HCS audit log`);
   log.info(`═══════════════════════════════════════════`);
