@@ -594,6 +594,7 @@ describe("analyzeWithAI()", () => {
     vi.resetModules();
     process.env.ZG_PRIVATE_KEY = "0x493a894523bd3af6ab9954f4c229686417c39a8599bc8f7c48fc2dffe3c3202b";
     process.env.ZG_PROVIDER_ADDRESS = "0xa48f01MockProvider";
+    process.env.NO_FALLBACK_MODE = "true";
     delete process.env.STRICT_LIVE;
     delete process.env.ZG_REQUIRED_IN_LIVE;
     delete process.env.ZG_ENABLED;
@@ -604,6 +605,7 @@ describe("analyzeWithAI()", () => {
     delete process.env.ZG_ENABLED;
     delete process.env.STRICT_LIVE;
     delete process.env.ZG_REQUIRED_IN_LIVE;
+    delete process.env.NO_FALLBACK_MODE;
     delete process.env.ZG_PRIVATE_KEY;
     delete process.env.ZG_PROVIDER_ADDRESS;
   });
@@ -648,7 +650,7 @@ describe("analyzeWithAI()", () => {
     expect(result.findings[1].title).toBe("Oracle manipulation");
   });
 
-  it("returns usedFallback: true when callInference throws ZGClientError", async () => {
+  it("throws when infer fails in no-fallback mode", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => {
       class ZGClientError extends Error {
         code: string;
@@ -662,12 +664,10 @@ describe("analyzeWithAI()", () => {
     });
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
-    const result = await analyzeWithAI(baseCtx());
-    expect(result.usedFallback).toBe(true);
-    expect(result.findings.length).toBeGreaterThan(0);
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/timed out|zg_timeout|strict/i);
   });
 
-  it("returns usedFallback: true when parseFindings returns parseError", async () => {
+  it("throws when parseFindings returns parseError in no-fallback mode", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => ({
       infer: vi.fn().mockResolvedValue({
         content: "This is not JSON at all",
@@ -682,9 +682,7 @@ describe("analyzeWithAI()", () => {
     }));
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
-    const result = await analyzeWithAI(baseCtx());
-    expect(result.usedFallback).toBe(true);
-    expect(result.findings.length).toBeGreaterThan(0);
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/parse|strict|zg/i);
   });
 
   it("retries exactly once on first ZGClientError, succeeds on second attempt", async () => {
@@ -719,7 +717,7 @@ describe("analyzeWithAI()", () => {
     expect(result.findings.length).toBe(2);
   });
 
-  it("returns mock findings after both retries fail", async () => {
+  it("throws after retries fail in no-fallback mode", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => {
       class ZGClientError extends Error {
         code: string;
@@ -733,36 +731,35 @@ describe("analyzeWithAI()", () => {
     });
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
-    const result = await analyzeWithAI(baseCtx());
-    expect(result.usedFallback).toBe(true);
-    expect(result.findings.length).toBeGreaterThan(0);
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/always fail|zg_http_error|strict/i);
   });
 
-  it("mock fallback findings have correct shape (ID prefix, severity, confidence)", async () => {
-    vi.doMock("../llm-contextual/zg-client.js", () => {
-      class ZGClientError extends Error {
-        code: string;
-        constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
-      }
-      return {
-        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_timeout", "fail")),
-        initZgClient: vi.fn().mockResolvedValue(undefined),
-        ZGClientError,
-      };
-    });
+  it("successful parsed findings have expected shape", async () => {
+    vi.doMock("../llm-contextual/zg-client.js", () => ({
+      infer: vi.fn().mockResolvedValue({
+        content: goodLlmResponse,
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-shape",
+        verified: true,
+      }),
+      initZgClient: vi.fn().mockResolvedValue(undefined),
+      ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
+    }));
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
     const result = await analyzeWithAI(baseCtx());
     for (const f of result.findings) {
       expect(f.id).toMatch(/^LLM-\d{3}$/);
       expect(["critical", "high", "medium", "low", "info"]).toContain(f.severity);
-      expect(f.confidence).toBeGreaterThanOrEqual(0.8);
-      expect(f.confidence).toBeLessThanOrEqual(0.99);
+      expect(f.confidence).toBeGreaterThanOrEqual(0);
+      expect(f.confidence).toBeLessThanOrEqual(1);
       expect(f.agentId).toBe(AGENT_ID);
     }
   });
 
-  it("does NOT call 0g when ZG_ENABLED=false", async () => {
+  it("throws and does NOT call 0g when ZG_ENABLED=false in no-fallback mode", async () => {
     process.env.ZG_ENABLED = "false";
     const inferSpy = vi.fn().mockResolvedValue({
       content: goodLlmResponse,
@@ -779,9 +776,8 @@ describe("analyzeWithAI()", () => {
     }));
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
-    const result = await analyzeWithAI(baseCtx());
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/required in strict live mode|not configured/i);
     expect(inferSpy).not.toHaveBeenCalled();
-    expect(result.usedFallback).toBe(true);
   });
 
   it("still calls 0g when env provider is empty but config provider is pinned", async () => {
@@ -870,7 +866,7 @@ describe("analyzeWithAI()", () => {
     );
   });
 
-  it("logs [0g] prefix on success and [0g fallback] on fallback", async () => {
+  it("does not permit mock fallback logging path in no-fallback mode", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => {
       class ZGClientError extends Error {
         code: string;
@@ -884,8 +880,7 @@ describe("analyzeWithAI()", () => {
     });
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
-    const result = await analyzeWithAI(baseCtx());
-    expect(result.usedFallback).toBe(true);
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/fail|zg|strict/i);
   });
 
   it("throws in strict live when 0g inference fails", async () => {
