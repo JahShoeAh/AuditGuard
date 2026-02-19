@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "npm run --workspaces --if-present build",
-    "dev:all": "bash -lc 'npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & wait'",
+    "dev:all": "bash -lc 'npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & wait'",
     "start:all": "npm run dev:all",
     "compile": "npx hardhat compile --config packages/contracts/hardhat.config.js",
     "test": "npx hardhat test --config packages/contracts/hardhat.config.js",
@@ -28,6 +28,7 @@
     "agents:demo": "npm --prefix agents run all:demo",
     "inft:create-collections": "npm --prefix packages/inft run create-collections",
     "inft:listen": "npm --prefix packages/inft run listen",
+    "inft:listen:events": "npm --prefix packages/inft run listen:events",
     "orchestrator": "node orchestrator/src/index.js",
     "orchestrator:test": "npm --prefix orchestrator test",
     "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",

@@ -67,23 +67,33 @@ function parseDiscoveryMessage(message) {
   }
 
   const parsed = JSON.parse(content);
-  if (parsed.type !== "CONTRACT_DISCOVERY") {
-    return null;
+
+  // Handle both flat and nested payload structures for backward compatibility
+  const payload = parsed.payload || parsed;
+
+  // Check message type (scanner sends CONTRACT_DISCOVERED, but check payload type if wrapped)
+  // Note: Agents send { type: "CONTRACT_DISCOVERED", payload: { ... } }
+  // OR sometimes the payload itself might be the top level object in legacy code.
+  if (parsed.type !== "CONTRACT_DISCOVERED" && payload.type !== "CONTRACT_DISCOVERY") {
+     // Allow flexibility in type string to catch variations
+     if (parsed.type !== "CONTRACT_DISCOVERY" && parsed.type !== "CONTRACT_DISCOVERED") {
+         return null;
+     }
   }
 
   return {
-    contractAddress: parsed.contractAddress,
-    chain: parsed.chain || "hedera",
-    contractType: parsed.contractType || "unknown",
-    estimatedLineCount: parsed.estimatedLineCount || 0,
-    initialRiskScore: parsed.initialRiskScore || 50,
-    deployerAddress: parsed.deployerAddress || null,
-    discoveryTimestamp: parsed.discoveryTimestamp || Math.floor(Date.now() / 1000),
-    tvlEstimate: parsed.tvlEstimate || 0,
-    scannerAgentId: parsed.scannerAgentId || "scanner-default",
+    contractAddress: payload.contractAddress,
+    chain: payload.chain || "hedera",
+    contractType: payload.contractType || "unknown",
+    estimatedLineCount: payload.estimatedLineCount || 0,
+    initialRiskScore: payload.initialRiskScore || 50,
+    deployerAddress: payload.deployerAddress || null,
+    discoveryTimestamp: payload.discoveryTimestamp || Math.floor(Date.now() / 1000),
+    tvlEstimate: payload.tvlEstimate || 0,
+    scannerAgentId: payload.scannerAgentId || parsed.agentId || "scanner-default",
     hcsMessageId: message.sequenceNumber?.toString() || null,
-    codeHash: parsed.codeHash || null,
-    jobId: parsed.jobId || 0,
+    codeHash: payload.codeHash || null,
+    jobId: payload.jobId || 0,
   };
 }
 

@@ -30,7 +30,7 @@ AuditGuard is an autonomous multi-agent smart contract auditing platform built o
 | Treasury | _(see sdk/config.json)_ | — |
 | DelegatedStaking | _(see sdk/config.json)_ | — |
 | TimeLockVault | _(see sdk/config.json → timelockVault)_ | — |
-| **AuditScheduler** | **NOT YET DEPLOYED** | — |
+| **AuditScheduler** | `0.0.39abe1...cba5f6` | `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6` |
 
 > Full addresses live in `packages/sdk/config.json`.
 
@@ -69,7 +69,7 @@ AuditGuard is an autonomous multi-agent smart contract auditing platform built o
 |---|---|---|
 | `HederaResponseCodes.sol` | Vendored Hedera response code constants | ✅ Compiled |
 | `HederaScheduleService.sol` | Vendored HSS base contract (wraps precompile at `0x16b`) | ✅ Compiled |
-| `AuditScheduler.sol` | Contract-native recurring audit scheduling via HSS | ✅ Compiled, **not yet deployed** |
+| `AuditScheduler.sol` | Contract-native recurring audit scheduling via HSS | ✅ **Deployed** `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6` |
 | `interfaces/IAuditScheduler.sol` | Interface consumed by ContractClient | ✅ Done |
 | `test/MockHSS.sol` | Test helper — mocks HSS precompile for Hardhat tests | ✅ Done |
 
@@ -226,11 +226,11 @@ Run: `npm --prefix agents test`
 
 ## Pending / Next Steps
 
-- [ ] **Deploy AuditScheduler** to testnet: `npm run deploy:audit-scheduler`
+- [ ] **Call `setAuditScheduler` on AuditAuction** — deployer account (`0x49b1...8B9b`) is not the AuditAuction owner; the AuditAuction owner must call `setAuditScheduler(0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6)`
 - [ ] **Set orchestrator on AuditScheduler**: `scheduler.setOrchestrator(ORCHESTRATOR_ADDRESS)`
-- [ ] **Export AuditScheduler ABI** to `packages/sdk/abis/AuditScheduler.json` (run after compile)
+- [ ] **Export AuditScheduler ABI** to `packages/sdk/abis/AuditScheduler.json`
 - [ ] **Test HSS on testnet**: call `scheduleAudit()` and observe `AuditTriggered` on HashScan
-- [ ] **Fill `ESCROW_CONTRACT_ID`** in `.env` (it is the same as `AuditAuction` — already equal; just a legacy label)
+- [x] ~~**Deploy AuditScheduler** to testnet~~ ✅ `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6`
 - [ ] Wire `addHssEvent` calls in the dashboard's event-listener service to feed the Schedules tab live data
 - [ ] Consider deploying to Hedera Mainnet for production
 
@@ -268,3 +268,73 @@ AuditGuard/
 ├── .env                        # Live testnet credentials + addresses
 └── package.json                # Monorepo scripts
 ```
+
+---
+
+## What's Functional in the Live Demo
+
+### ✅ Fully Live (Real On-Chain Transactions)
+
+**Contracts — all deployed on Hedera Testnet, confirmed real transactions:**
+- `AuditAuction` — job creation, bid submission, winner selection, escrow, settlement
+- `AgentRegistry` — agent registration, reputation, tiering
+- `AuditBudgetVault` — GUARD deposits, payment draws
+- `DataMarketplace` — listings, purchases, ratings
+- `SubAuction` — sub-task auctions, contractor selection
+- `PaymentSettlement` — batch GUARD settlement
+- `StakingManager` — staking, slashing, appeals
+- `DelegatedStaking` — delegator backing
+- `Treasury` — fee collection
+- `TimeLockVault` — time-locked releases
+- `VaultFactory` — vault creation
+
+**HCS (Hedera Consensus Service):**
+- All 3 topics (`Discovery`, `AuditLog`, `AgentComms`) are live and receiving real messages
+- Dashboard polls the HCS mirror node every 4s and displays real messages as they arrive
+
+**Dashboard event-listener:**
+- Listens for real on-chain events: `JobPosted`, `BidSubmitted`, `WinnersSelected`, `AgentRegistered`, `DataListed`, `DataPurchased`, `JobSettled`, `Staked`, `SlashInitiated`, `FeeReceived`, and ~20 more — all against real testnet contracts
+
+---
+
+### ⚠️ Partially Real (Real Pipeline, Simulated Findings)
+
+**Agent bidding — Real:**
+- Agents authenticate with their own Hedera wallet
+- Bids are submitted as real on-chain transactions via `AuditAuction.submitBid()`
+- Winner selection happens on-chain
+
+**Agent audit findings — Simulated/Generated:**
+- **Scanner:** Contract addresses are `randomHex(40)` — not real deployed contracts being discovered
+- **Fuzzer, Static Analysis, Dependency, Report, Alert:** Findings are generated via `generateFindings()` using randomized severity/titles — not real code analysis
+- **LLM Agent:** Attempts real 0g inference (`qwen-2.5-7b-instruct` via 0g Compute Network at `ZG_ENABLED=true`). Falls back to `generateMockFindings()` if 0g is unavailable or the response fails to parse
+
+**DataMarketplace purchases — Real:**
+- When an agent buys a scan report, `purchaseData()` is a real on-chain transaction
+- The "data" being sold is the keccak hash of simulated findings
+
+---
+
+### ❌ Not Yet Live
+
+| Feature | Reason |
+|---|---|
+| **AuditScheduler (HSS)** | Built and compiled; not yet deployed — run `npm run deploy:audit-scheduler` |
+| **Real contract scanning** | Scanner generates random hex addresses, not real Ethereum/Hedera contracts |
+| **iNFT minting** | Collections created; minting is wired but depends on settlement events that don't yet fire in demo flow |
+| **Discord alerts** | `DISCORD_WEBHOOK_URL` is empty in `.env` |
+
+---
+
+### Live Demo Honesty Summary
+
+| Layer | Status |
+|---|---|
+| GUARD token (HTS) | ✅ Real |
+| HCS messaging | ✅ Real messages on testnet |
+| Smart contract transactions | ✅ Real — bids, escrow, settlements, staking |
+| Dashboard event feed | ✅ Polling real mirror node + contract events |
+| Agent auction participation | ✅ Real wallet transactions |
+| Agent audit findings | ⚠️ Generated (randomized), not real code analysis |
+| LLM analysis (0g Compute) | ⚠️ Attempts real inference; falls back to mock |
+| HSS scheduling | ❌ Contract not yet deployed |

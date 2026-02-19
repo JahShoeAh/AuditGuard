@@ -640,8 +640,9 @@ export class OrchestratorAgent {
             },
           });
 
-          // Synthesize a discovery payload and run the full pipeline
-          await this.handleDiscovery({
+          // Publish discovery event to HCS so all components (including iNFT listener) see it
+          // This triggers the standard pipeline: iNFT minting -> Orchestrator handleDiscovery -> Auction
+          const discoveryMsg = {
             type: "CONTRACT_DISCOVERED",
             agentId: "audit-scheduler",
             timestamp: now(),
@@ -653,8 +654,12 @@ export class OrchestratorAgent {
               estimatedLOC: 0,
               triggeredByHSS: true,
               scheduleAddress: String(scheduleAddress),
+              deployerAddress: "HSS_SCHEDULE",
             },
-          });
+          };
+
+          await this.hcs.publishDiscovery(discoveryMsg);
+          this.log.info("Published HSS discovery event to HCS (triggers iNFT minting + auction)");
         }
       );
 
