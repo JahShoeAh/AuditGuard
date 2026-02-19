@@ -54,6 +54,40 @@ function readConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 }
 
+function resolveInftSignerConfig() {
+  const payerId = process.env.INFT_HEDERA_ACCOUNT_ID || process.env.HEDERA_ACCOUNT_ID;
+  const payerKey = process.env.INFT_HEDERA_PRIVATE_KEY || process.env.HEDERA_PRIVATE_KEY;
+  const payerKeyType =
+    process.env.INFT_HEDERA_PRIVATE_KEY_TYPE || process.env.HEDERA_PRIVATE_KEY_TYPE;
+  const supplyKeySource =
+    process.env.INFT_SUPPLY_PRIVATE_KEY
+      ? "INFT_SUPPLY_PRIVATE_KEY"
+      : process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY
+        ? "AGENT_REGISTRY_OWNER_PRIVATE_KEY"
+        : process.env.OPERATOR_PRIVATE_KEY
+          ? "OPERATOR_PRIVATE_KEY"
+          : "same as payer key";
+  const supplyKey =
+    process.env.INFT_SUPPLY_PRIVATE_KEY ||
+    process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY ||
+    process.env.OPERATOR_PRIVATE_KEY ||
+    payerKey;
+  const supplyKeyType =
+    process.env.INFT_SUPPLY_PRIVATE_KEY_TYPE ||
+    process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY_TYPE ||
+    process.env.OPERATOR_PRIVATE_KEY_TYPE ||
+    payerKeyType;
+
+  if (!payerId || !payerKey) {
+    throw new Error(
+      "Missing iNFT Hedera credentials. Set INFT_HEDERA_ACCOUNT_ID/INFT_HEDERA_PRIVATE_KEY " +
+        "or fallback HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY."
+    );
+  }
+
+  return { payerId, payerKey, payerKeyType, supplyKey, supplyKeyType, supplyKeySource };
+}
+
 /**
  * Parse an HCS message payload into a discovery event object.
  * Handles both Buffer and Uint8Array message contents.
@@ -102,9 +136,7 @@ async function main() {
   console.log("║      AuditGuard iNFT Discovery Listener (Hedera Testnet)    ║");
   console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
-  if (!process.env.HEDERA_ACCOUNT_ID || !process.env.HEDERA_PRIVATE_KEY) {
-    throw new Error("Missing HEDERA_ACCOUNT_ID or HEDERA_PRIVATE_KEY in .env");
-  }
+  const signer = resolveInftSignerConfig();
 
   const config = readConfig();
   const discoveryTopicId = config.hcsTopics?.discovery;
@@ -118,23 +150,28 @@ async function main() {
 
   // Initialize iNFT service for minting
   const inftService = new INFTService({
-    operatorId: process.env.HEDERA_ACCOUNT_ID,
-    operatorKey: process.env.HEDERA_PRIVATE_KEY,
-    keyType: process.env.HEDERA_PRIVATE_KEY_TYPE,
+    payerId: signer.payerId,
+    payerKey: signer.payerKey,
+    payerKeyType: signer.payerKeyType,
+    supplyKey: signer.supplyKey,
+    supplyKeyType: signer.supplyKeyType,
   });
 
   // Separate client for HCS subscription (mirror node)
-  const operatorId = AccountId.fromString(process.env.HEDERA_ACCOUNT_ID);
-  const operatorKey = parsePrivateKey(
-    process.env.HEDERA_PRIVATE_KEY,
-    process.env.HEDERA_PRIVATE_KEY_TYPE
-  );
+  const operatorId = AccountId.fromString(signer.payerId);
+  const operatorKey = parsePrivateKey(signer.payerKey, signer.payerKeyType);
   const mirrorClient = Client.forTestnet().setOperator(operatorId, operatorKey);
   mirrorClient.setDefaultMaxTransactionFee(new Hbar(5));
 
   console.log(`  Subscribing to discovery topic: ${discoveryTopicId}`);
   console.log(`  Audit Job collection: ${config.inftCollections.auditJob.tokenId}`);
   console.log(`  Contract Health collection: ${config.inftCollections.contractHealth.tokenId}`);
+  console.log(
+    `  iNFT payer: ${signer.payerId} (${process.env.INFT_HEDERA_ACCOUNT_ID ? "INFT_*" : "HEDERA_*"})`
+  );
+  console.log(
+    `  Supply signer: ${signer.supplyKeySource}`
+  );
   console.log("\n  Waiting for CONTRACT_DISCOVERY events...\n");
 
   let messageCount = 0;
@@ -206,6 +243,13 @@ async function main() {
         console.log(`  --- Processing complete (${messageCount} total messages) ---`);
       } catch (err) {
         console.error(`  [ERROR] Failed to process discovery: ${err.message}`);
+        if (String(err.message || "").includes("INVALID_SIGNATURE")) {
+          console.error(
+            "  [HINT] iNFT mint needs the token supply key signature. " +
+              "Set INFT_SUPPLY_PRIVATE_KEY to the key that created the iNFT collections " +
+              "(or recreate collections with your current key)."
+          );
+        }
       }
     });
 

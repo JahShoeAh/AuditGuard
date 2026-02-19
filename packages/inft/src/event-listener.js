@@ -33,6 +33,40 @@ function readConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 }
 
+function resolveInftSignerConfig() {
+  const payerId = process.env.INFT_HEDERA_ACCOUNT_ID || process.env.HEDERA_ACCOUNT_ID;
+  const payerKey = process.env.INFT_HEDERA_PRIVATE_KEY || process.env.HEDERA_PRIVATE_KEY;
+  const payerKeyType =
+    process.env.INFT_HEDERA_PRIVATE_KEY_TYPE || process.env.HEDERA_PRIVATE_KEY_TYPE;
+  const supplyKeySource =
+    process.env.INFT_SUPPLY_PRIVATE_KEY
+      ? "INFT_SUPPLY_PRIVATE_KEY"
+      : process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY
+        ? "AGENT_REGISTRY_OWNER_PRIVATE_KEY"
+        : process.env.OPERATOR_PRIVATE_KEY
+          ? "OPERATOR_PRIVATE_KEY"
+          : "same as payer key";
+  const supplyKey =
+    process.env.INFT_SUPPLY_PRIVATE_KEY ||
+    process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY ||
+    process.env.OPERATOR_PRIVATE_KEY ||
+    payerKey;
+  const supplyKeyType =
+    process.env.INFT_SUPPLY_PRIVATE_KEY_TYPE ||
+    process.env.AGENT_REGISTRY_OWNER_PRIVATE_KEY_TYPE ||
+    process.env.OPERATOR_PRIVATE_KEY_TYPE ||
+    payerKeyType;
+
+  if (!payerId || !payerKey) {
+    throw new Error(
+      "Missing iNFT Hedera credentials. Set INFT_HEDERA_ACCOUNT_ID/INFT_HEDERA_PRIVATE_KEY " +
+        "or fallback HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY."
+    );
+  }
+
+  return { payerId, payerKey, payerKeyType, supplyKey, supplyKeyType, supplyKeySource };
+}
+
 function loadABI(contractName) {
   const abiPath = path.join(ABIS_DIR, `${contractName}.json`);
   if (!fs.existsSync(abiPath)) return null;
@@ -102,6 +136,8 @@ function decodeLog(iface, log) {
 
 class EventListener {
   constructor() {
+    const signer = resolveInftSignerConfig();
+    this.signer = signer;
     const config = readConfig();
     this.config = config;
     this.cursor = loadCursor();
@@ -109,9 +145,11 @@ class EventListener {
     // Initialize storage and iNFT service
     this.storage = new StorageAdapter();
     this.inftService = new INFTService({
-      operatorId: process.env.HEDERA_ACCOUNT_ID,
-      operatorKey: process.env.HEDERA_PRIVATE_KEY,
-      keyType: process.env.HEDERA_PRIVATE_KEY_TYPE,
+      payerId: signer.payerId,
+      payerKey: signer.payerKey,
+      payerKeyType: signer.payerKeyType,
+      supplyKey: signer.supplyKey,
+      supplyKeyType: signer.supplyKeyType,
       storage: this.storage,
     });
 
@@ -191,6 +229,12 @@ class EventListener {
     console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
     console.log(`  Polling interval: ${POLL_INTERVAL_MS / 1000}s`);
+    console.log(
+      `  iNFT payer: ${this.signer.payerId} (${process.env.INFT_HEDERA_ACCOUNT_ID ? "INFT_*" : "HEDERA_*"})`
+    );
+    console.log(
+      `  Supply signer: ${this.signer.supplyKeySource}`
+    );
     console.log(`  Contracts monitored:`);
     for (const [name, address] of Object.entries(this.contracts)) {
       console.log(`    ${name}: ${address}`);
@@ -1092,9 +1136,7 @@ class EventListener {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (!process.env.HEDERA_ACCOUNT_ID || !process.env.HEDERA_PRIVATE_KEY) {
-    throw new Error("Missing HEDERA_ACCOUNT_ID or HEDERA_PRIVATE_KEY in .env");
-  }
+  resolveInftSignerConfig();
 
   const listener = new EventListener();
 

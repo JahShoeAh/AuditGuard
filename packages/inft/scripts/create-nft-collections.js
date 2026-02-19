@@ -24,6 +24,7 @@ const {
 } = require("@hashgraph/sdk");
 
 const CONFIG_PATH = path.join(__dirname, "..", "..", "sdk", "config.json");
+const CREATE_MAX_TX_FEE_HBAR = Number(process.env.INFT_CREATE_MAX_TX_FEE_HBAR || "1");
 
 const COLLECTIONS = [
   {
@@ -71,31 +72,48 @@ function writeConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
+function resolveInftSignerConfig() {
+  const payerId = process.env.INFT_HEDERA_ACCOUNT_ID || process.env.HEDERA_ACCOUNT_ID;
+  const payerKey = process.env.INFT_HEDERA_PRIVATE_KEY || process.env.HEDERA_PRIVATE_KEY;
+  const payerKeyType =
+    process.env.INFT_HEDERA_PRIVATE_KEY_TYPE || process.env.HEDERA_PRIVATE_KEY_TYPE;
+
+  if (!payerId || !payerKey) {
+    throw new Error(
+      "Missing iNFT Hedera credentials. Set INFT_HEDERA_ACCOUNT_ID/INFT_HEDERA_PRIVATE_KEY " +
+        "or fallback HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY."
+    );
+  }
+
+  return { payerId, payerKey, payerKeyType };
+}
+
 async function main() {
   console.log("╔══════════════════════════════════════════════════════════════╗");
   console.log("║       AuditGuard iNFT Collection Setup (Hedera Testnet)     ║");
   console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
-  if (!process.env.HEDERA_ACCOUNT_ID || !process.env.HEDERA_PRIVATE_KEY) {
-    throw new Error("Missing HEDERA_ACCOUNT_ID or HEDERA_PRIVATE_KEY in .env");
-  }
+  const signer = resolveInftSignerConfig();
 
-  const operatorId = AccountId.fromString(process.env.HEDERA_ACCOUNT_ID);
+  const operatorId = AccountId.fromString(signer.payerId);
   const operatorKey = parsePrivateKey(
-    process.env.HEDERA_PRIVATE_KEY,
-    process.env.HEDERA_PRIVATE_KEY_TYPE
+    signer.payerKey,
+    signer.payerKeyType
   );
 
   const client = Client.forTestnet().setOperator(operatorId, operatorKey);
-  client.setDefaultMaxTransactionFee(new Hbar(20));
+  client.setDefaultMaxTransactionFee(new Hbar(CREATE_MAX_TX_FEE_HBAR));
 
   const config = readConfig();
   config.inftCollections = config.inftCollections || {};
+  const forceRecreate = process.env.INFT_RECREATE_COLLECTIONS === "true";
+
+  console.log(`  Max tx fee per create: ${CREATE_MAX_TX_FEE_HBAR} HBAR`);
 
   try {
     for (const col of COLLECTIONS) {
       // Skip if already created
-      if (config.inftCollections[col.key]) {
+      if (config.inftCollections[col.key] && !forceRecreate) {
         console.log(`  Reusing existing ${col.symbol}: ${config.inftCollections[col.key].tokenId}`);
         continue;
       }
@@ -113,7 +131,7 @@ async function main() {
         .setTreasuryAccountId(operatorId)
         .setAdminKey(operatorKey.publicKey)
         .setSupplyKey(operatorKey.publicKey)
-        .setMaxTransactionFee(new Hbar(20))
+        .setMaxTransactionFee(new Hbar(CREATE_MAX_TX_FEE_HBAR))
         .freezeWith(client);
 
       const signed = await tx.sign(operatorKey);

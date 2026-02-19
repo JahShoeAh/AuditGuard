@@ -215,6 +215,10 @@ export class ContractClient {
     return this.auction.getJob(jobId);
   }
 
+  async hasAgentBid(jobId: ChainUint, agent: string): Promise<boolean> {
+    return this.auction.hasAgentBid(jobId, agent);
+  }
+
   getAuctionAddress(): string {
     return this.auction.target;
   }
@@ -444,7 +448,15 @@ export class ContractClient {
   ): Promise<ethers.ContractTransactionResponse | null> {
     const allowance = await this.getGuardAllowance(this.wallet.address, spender);
     if (allowance >= minRequired) return null;
-    return this.guardToken.approve(spender, ethers.MaxUint256);
+
+    // Hedera HTS ERC-20 precompile frequently rejects MaxUint256 approvals.
+    // Use a bounded approval target that still leaves headroom for multiple bids.
+    const INT64_MAX = (1n << 63n) - 1n;
+    const minNonZero = minRequired > 0n ? minRequired : ethers.parseUnits("1", CONFIG.guardToken.decimals);
+    const desired = minNonZero * 100n;
+    const capped = desired > INT64_MAX ? INT64_MAX : desired;
+
+    return this.guardToken.approve(spender, capped);
   }
 
   // ─── Cleanup ───────────────────────────────────────────────────────────

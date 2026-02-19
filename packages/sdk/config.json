@@ -8,16 +8,16 @@
   },
   "contracts": {
     "agentRegistry": {
-      "id": "0.0.1ee673fc57112b0174db88431c37792338e58b70",
-      "evmAddress": "0x1ee673fC57112b0174dB88431c37792338e58b70"
+      "id": "0.0.24f50cf56e768da01617906f1caa6010f0efe332",
+      "evmAddress": "0x24F50cf56e768da01617906f1caa6010f0efe332"
     },
     "budgetVault": {
-      "id": "0.0.e960142c47bccdea16fe504acee8282233fea0de",
-      "evmAddress": "0xE960142c47BCCdEa16fE504acee8282233FeA0de"
+      "id": "0.0.97bb8ac0f6075496b85068bd7c4e7549aab95899",
+      "evmAddress": "0x97Bb8ac0f6075496b85068bd7C4e7549aab95899"
     },
     "auctionContract": {
-      "id": "0.0.49699e9eb9d2f14b0d641e4c1b30bec8ade02bc7",
-      "evmAddress": "0x49699E9eB9D2f14B0D641E4C1b30BEc8ade02Bc7"
+      "id": "0.0.8d186e672026fe39fe3265f9737d8884b4a18604",
+      "evmAddress": "0x8D186E672026FE39FE3265f9737D8884B4A18604"
     },
     "subAuction": {
       "id": "0.0.7977479",
@@ -53,7 +53,7 @@
       "deployedAt": "2026-02-19T04:40:23.961Z"
     }
   },
-    "testContracts": [
+  "testContracts": [
     {
       "key": "vault1",
       "address": "0xd0b7116765F967A7E9631013c6460fCFbf2Fc1D8",
@@ -84,16 +84,16 @@
   },
   "inftCollections": {
     "auditJob": {
-      "tokenId": "0.0.7946509",
-      "evmAddress": "0x000000000000000000000000000000000079410d"
+      "tokenId": "0.0.7982095",
+      "evmAddress": "0x000000000000000000000000000000000079cc0f"
     },
     "agentProfile": {
-      "tokenId": "0.0.7946510",
-      "evmAddress": "0x000000000000000000000000000000000079410e"
+      "tokenId": "0.0.7982096",
+      "evmAddress": "0x000000000000000000000000000000000079cc10"
     },
     "contractHealth": {
-      "tokenId": "0.0.7946511",
-      "evmAddress": "0x000000000000000000000000000000000079410f"
+      "tokenId": "0.0.7982097",
+      "evmAddress": "0x000000000000000000000000000000000079cc11"
     }
   },
   "day3": {

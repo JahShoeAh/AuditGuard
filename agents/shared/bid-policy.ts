@@ -97,6 +97,7 @@ export function computeLiveBid(
 export function normalizeBidFailureReasonCode(error: unknown): string {
   const message = String(error ?? "").toLowerCase();
 
+  if (message.includes("bid already submitted")) return "duplicate_bid";
   if (message.includes("collateral below minimum")) return "collateral_below_minimum";
   if (message.includes("inactive agent")) return "inactive_agent";
   if (message.includes("bid exceeds budget")) return "bid_exceeds_budget";

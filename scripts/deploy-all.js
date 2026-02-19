@@ -16,6 +16,10 @@ const SDK_DIR = path.join(REPO_ROOT, "packages", "sdk");
 const CONFIG_PATH = path.join(SDK_DIR, "config.json");
 const ABIS_DIR = path.join(SDK_DIR, "abis");
 const TOKEN_DECIMALS = 8;
+const GUARD_ERC20_ABI = [
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
 
 if (!process.env.HARDHAT_NETWORK) {
   process.env.HARDHAT_NETWORK = "hedera_testnet";
@@ -139,11 +143,16 @@ async function main() {
         return true;
       } catch (error) {
         const message = error?.shortMessage || error?.message || String(error);
-        const isTimeout = message.includes("timeout") || message.includes("504") || message.includes("ETIMEDOUT");
+        const isRetriable =
+          message.includes("timeout") ||
+          message.includes("504") ||
+          message.includes("502") ||
+          message.includes("ETIMEDOUT") ||
+          message.includes("HH110");
           
-        if (isTimeout && attempt < retries) {
+        if (isRetriable && attempt < retries) {
           const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
-          console.log(`   ⏳ ${label} timed out (attempt ${attempt}/${retries}), retrying in ${delay}ms...`);
+          console.log(`   ⏳ ${label} transient RPC failure (attempt ${attempt}/${retries}), retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
@@ -154,6 +163,32 @@ async function main() {
         throw new Error(`${label} failed: ${message}`);
       }
     }
+  }
+
+  async function deployWithRetry(label, deployFn, retries = 5) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const contract = await deployFn();
+        await contract.waitForDeployment();
+        return contract;
+      } catch (error) {
+        const message = error?.shortMessage || error?.message || String(error);
+        const isRetriable =
+          message.includes("502") ||
+          message.includes("504") ||
+          message.includes("HH110") ||
+          message.includes("ETIMEDOUT") ||
+          message.includes("timeout");
+        if (isRetriable && attempt < retries) {
+          const delay = Math.min(1500 * Math.pow(2, attempt - 1), 12000);
+          console.log(`   ⏳ ${label} deploy transient RPC failure (attempt ${attempt}/${retries}), retrying in ${delay}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw new Error(`${label} deploy failed: ${message}`);
+      }
+    }
+    throw new Error(`${label} deploy failed after ${retries} attempts`);
   }
 
   try {
@@ -170,8 +205,9 @@ async function main() {
 
     await runStep("Step 3: Deploy AgentRegistry", async () => {
       const factory = await hre.ethers.getContractFactory("AgentRegistry");
-      const contract = await factory.deploy(state.config.guardTokenEvmAddress);
-      await contract.waitForDeployment();
+      const contract = await deployWithRetry("AgentRegistry", () =>
+        factory.deploy(state.config.guardTokenEvmAddress)
+      );
       const evmAddress = await contract.getAddress();
       state.config.contracts = state.config.contracts || {};
       state.config.contracts.agentRegistry = {
@@ -182,8 +218,9 @@ async function main() {
 
     await runStep("Step 4: Deploy AuditBudgetVault", async () => {
       const factory = await hre.ethers.getContractFactory("AuditBudgetVault");
-      const contract = await factory.deploy(state.config.guardTokenEvmAddress);
-      await contract.waitForDeployment();
+      const contract = await deployWithRetry("AuditBudgetVault", () =>
+        factory.deploy(state.config.guardTokenEvmAddress)
+      );
       const evmAddress = await contract.getAddress();
       state.config.contracts = state.config.contracts || {};
       state.config.contracts.budgetVault = {
@@ -194,13 +231,14 @@ async function main() {
 
     await runStep("Step 5: Deploy AuditAuction", async () => {
       const factory = await hre.ethers.getContractFactory("AuditAuction");
-      const contract = await factory.deploy(
-        state.config.guardTokenEvmAddress,
-        state.config.contracts.agentRegistry.evmAddress,
-        deployerAddress,
-        deployerAddress
+      const contract = await deployWithRetry("AuditAuction", () =>
+        factory.deploy(
+          state.config.guardTokenEvmAddress,
+          state.config.contracts.agentRegistry.evmAddress,
+          deployerAddress,
+          deployerAddress
+        )
       );
-      await contract.waitForDeployment();
       const evmAddress = await contract.getAddress();
       state.config.contracts = state.config.contracts || {};
       state.config.contracts.auctionContract = {
@@ -302,15 +340,37 @@ async function main() {
         const privateKey = normalizeHexPrivateKey(rawPk, `${spec.key}_PRIVATE_KEY`);
         const wallet = new hre.ethers.Wallet(privateKey, provider);
         const registryFromAgent = registry.connect(wallet);
+        const guardFromAgent = new hre.ethers.Contract(
+          state.config.guardTokenEvmAddress,
+          GUARD_ERC20_ABI,
+          wallet
+        );
+        const stakeAmount = toTokenUnits(spec.stake);
 
         let registered = false;
+        try {
+          const allowance = await guardFromAgent.allowance(
+            wallet.address,
+            state.config.contracts.agentRegistry.evmAddress
+          );
+          if (allowance < stakeAmount) {
+            await (
+              await guardFromAgent.approve(
+                state.config.contracts.agentRegistry.evmAddress,
+                stakeAmount
+              )
+            ).wait();
+          }
+        } catch (error) {
+          console.log(`ℹ️  approve skipped for ${spec.label}: ${error.message}`);
+        }
         try {
           await (
             await registryFromAgent.registerAgent(
               spec.agentId,
               spec.endpoint,
               spec.specialization,
-              toTokenUnits(spec.stake)
+              stakeAmount
             )
           ).wait();
           registered = true;
