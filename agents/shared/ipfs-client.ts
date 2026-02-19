@@ -1,4 +1,4 @@
-import { ethers } from "ethers";
+const IPFS_API = process.env.IPFS_API_URL ?? "http://127.0.0.1:5001";
 
 export async function uploadToIPFS(content: string): Promise<string> {
   const boundary = `----AuditGuardBoundary${Date.now()}`;
@@ -9,29 +9,27 @@ export async function uploadToIPFS(content: string): Promise<string> {
     content +
     `\r\n--${boundary}--\r\n`;
 
-  const response = await fetch("http://127.0.0.1:5001/api/v0/add", {
+  const response = await fetch(`${IPFS_API}/api/v0/add`, {
     method: "POST",
     headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
     body,
   });
 
-  if (!response.ok) throw new Error(`IPFS upload failed: ${response.status}`);
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`[IPFS] Upload failed (${response.status}): ${text}`);
+  }
+
   const raw = await response.text();
   const line = raw.trim().split("\n").filter(Boolean).pop() ?? "{}";
-  const result = JSON.parse(line);
+  const result = JSON.parse(line) as { Hash: string };
   return result.Hash;
 }
 
 export async function uploadToIPFSSafe(content: string): Promise<string> {
-  try {
-    return await uploadToIPFS(content);
-  } catch (err) {
-    console.warn(`[IPFS] Upload failed, using mock CID: ${err}`);
-    return `QmMOCK${ethers.keccak256(Buffer.from(content)).slice(2, 22)}`;
-  }
+  return await uploadToIPFS(content);
 }
 
 export function ipfsGatewayUrl(cid: string): string {
-  return `http://localhost:8080/ipfs/${cid}`;
+  return `http://127.0.0.1:8080/ipfs/${cid}`;
 }
-
