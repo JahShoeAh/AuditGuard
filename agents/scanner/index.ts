@@ -6,7 +6,6 @@ import {
   createAgentLogger,
   createAgentWallet,
   CONFIG,
-  getAgentEnv,
   randomInt,
   randomChoice,
   randomHex,
@@ -35,6 +34,9 @@ const SCANNER_REGISTRATION_STAKE_GUARD = Number(process.env.SCANNER_REGISTRATION
 const SCANNER_REGISTRATION_UCP_ENDPOINT =
   process.env.SCANNER_REGISTRATION_UCP_ENDPOINT?.trim() || `hcs://${CONFIG.hcsTopics.agentComms}`;
 const CONTRACT_FETCH_LIMIT = Number(process.env.SCANNER_CONTRACT_FETCH_LIMIT ?? "25");
+const SCANNER_MAX_DISCOVERIES_PER_CYCLE = Number(
+  process.env.SCANNER_MAX_DISCOVERIES_PER_CYCLE ?? (DEMO_MODE ? "3" : "5")
+);
 const START_LOOKBACK_SECONDS = Number(
   process.env.SCANNER_START_LOOKBACK_SECONDS ?? (DEMO_MODE ? "900" : "3600")
 );
@@ -285,6 +287,10 @@ function isHtsTransferFailure(error: string): boolean {
   return error.toLowerCase().includes("hts transfer failed");
 }
 
+function isInsufficientPayerBalanceError(error: unknown): boolean {
+  return String(error ?? "").toUpperCase().includes("INSUFFICIENT_PAYER_BALANCE");
+}
+
 // ---- Main ----
 
 async function main() {
@@ -295,47 +301,16 @@ async function main() {
   const wallet = createAgentWallet("SCANNER");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
-  let fallbackHcs: HCSClient | null = null;
-  let fallbackAccountId = "";
   let hotLeadListingEnabled = true;
-
-  function isInsufficientPayerBalance(err: unknown): boolean {
-    const status = String((err as { status?: unknown })?.status ?? "");
-    const message = String((err as { message?: unknown })?.message ?? err ?? "");
-    return (
-      status.toUpperCase() === "INSUFFICIENT_PAYER_BALANCE" ||
-      message.toUpperCase().includes("INSUFFICIENT_PAYER_BALANCE")
-    );
-  }
-
-  try {
-    const operatorAccountId = getAgentEnv("OPERATOR").accountId;
-    if (operatorAccountId && operatorAccountId !== wallet.accountId) {
-      fallbackHcs = new HCSClient("OPERATOR");
-      fallbackAccountId = operatorAccountId;
-      log.info(`HCS fallback payer enabled via OPERATOR account ${operatorAccountId}`);
-    }
-  } catch {
-    // Optional fallback; ignore when operator creds are unavailable.
-  }
+  let payerBalanceExhausted = false;
 
   async function publishAuditLogSafe(message: any): Promise<boolean> {
     try {
       await hcs.publishAuditLog(message);
       return true;
     } catch (err) {
-      if (fallbackHcs && isInsufficientPayerBalance(err)) {
-        log.warn(
-          `Primary scanner payer ${wallet.accountId} has insufficient balance; ` +
-          `retrying auditLog publish with operator ${fallbackAccountId}`
-        );
-        try {
-          await fallbackHcs.publishAuditLog(message);
-          return true;
-        } catch (fallbackErr) {
-          log.error(`Fallback auditLog publish failed: ${fallbackErr}`);
-          return false;
-        }
+      if (isInsufficientPayerBalanceError(err)) {
+        payerBalanceExhausted = true;
       }
       log.error(`AuditLog publish failed: ${err}`);
       return false;
@@ -347,18 +322,8 @@ async function main() {
       await hcs.publishDiscovery(message);
       return true;
     } catch (err) {
-      if (fallbackHcs && isInsufficientPayerBalance(err)) {
-        log.warn(
-          `Primary scanner payer ${wallet.accountId} has insufficient balance; ` +
-          `retrying discovery publish with operator ${fallbackAccountId}`
-        );
-        try {
-          await fallbackHcs.publishDiscovery(message);
-          return true;
-        } catch (fallbackErr) {
-          log.error(`Fallback discovery publish failed: ${fallbackErr}`);
-          return false;
-        }
+      if (isInsufficientPayerBalanceError(err)) {
+        payerBalanceExhausted = true;
       }
       log.error(`Discovery publish failed: ${err}`);
       return false;
@@ -377,6 +342,8 @@ async function main() {
   }
 
   async function ensureMarketplaceListingReady(): Promise<boolean> {
+    const configuredRegistryAddress = String(contracts.agentRegistry.target).toLowerCase();
+
     let active = false;
     try {
       active = await contracts.isActiveAgent(wallet.evmAddress);
@@ -385,114 +352,150 @@ async function main() {
       log.warn(`Startup preflight: active-agent check failed: ${error}`);
       return false;
     }
-
-    if (active) return true;
-
-    log.warn("Startup preflight: wallet is not an active on-chain agent");
-    if (!SCANNER_AUTO_REGISTER_ONCHAIN || TEST_MODE) {
-      return false;
-    }
-
-    let minCommodityStakeWei = ethers.parseUnits(
-      DEFAULT_COMMODITY_STAKE_GUARD.toFixed(2),
-      GUARD_DECIMALS
-    );
-    try {
-      minCommodityStakeWei = await contracts.getCommodityMinStake();
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      log.warn(`Startup preflight: failed to read commodity min stake, using default: ${error}`);
-    }
-
-    const configuredStakeGuard = Number.isFinite(SCANNER_REGISTRATION_STAKE_GUARD) &&
-      SCANNER_REGISTRATION_STAKE_GUARD > 0
-      ? SCANNER_REGISTRATION_STAKE_GUARD
-      : DEFAULT_COMMODITY_STAKE_GUARD;
-    let stakeWei = ethers.parseUnits(configuredStakeGuard.toFixed(2), GUARD_DECIMALS);
-    if (stakeWei < minCommodityStakeWei) {
-      log.warn(
-        `Configured scanner stake ${configuredStakeGuard.toFixed(2)} GUARD is below minimum ` +
-        `${formatGuardUnits(minCommodityStakeWei)} GUARD; using protocol minimum`
-      );
-      stakeWei = minCommodityStakeWei;
-    }
-
-    try {
-      const guardBalance = await contracts.getGuardBalance(wallet.evmAddress);
-      if (guardBalance < stakeWei) {
-        log.warn(
-          `Startup preflight: cannot auto-register scanner, GUARD balance ` +
-          `${formatGuardUnits(guardBalance)} is below required ${formatGuardUnits(stakeWei)}`
-        );
+    if (!active) {
+      log.warn("Startup preflight: wallet is not an active on-chain agent");
+      if (!SCANNER_AUTO_REGISTER_ONCHAIN || TEST_MODE) {
         return false;
       }
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      log.warn(`Startup preflight: failed to read GUARD balance before registration: ${error}`);
-    }
 
-    try {
-      const register = async () => {
-        const tx = await contracts.registerAgent(
-          AGENT_ID,
-          SCANNER_REGISTRATION_UCP_ENDPOINT,
-          SCANNER_REGISTRATION_SPECIALIZATIONS,
-          stakeWei
-        );
-        await tx.wait?.();
-      };
-
+      let minCommodityStakeWei = ethers.parseUnits(
+        DEFAULT_COMMODITY_STAKE_GUARD.toFixed(2),
+        GUARD_DECIMALS
+      );
       try {
-        await register();
+        minCommodityStakeWei = await contracts.getCommodityMinStake();
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
-        if (!isHtsTransferFailure(error) || !SCANNER_ASSOCIATE_REGISTRY_ON_BOOT) {
-          throw err;
-        }
-
-        log.warn(
-          "Startup preflight: registration hit HTS transfer failure; " +
-          "SCANNER_ASSOCIATE_REGISTRY_ON_BOOT=true so attempting registry GUARD association"
-        );
-        try {
-          const ownerAddress = String(await contracts.agentRegistry.owner());
-          if (ownerAddress.toLowerCase() !== wallet.evmAddress.toLowerCase()) {
-            throw new Error(
-              `scanner wallet is not AgentRegistry owner (${ownerAddress}), cannot associate token`
-            );
-          }
-          const associationTx = await contracts.agentRegistry.associateGuardToken();
-          await associationTx.wait?.();
-          log.info("Startup preflight: AgentRegistry GUARD association transaction confirmed");
-        } catch (associateErr) {
-          const associationError = associateErr instanceof Error
-            ? associateErr.message
-            : String(associateErr);
-          throw new Error(`AgentRegistry association failed: ${associationError}`);
-        }
-
-        await register();
+        log.warn(`Startup preflight: failed to read commodity min stake, using default: ${error}`);
       }
 
-      log.info(
-        `Startup preflight: registered scanner on-chain with ` +
-        `${formatGuardUnits(stakeWei)} GUARD stake`
-      );
+      const configuredStakeGuard = Number.isFinite(SCANNER_REGISTRATION_STAKE_GUARD) &&
+        SCANNER_REGISTRATION_STAKE_GUARD > 0
+        ? SCANNER_REGISTRATION_STAKE_GUARD
+        : DEFAULT_COMMODITY_STAKE_GUARD;
+      let stakeWei = ethers.parseUnits(configuredStakeGuard.toFixed(2), GUARD_DECIMALS);
+      if (stakeWei < minCommodityStakeWei) {
+        log.warn(
+          `Configured scanner stake ${configuredStakeGuard.toFixed(2)} GUARD is below minimum ` +
+          `${formatGuardUnits(minCommodityStakeWei)} GUARD; using protocol minimum`
+        );
+        stakeWei = minCommodityStakeWei;
+      }
+
+      try {
+        const guardBalance = await contracts.getGuardBalance(wallet.evmAddress);
+        if (guardBalance < stakeWei) {
+          log.warn(
+            `Startup preflight: cannot auto-register scanner, GUARD balance ` +
+            `${formatGuardUnits(guardBalance)} is below required ${formatGuardUnits(stakeWei)}`
+          );
+          return false;
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`Startup preflight: failed to read GUARD balance before registration: ${error}`);
+      }
+
+      try {
+        const register = async () => {
+          const tx = await contracts.registerAgent(
+            AGENT_ID,
+            SCANNER_REGISTRATION_UCP_ENDPOINT,
+            SCANNER_REGISTRATION_SPECIALIZATIONS,
+            stakeWei
+          );
+          await tx.wait?.();
+        };
+
+        try {
+          await register();
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          if (!isHtsTransferFailure(error) || !SCANNER_ASSOCIATE_REGISTRY_ON_BOOT) {
+            throw err;
+          }
+
+          log.warn(
+            "Startup preflight: registration hit HTS transfer failure; " +
+            "SCANNER_ASSOCIATE_REGISTRY_ON_BOOT=true so attempting registry GUARD association"
+          );
+          try {
+            const ownerAddress = String(await contracts.agentRegistry.owner());
+            if (ownerAddress.toLowerCase() !== wallet.evmAddress.toLowerCase()) {
+              throw new Error(
+                `scanner wallet is not AgentRegistry owner (${ownerAddress}), cannot associate token`
+              );
+            }
+            const associationTx = await contracts.agentRegistry.associateGuardToken();
+            await associationTx.wait?.();
+            log.info("Startup preflight: AgentRegistry GUARD association transaction confirmed");
+          } catch (associateErr) {
+            const associationError = associateErr instanceof Error
+              ? associateErr.message
+              : String(associateErr);
+            throw new Error(`AgentRegistry association failed: ${associationError}`);
+          }
+
+          await register();
+        }
+
+        log.info(
+          `Startup preflight: registered scanner on-chain with ` +
+          `${formatGuardUnits(stakeWei)} GUARD stake`
+        );
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`Startup preflight: auto-registration failed: ${error}`);
+        return false;
+      }
+    }
+
+    let currentMarketplaceRegistry = "";
+    try {
+      currentMarketplaceRegistry = String(await contracts.dataMarketplace.agentRegistry()).toLowerCase();
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      log.warn(`Startup preflight: auto-registration failed: ${error}`);
+      log.warn(`Startup preflight: failed to read DataMarketplace.agentRegistry: ${error}`);
       return false;
     }
 
-    try {
-      const activeAfterRegistration = await contracts.isActiveAgent(wallet.evmAddress);
-      if (!activeAfterRegistration) {
-        log.warn("Startup preflight: scanner registration submitted but wallet is still inactive");
+    if (currentMarketplaceRegistry !== configuredRegistryAddress) {
+      try {
+        const marketplaceOwner = String(await contracts.dataMarketplace.owner()).toLowerCase();
+        if (marketplaceOwner !== wallet.evmAddress.toLowerCase()) {
+          log.warn(
+            `Startup preflight: DataMarketplace registry points to ${currentMarketplaceRegistry}, ` +
+            `but scanner wallet is not owner (${marketplaceOwner}); cannot sync`
+          );
+          return false;
+        }
+        const tx = await contracts.dataMarketplace.setAgentRegistry(configuredRegistryAddress);
+        await tx.wait?.();
+        currentMarketplaceRegistry = configuredRegistryAddress;
+        log.info(`Startup preflight: synced DataMarketplace registry to ${configuredRegistryAddress}`);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`Startup preflight: failed to sync DataMarketplace registry: ${error}`);
+        return false;
       }
-      return activeAfterRegistration;
+    }
+
+    try {
+      const registryForMarketplace = new ethers.Contract(
+        currentMarketplaceRegistry,
+        contracts.agentRegistry.interface,
+        contracts.wallet
+      );
+      const activeInMarketplaceRegistry = await registryForMarketplace.isActiveAgent(wallet.evmAddress);
+      if (!activeInMarketplaceRegistry) {
+        log.warn(
+          `Startup preflight: scanner is inactive in marketplace registry ${currentMarketplaceRegistry}`
+        );
+      }
+      return Boolean(activeInMarketplaceRegistry);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      log.warn(`Startup preflight: post-registration active check failed: ${error}`);
+      log.warn(`Startup preflight: failed to verify scanner in marketplace registry: ${error}`);
       return false;
     }
   }
@@ -514,6 +517,7 @@ async function main() {
   }
 
   async function scanCycle() {
+    payerBalanceExhausted = false;
     if (TEST_MODE) {
       const discovery = generateDiscovery();
       const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
@@ -537,8 +541,13 @@ async function main() {
       }
 
       const publishedDiscovery = await publishDiscoverySafe(discovery);
-      if (!publishedDiscovery) return;
-      await publishAuditLogSafe({
+      if (!publishedDiscovery) {
+        if (payerBalanceExhausted) {
+          log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for HCS publishes");
+        }
+        return;
+      }
+      const auctionLogPublished = await publishAuditLogSafe({
         type: "AUCTION_CREATED",
         agentId: AGENT_ID,
         timestamp: Date.now(),
@@ -549,6 +558,10 @@ async function main() {
           estimatedLOC,
         },
       });
+      if (!auctionLogPublished && payerBalanceExhausted) {
+        log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for auditLog publishes");
+        return;
+      }
       log.info(
         `Published mock discovery: ${contractAddress.slice(0, 12)}... ` +
         `type=${contractType} risk=${riskScore} loc=${estimatedLOC}`
@@ -579,7 +592,15 @@ async function main() {
       return;
     }
 
+    let processedThisCycle = 0;
     for (const c of discoveredContracts) {
+      if (processedThisCycle >= SCANNER_MAX_DISCOVERIES_PER_CYCLE) {
+        log.info(
+          `Reached per-cycle discovery cap (${SCANNER_MAX_DISCOVERIES_PER_CYCLE}); ` +
+          "remaining contracts will be processed next cycle"
+        );
+        break;
+      }
       const discovery = createDiscoveryFromMirror(c);
       const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
 
@@ -662,9 +683,14 @@ async function main() {
       // ── Public Discovery: broadcast to all agents ──
       const publishedDiscovery = await publishDiscoverySafe(discovery);
       if (!publishedDiscovery) {
+        if (payerBalanceExhausted) {
+          log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for HCS publishes");
+          break;
+        }
         continue;
       }
       log.info(`Published discovery to HCS topic ${CONFIG.hcsTopics.discovery}`);
+      processedThisCycle += 1;
 
       await publishAuditLogSafe({
         type: "AUCTION_CREATED",

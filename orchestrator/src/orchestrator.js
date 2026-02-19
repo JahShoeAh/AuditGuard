@@ -11,7 +11,7 @@ import { parseUnits } from "ethers";
 /**
  * Orchestrator Agent — isolated implementation.
  * Listens to discovery + registration, invites eligible agents,
- * opens auctions on-chain, and applies simple winner selection fallback.
+ * opens auctions on-chain, and uses strict on-chain winner selection.
  *
  * Dependencies (HCS, contracts, roster, logger) are injectable for testing.
  */
@@ -26,6 +26,13 @@ export class OrchestratorAgent {
     this.inft = opts.inft ?? new InftBridge();
     this.jobs = new Map(); // jobId(string) -> state
     this.enablePing = opts.enablePing ?? true;
+    this.createAuditJobLock = Promise.resolve();
+    this.minOperationalHbar = Number(process.env.ORCHESTRATOR_MIN_HBAR ?? "0.5");
+    this.targetOperationalHbar = Number(process.env.ORCHESTRATOR_TARGET_HBAR ?? "2.0");
+    this.topupDonorReserveHbar = Number(process.env.ORCHESTRATOR_TOPUP_DONOR_MIN_HBAR ?? "1.0");
+    this.autoTopupHbar = (process.env.ORCHESTRATOR_AUTO_TOPUP_HBAR ?? "true") !== "false";
+    this.operationalCheckIntervalMs = Number(process.env.ORCHESTRATOR_OPERATIONAL_CHECK_INTERVAL_MS ?? "30000");
+    this.lastOperationalCheckAt = 0;
   }
 
   buildContractClient() {
@@ -41,19 +48,7 @@ export class OrchestratorAgent {
       }
       return client;
     } catch (err) {
-      if (this.strictLive && !CONFIG.demoMode) {
-        throw new Error(`Contract client init failed in strict live mode: ${err.message}`);
-      }
-      this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
-      return {
-        auction: {},
-        subAuction: {},
-        dataMarketplace: {},
-        paymentSettlement: {},
-        agentRegistry: {},
-        budgetVault: {},
-        getAddress: () => "",
-      };
+      throw new Error(`Contract client init failed: ${err.message}`);
     }
   }
 
@@ -94,6 +89,20 @@ export class OrchestratorAgent {
     this.jobs.set(key, job);
   }
 
+  async withCreateAuditJobLock(task) {
+    const previous = this.createAuditJobLock;
+    let releaseLock = () => { };
+    this.createAuditJobLock = new Promise((resolve) => {
+      releaseLock = resolve;
+    });
+    await previous.catch(() => { });
+    try {
+      return await task();
+    } finally {
+      releaseLock();
+    }
+  }
+
   validateDiscoveryPayload(payload) {
     if (!ethers.isAddress(payload.contractAddress)) {
       throw new Error(`invalid contractAddress: ${payload.contractAddress}`);
@@ -109,7 +118,107 @@ export class OrchestratorAgent {
     }
   }
 
+  toHexPrivateKey(rawKey) {
+    const key = String(rawKey ?? "").trim().replace(/^['"]|['"]$/g, "");
+    const stripped = key.startsWith("0x") ? key.slice(2) : key;
+    if (!/^[0-9a-fA-F]{64}$/.test(stripped)) return null;
+    return `0x${stripped}`;
+  }
+
+  getTopupDonorWallets() {
+    const provider = this.contracts.wallet?.provider;
+    if (!provider) return [];
+    const envKeys = [
+      process.env.STATIC_PRIVATE_KEY,
+      process.env.AUDITOR_AGENT_1_PRIVATE_KEY,
+      process.env.FUZZER_PRIVATE_KEY,
+      process.env.AUDITOR_AGENT_2_PRIVATE_KEY,
+      process.env.LLM_PRIVATE_KEY,
+      process.env.AUDITOR_AGENT_3_PRIVATE_KEY,
+      process.env.DEPENDENCY_PRIVATE_KEY,
+      process.env.REPORT_PRIVATE_KEY,
+      process.env.ALERT_PRIVATE_KEY,
+      process.env.SCANNER_PRIVATE_KEY,
+      process.env.OPERATOR_PRIVATE_KEY,
+      process.env.HEDERA_PRIVATE_KEY,
+    ];
+    const seen = new Set();
+    const donors = [];
+    for (const raw of envKeys) {
+      const hex = this.toHexPrivateKey(raw);
+      if (!hex) continue;
+      const wallet = new ethers.Wallet(hex, provider);
+      const addr = wallet.address.toLowerCase();
+      if (addr === this.orchestratorAddress.toLowerCase()) continue;
+      if (seen.has(addr)) continue;
+      seen.add(addr);
+      donors.push(wallet);
+    }
+    return donors;
+  }
+
+  async ensureOrchestratorOperationalHbar(reason = "runtime", { force = false } = {}) {
+    const provider = this.contracts.wallet?.provider;
+    if (!provider || !this.orchestratorAddress) return;
+    const nowMs = Date.now();
+    if (!force && nowMs - this.lastOperationalCheckAt < this.operationalCheckIntervalMs) return;
+    this.lastOperationalCheckAt = nowMs;
+
+    const minWei = ethers.parseEther(String(this.minOperationalHbar));
+    const targetHbar = Math.max(this.targetOperationalHbar, this.minOperationalHbar);
+    const targetWei = ethers.parseEther(String(targetHbar));
+    const donorReserveWei = ethers.parseEther(String(this.topupDonorReserveHbar));
+
+    let balanceWei = await provider.getBalance(this.orchestratorAddress);
+    if (balanceWei >= minWei) return;
+    this.log.warn(
+      `Low HBAR for orchestrator (${ethers.formatEther(balanceWei)} HBAR) before ${reason}; ` +
+      `minimum is ${this.minOperationalHbar} HBAR`
+    );
+
+    if (!this.autoTopupHbar) {
+      throw new Error(
+        `orchestrator_hbar_low:${ethers.formatEther(balanceWei)}<${this.minOperationalHbar}; ` +
+        "set ORCHESTRATOR_AUTO_TOPUP_HBAR=true or fund orchestrator account"
+      );
+    }
+
+    let remainingWei = targetWei > balanceWei ? targetWei - balanceWei : 0n;
+    const donors = this.getTopupDonorWallets();
+    for (const donor of donors) {
+      if (remainingWei <= 0n) break;
+      const donorBalanceWei = await provider.getBalance(donor.address);
+      if (donorBalanceWei <= donorReserveWei) continue;
+      const spendableWei = donorBalanceWei - donorReserveWei;
+      if (spendableWei <= 0n) continue;
+
+      const sendWei = spendableWei < remainingWei ? spendableWei : remainingWei;
+      if (sendWei <= 0n) continue;
+      const tx = await donor.sendTransaction({
+        to: this.orchestratorAddress,
+        value: sendWei,
+      });
+      await tx.wait();
+      this.log.info(
+        `HBAR top-up: ${donor.address} -> orchestrator +${ethers.formatEther(sendWei)} HBAR ` +
+        `(tx ${tx.hash})`
+      );
+      remainingWei -= sendWei;
+    }
+
+    balanceWei = await provider.getBalance(this.orchestratorAddress);
+    if (balanceWei < minWei) {
+      throw new Error(
+        `orchestrator_hbar_low_after_topup:${ethers.formatEther(balanceWei)}<${this.minOperationalHbar}`
+      );
+    }
+  }
+
   start() {
+    this.ensureOrchestratorOperationalHbar("startup", { force: true }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Startup preflight: ${msg}`);
+    });
     this.subscribeDiscovery();
     this.subscribeAgentComms();
     this.subscribeAuditLog();
@@ -222,7 +331,7 @@ export class OrchestratorAgent {
       return;
     }
 
-    let jobId = this.normalizeJobId(Date.now()); // fallback
+    let jobId = this.normalizeJobId(Date.now()); // provisional until chain jobId is resolved
     let auctionOpenedOnChain = false;
     const budgetGuardRaw = Number(budget ?? CONFIG.payments.totalGuard ?? 0);
     const budgetGuard = Number.isFinite(budgetGuardRaw) && budgetGuardRaw > 0
@@ -243,54 +352,88 @@ export class OrchestratorAgent {
 
     // Open auction on-chain (async — bids can arrive while this runs)
     try {
-      const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
-      const budgetWei = parseUnits(String(budgetGuard), CONFIG.guardToken.decimals);
-      const expectedJobIdRaw = await this.contracts.auction.nextJobId?.();
-      const expectedOnChainJobId = expectedJobIdRaw != null ? Number(expectedJobIdRaw) : null;
+      await this.withCreateAuditJobLock(async () => {
+        await this.ensureOrchestratorOperationalHbar("create_audit_job");
+        const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
+        const budgetWei = parseUnits(String(budgetGuard), CONFIG.guardToken.decimals);
+        const expectedJobIdRaw = await this.contracts.auction.nextJobId?.();
+        const expectedOnChainJobId = expectedJobIdRaw != null ? Number(expectedJobIdRaw) : null;
 
-      const tx = await this.contracts.auction.createAuditJob(
-        contractAddress,
-        "hedera-testnet",
-        contractType ?? "unknown",
-        riskScore ?? 0,
-        budgetWei,
-        estimatedLOC ?? 0,
-        auctionDurationSec
-      );
-      const receipt = await tx.wait();
-      if (!receipt || receipt.status !== 1) {
-        throw new Error(`createAuditJob tx failed: ${tx.hash}`);
-      }
-
-      let onChainJobId = Number.isFinite(expectedOnChainJobId) ? expectedOnChainJobId : null;
-      if (receipt?.logs) {
-        for (const log of receipt.logs) {
+        let tx = null;
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            const parsed = this.contracts.auction.interface.parseLog(log);
-            if (parsed?.name === "JobPosted") {
-              onChainJobId = this.normalizeJobId(parsed.args.jobId);
-              break;
+            tx = await this.contracts.auction.createAuditJob(
+              contractAddress,
+              "hedera-testnet",
+              contractType ?? "unknown",
+              riskScore ?? 0,
+              budgetWei,
+              estimatedLOC ?? 0,
+              auctionDurationSec
+            );
+            break;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const retriableNonceError = /nonce too low/i.test(message);
+            if (!retriableNonceError || attempt === maxAttempts) throw err;
+            this.log.warn(
+              `createAuditJob nonce race (attempt ${attempt}/${maxAttempts}) — retrying once`
+            );
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+
+        const receipt = await tx.wait();
+        if (!receipt || (receipt.status != null && receipt.status !== 1)) {
+          throw new Error(`createAuditJob tx failed: ${tx.hash}`);
+        }
+
+        let onChainJobId = Number.isFinite(expectedOnChainJobId) ? expectedOnChainJobId : null;
+        if (receipt?.logs) {
+          for (const log of receipt.logs) {
+            try {
+              const parsed = this.contracts.auction.interface.parseLog(log);
+              if (parsed?.name === "JobPosted") {
+                const parsedJobId = Number(this.normalizeJobId(parsed.args.jobId));
+                if (Number.isFinite(parsedJobId)) onChainJobId = parsedJobId;
+                break;
+              }
+            } catch { /* ignore */ }
+          }
+        }
+
+        // Hedera receipts occasionally return without parseable logs for this tx.
+        // If that happens, infer the posted job from post-tx nextJobId.
+        if (onChainJobId == null || !Number.isFinite(onChainJobId)) {
+          try {
+            const postTxNextJobIdRaw = await this.contracts.auction.nextJobId?.();
+            const postTxNextJobId = postTxNextJobIdRaw != null ? Number(postTxNextJobIdRaw) : null;
+            if (Number.isFinite(postTxNextJobId) && postTxNextJobId > 0) {
+              onChainJobId = postTxNextJobId - 1;
             }
-          } catch { /* ignore */ }
+          } catch {
+            // Keep original failure below if post-tx lookup also fails.
+          }
         }
-      }
 
-      if (onChainJobId == null || !Number.isFinite(onChainJobId)) {
-        throw new Error("createAuditJob succeeded but JobPosted jobId could not be resolved");
-      }
-
-      if (onChainJobId != null && onChainJobId !== jobId) {
-        const existing = this.getJobByKey(jobId);
-        this.jobs.delete(this.normalizeJobId(jobId));
-        this.jobs.delete(jobId);
-        if (existing) {
-          existing.onChainJobId = onChainJobId;
-          this.setJobByKey(onChainJobId, existing);
+        if (onChainJobId == null || !Number.isFinite(onChainJobId)) {
+          throw new Error("createAuditJob succeeded but JobPosted jobId could not be resolved");
         }
-        jobId = onChainJobId;
-      }
-      auctionOpenedOnChain = true;
-      this.log.info(`Auction opened on-chain for job ${jobId} (tx: ${tx.hash})`);
+
+        if (onChainJobId != null && onChainJobId !== jobId) {
+          const existing = this.getJobByKey(jobId);
+          this.jobs.delete(this.normalizeJobId(jobId));
+          this.jobs.delete(jobId);
+          if (existing) {
+            existing.onChainJobId = onChainJobId;
+            this.setJobByKey(onChainJobId, existing);
+          }
+          jobId = onChainJobId;
+        }
+        auctionOpenedOnChain = true;
+        this.log.info(`Auction opened on-chain for job ${jobId} (tx: ${tx.hash})`);
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log.warn(`Auction create failed: ${message}`);
@@ -408,9 +551,9 @@ export class OrchestratorAgent {
       }
     }
 
-    // Fallback timer if no WinnersSelected event arrives
+    // Winner selection timer.
     if (!this.strictLive || auctionOpenedOnChain) {
-      const winnerTimer = setTimeout(() => this.selectWinnersFallback(jobId), CONFIG.timeouts.winnerWaitMs);
+      const winnerTimer = setTimeout(() => this.selectWinnersOnChain(jobId), CONFIG.timeouts.winnerWaitMs);
       winnerTimer.unref?.();
     }
   }
@@ -491,7 +634,7 @@ export class OrchestratorAgent {
     });
 
     if (!job.winners?.length) {
-      this.selectWinnersFallback(key);
+      this.selectWinnersOnChain(key);
     }
 
     await this.maybeAlert(key, criticalFindings);
@@ -550,6 +693,7 @@ export class OrchestratorAgent {
     }
 
     try {
+      await this.ensureOrchestratorOperationalHbar("data_marketplace_auto_buy");
       const listingKey = this.toChainUint(listingId, "listingId");
       await this.contracts.dataMarketplace.purchaseData(listingKey);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
@@ -586,6 +730,7 @@ export class OrchestratorAgent {
     const paymentWei = parseUnits(payGuard.toString(), CONFIG.guardToken.decimals);
 
     try {
+      await this.ensureOrchestratorOperationalHbar("create_sub_auction");
       const parentId = this.toChainUint(parentJobId, "parentJobId");
       await this.contracts.subAuction.createSubAuction(
         parentId,
@@ -624,6 +769,7 @@ export class OrchestratorAgent {
   async handleSubResult(msg) {
     const { subAuctionId } = msg.payload || {};
     try {
+      await this.ensureOrchestratorOperationalHbar("accept_sub_result");
       const subId = this.toChainUint(subAuctionId, "subAuctionId");
       await this.contracts.subAuction.acceptResult(subId);
       this.log.info(`Accepted sub-auction result ${subAuctionId}`);
@@ -738,6 +884,7 @@ export class OrchestratorAgent {
     }
 
     try {
+      await this.ensureOrchestratorOperationalHbar("settle_job");
       await this.contracts.paymentSettlement.settleJob(
         this.toChainJobId(jobId),
         payments,
@@ -818,68 +965,65 @@ export class OrchestratorAgent {
     this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
   }
 
-  async selectWinnersFallback(jobId) {
+  async selectWinnersOnChain(jobId) {
     const key = this.normalizeJobId(jobId);
     const job = this.getJobByKey(key);
     if (!job) return;
 
-    let selectedWinners;
-    let winnerAddresses;
-
-    if (job.bidders && job.bidders.length > 0) {
-      // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
-      const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
-      const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
-
-      const scored = job.bidders.map((b, bidIndex) => {
-        const repScore = ((b.reputation ?? 0) / 100) * 0.55;
-        const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
-        const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
-        return { ...b, bidIndex, score: repScore + priceScore + speedScore };
+    if (!job.bidders || job.bidders.length === 0) {
+      const reason = "No bids collected before winner deadline";
+      this.log.warn(`Winner selection failed for job ${jobId}: ${reason}`);
+      job.failed = true;
+      job.failureReason = reason;
+      this.setJobByKey(key, job);
+      await this.hcs.publishAuditLog({
+        type: "JOB_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId,
+          contractAddress: job.contractAddress,
+          phase: "select_winners",
+          error: reason,
+        },
       });
-
-      scored.sort((a, b) => b.score - a.score);
-
-      const deduped = [];
-      const seenWinnerKeys = new Set();
-      for (const bid of scored) {
-        const key = bid.evmAddress
-          ? String(bid.evmAddress).toLowerCase()
-          : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
-        if (!key || seenWinnerKeys.has(key)) continue;
-        seenWinnerKeys.add(key);
-        deduped.push(bid);
-        if (deduped.length >= 3) break;
-      }
-
-      selectedWinners = deduped;
-      winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
-      this.log.info(
-        `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
-        `${winnerAddresses.join(", ")}`
-      );
-    } else {
-      // No bids collected — fall back to roster reputation
-      const candidates = this.roster.eligibleFor(job.contractType)
-        .sort((a, b) => (b.reputation ?? 0) - (a.reputation ?? 0))
-        .slice(0, 3);
-
-      if (!candidates.length) {
-        this.log.warn(`No eligible agents for job ${jobId}; leaving unassigned`);
-        return;
-      }
-
-      selectedWinners = candidates.map((c) => ({
-        agentId: c.agentId,
-        evmAddress: c.evmAddress,
-      }));
-      winnerAddresses = selectedWinners.map((w) => w.evmAddress);
-      this.log.info(`Roster-fallback winners for job ${jobId}: ${winnerAddresses.join(", ")}`);
+      return;
     }
+
+    // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
+    const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
+    const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
+
+    const scored = job.bidders.map((b, bidIndex) => {
+      const repScore = ((b.reputation ?? 0) / 100) * 0.55;
+      const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
+      const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
+      return { ...b, bidIndex, score: repScore + priceScore + speedScore };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+
+    const selectedWinners = [];
+    const seenWinnerKeys = new Set();
+    for (const bid of scored) {
+      const dedupeKey = bid.evmAddress
+        ? String(bid.evmAddress).toLowerCase()
+        : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
+      if (!dedupeKey || seenWinnerKeys.has(dedupeKey)) continue;
+      seenWinnerKeys.add(dedupeKey);
+      selectedWinners.push(bid);
+      if (selectedWinners.length >= 3) break;
+    }
+
+    const winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
+    this.log.info(
+      `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
+      `${winnerAddresses.join(", ")}`
+    );
 
     job.winners = winnerAddresses;
 
-    // Try on-chain first
+    // On-chain winner selection only (no HCS fallback path).
     try {
       const winningBidIndices = selectedWinners
         .map((w) => w.bidIndex)
@@ -887,34 +1031,42 @@ export class OrchestratorAgent {
       if (!winningBidIndices.length) {
         throw new Error("No valid winning bid indices");
       }
+      await this.ensureOrchestratorOperationalHbar("select_winners");
       const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
       this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
       job.winnerSource = "on-chain";
       return;
     } catch (err) {
-      this.log.warn(`[Orchestrator] On-chain selectWinners failed: ${err.message}. Falling back to HCS.`);
+      const error = err instanceof Error ? err.message : String(err);
+      this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${error}`);
+      job.failed = true;
+      job.failureReason = error;
+      this.setJobByKey(key, job);
+      await this.hcs.publishAuditLog({
+        type: "ONCHAIN_TX_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          phase: "select_winners",
+          strictLive: this.strictLive,
+          contractAddress: job.contractAddress,
+          jobId,
+          error,
+        },
+      });
+      await this.hcs.publishAuditLog({
+        type: "JOB_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId,
+          contractAddress: job.contractAddress,
+          phase: "select_winners",
+          error,
+        },
+      });
+      return;
     }
-
-    // Fallback: publish to agentComms (NOT just auditLog)
-    const selectionEpoch = Date.now();
-    job.selectionEpoch = selectionEpoch;
-    job.winnerSource = "fallback";
-
-    const fallbackPayload = {
-      type: "WINNERS_SELECTED_FALLBACK",
-      payload: {
-        jobId,
-        winners: selectedWinners.map(w => ({ agentId: w.agentId, evmAddress: w.evmAddress })),
-        selectionEpoch,
-        winnerSource: "fallback"
-      }
-    };
-
-    // Publish to agentComms so agents receive it
-    await this.hcs.publish(CONFIG.hcsTopics.agentComms, fallbackPayload);
-    // Also publish to auditLog for dashboard visibility
-    await this.hcs.publish(CONFIG.hcsTopics.auditLog, fallbackPayload);
-    this.log.info(`[Orchestrator] Published WINNERS_SELECTED_FALLBACK to agentComms + auditLog for job ${jobId}`);
   }
 
   subscribeContractEvents() {
@@ -938,7 +1090,7 @@ export class OrchestratorAgent {
       });
       this.log.info("Listening for on-chain WinnersSelected events");
     } catch (err) {
-      this.log.warn(`Contract event subscription failed (fallback selection only): ${err.message}`);
+      this.log.warn(`Contract event subscription failed: ${err.message}`);
     }
   }
 

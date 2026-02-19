@@ -28,8 +28,8 @@ const GUARD_DECIMALS = 8;
 const RPC_TIMEOUT_MS = Number(process.env.LIVE_PREFLIGHT_RPC_TIMEOUT_MS || "15000");
 const DEFAULT_RPC_URL = "https://testnet.hashio.io/api";
 const MIN_ACTIVATION_PAYER_HBAR = Number(process.env.MIN_ACTIVATION_PAYER_HBAR || "0.5");
-const OPERATOR_HBAR_TARGET = Number(process.env.OPERATOR_HBAR_TARGET || "1.0");
-const OPERATOR_TOPUP_DONOR_MIN_HBAR = Number(process.env.OPERATOR_TOPUP_DONOR_MIN_HBAR || "5");
+const OPERATOR_HBAR_TARGET = Number(process.env.OPERATOR_HBAR_TARGET || "2.5");
+const OPERATOR_TOPUP_DONOR_MIN_HBAR = Number(process.env.OPERATOR_TOPUP_DONOR_MIN_HBAR || "1.5");
 const ENABLE_OPERATOR_HBAR_AUTOTOPUP = process.env.ENABLE_OPERATOR_HBAR_AUTOTOPUP !== "false";
 const MIN_REGISTRY_HBAR = Number(process.env.MIN_REGISTRY_HBAR || "2");
 const MIRROR_TIMEOUT_MS = Number(process.env.LIVE_PREFLIGHT_MIRROR_TIMEOUT_MS || "8000");
@@ -40,6 +40,11 @@ const GUARD_ABI = [
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
   "function transfer(address to, uint256 amount) returns (bool)",
+];
+const DATA_MARKETPLACE_ADMIN_ABI = [
+  "function owner() view returns (address)",
+  "function agentRegistry() view returns (address)",
+  "function setAgentRegistry(address _agentRegistry)",
 ];
 
 const AGENTS = [
@@ -566,11 +571,73 @@ async function forceAssociateViaHtsCandidates(ownerWallet, accountAddresses, tok
   throw new Error(`all HTS account-address attempts failed: ${attempted.join(" | ")}`);
 }
 
+function buildRegisterAgentCalldata(registryContract, agentId, endpoint, specializations, stakeWei) {
+  const data = registryContract.interface.encodeFunctionData("registerAgent", [
+    agentId,
+    endpoint,
+    specializations,
+    stakeWei,
+  ]);
+  if (!data || data === "0x") {
+    throw new Error("registerAgent calldata encoding failed (check AgentRegistry ABI)");
+  }
+  return data;
+}
+
+async function submitRegisterAgentTx(agentWallet, registryAddress, calldata) {
+  const tx = await agentWallet.sendTransaction({
+    to: registryAddress,
+    data: calldata,
+  });
+  const fromAddress = String(tx.from || agentWallet.address).toLowerCase();
+  if (fromAddress !== agentWallet.address.toLowerCase()) {
+    throw new Error(
+      `registerAgent sender mismatch: expected ${agentWallet.address}, got ${tx.from || "<unknown>"}`
+    );
+  }
+  await tx.wait();
+  return tx;
+}
+
 async function transferGuard(guardTokenContract, targetEvmAddress, amountWei, label) {
   if (amountWei <= 0n) return;
   const tx = await guardTokenContract.transfer(targetEvmAddress, amountWei);
   await tx.wait();
   console.log(`    ✓ ${label}: funded +${fromTokenUnits(amountWei).toFixed(4)} GUARD`);
+}
+
+async function maybeSyncDataMarketplaceRegistry(sdk, ownerSignerWallet, expectedRegistryAddress) {
+  const marketplaceAddress = sdk?.contracts?.dataMarketplace?.evmAddress;
+  if (!marketplaceAddress || !ethers.isAddress(marketplaceAddress)) return;
+  const marketplace = new ethers.Contract(
+    marketplaceAddress,
+    DATA_MARKETPLACE_ADMIN_ABI,
+    ownerSignerWallet
+  );
+  const currentRegistry = String(await marketplace.agentRegistry()).toLowerCase();
+  const desiredRegistry = String(expectedRegistryAddress).toLowerCase();
+  if (currentRegistry === desiredRegistry) {
+    console.log(`• DataMarketplace registry already aligned: ${currentRegistry}`);
+    return;
+  }
+
+  const ownerAddress = String(await marketplace.owner()).toLowerCase();
+  if (ownerAddress !== ownerSignerWallet.address.toLowerCase()) {
+    console.log(
+      `⚠ DataMarketplace registry mismatch (${currentRegistry} != ${desiredRegistry}) but owner is ${ownerAddress}; ` +
+      `cannot auto-sync with signer ${ownerSignerWallet.address}`
+    );
+    return;
+  }
+
+  const tx = await marketplace.setAgentRegistry(expectedRegistryAddress);
+  await tx.wait();
+  const postRegistry = String(await marketplace.agentRegistry()).toLowerCase();
+  if (postRegistry === desiredRegistry) {
+    console.log(`✓ DataMarketplace registry synced to ${postRegistry}`);
+    return;
+  }
+  throw new Error(`DataMarketplace registry sync did not persist (post=${postRegistry}, expected=${desiredRegistry})`);
 }
 
 async function getHbarBalance(client, accountId, label) {
@@ -967,6 +1034,13 @@ async function main() {
     }
   }
 
+  try {
+    await maybeSyncDataMarketplaceRegistry(sdk, ownerSigner.wallet, agentRegistryAddress);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`⚠ DataMarketplace registry sync failed: ${msg}`);
+  }
+
   for (const spec of AGENTS) {
     const creds = getAgentCredentials(spec);
     if (!creds) {
@@ -1039,13 +1113,15 @@ async function main() {
       let active = await registry.isActiveAgent(agentEvmWallet.address);
       if (!active) {
         try {
-          const tx = await registryFromAgent.registerAgent(
+          const registerCalldata = buildRegisterAgentCalldata(
+            registryFromAgent,
             spec.agentId,
             endpoint,
             spec.specializations,
             stakeWei
           );
-          await tx.wait();
+          const tx = await submitRegisterAgentTx(agentEvmWallet, agentRegistryAddress, registerCalldata);
+          console.log(`    • ${spec.agentId}: registerAgent tx.to=${tx.to} tx.data=${tx.data || "<empty>"}`);
           console.log(`    ✓ ${spec.agentId}: on-chain registration succeeded`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
