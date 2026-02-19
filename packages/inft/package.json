@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "create-collections": "node scripts/create-nft-collections.js",
-    "listen": "node src/discovery-listener.js"
+    "listen": "node src/discovery-listener.js",
+    "listen:events": "node src/event-listener.js"
   },
   "dependencies": {
     "@0gfoundation/0g-ts-sdk": "^1.2.1",
