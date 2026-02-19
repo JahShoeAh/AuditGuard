@@ -1,6 +1,6 @@
 # AuditGuard — Current State of Project
 
-> Last updated: 2026-02-18
+> Last updated: 2026-02-18 (updated same day — agent fixes)
 
 AuditGuard is an autonomous multi-agent smart contract auditing platform built on Hedera. AI agents bid for audit jobs, execute analysis pipelines, publish findings, and are paid in GUARD tokens — fully on-chain with no manual coordination.
 
@@ -95,7 +95,7 @@ Seven autonomous agents, each running with its own Hedera testnet account and EC
 | Report | `0.0.7951949` | Aggregates findings → publishes final report |
 | Alert | `0.0.7951955` | Critical finding alerts / notifications |
 
-**0g Compute integration:** LLM agent uses `@0glabs/0g-serving-broker` SDK against `qwen-2.5-7b-instruct` at `0xa48f012...`.
+**0g Compute integration:** LLM agent uses `@0glabs/0g-serving-broker` SDK against `qwen-2.5-7b-instruct` at `0xa48f012...`. The broker import is lazy (dynamic `import()` inside `getBroker()`) so a broken ESM build in the package does not crash the agent at startup — it falls back to mock findings gracefully.
 
 **Agent entry points:**
 - `npm run agents` — run all agents
@@ -236,6 +236,16 @@ Run: `npm --prefix agents test`
 
 ---
 
+## Runtime Fixes Applied (2026-02-18)
+
+| # | File | Problem | Fix |
+|---|---|---|---|
+| 1 | `agents/llm-contextual/zg-client.ts` | Static `import { createZGComputeNetworkBroker }` from `@0glabs/0g-serving-broker` has a broken ESM chunk (`index-c28a795c.js` missing export `C`). Node resolves static imports before any code runs, so the LLM agent crashed immediately on every start (3 restarts → permanently down). | Changed to a dynamic `await import(...)` inside `getBroker()`. The broken module is only loaded if `ZG_PRIVATE_KEY` is configured; without it the agent skips 0g entirely and uses mock fallback. All 7 agents now start cleanly. |
+| 2 | `agents/shared/wallet.ts` | `ethers.JsonRpcProvider` batches RPC calls by default. Hedera's JSON-RPC relay rejects `eth_newFilter` inside a batch (error `-32007`). Static and Fuzzer agents were logging this every ~4 seconds while polling for `WinnersSelected` events. | Added `{ batchMaxCount: 1 }` to the provider constructor, disabling batching. Each RPC call now goes out individually; `eth_newFilter` is accepted. |
+| 3 | `agents/shared/contract-client.ts` | Same batching issue as #2 in the `fromPrivateKey` static factory. | Same fix: `{ batchMaxCount: 1 }`. |
+
+---
+
 ## Directory Structure
 
 ```
@@ -337,11 +347,13 @@ AuditGuard/
 | **iNFT Minting** | ✅ Live | Successfully minting Audit Job & Contract Health iNFTs to 0g Storage. |
 | Agent auction participation | ✅ Real | Real wallet transactions for bids & wins. |
 | Agent audit findings | ⚠️ Simulated | Logic is mock/randomized; not real static analysis. |
-| LLM analysis (0g Compute) | ⚠️ Hybrid | Attempts real inference; falls back to mock if 0g unreachable. |
+| LLM analysis (0g Compute) | ⚠️ Hybrid | Agent starts cleanly (7/7 healthy). Attempts real inference; falls back to mock if 0g broker unavailable (`ZG_PRIVATE_KEY` not set or broker ESM broken). |
 | **HSS Scheduling** | ⚠️ Partial | Contract deployed (`0x39AB...`); Orchestrator missing ABI; not yet fully integrated. |
 
 ### Known Issues
 - **Dashboard Agent List**: The "Agents" tab will be empty if you open the dashboard *after* agents have already started. Restarting agents (`npm run agents`) while the dashboard is open will populate the list.
 - **RPC Rate Limits**: Occasional `429` errors from Hedera public mirror node during high traffic.
 - **HSS Integration**: `AuditScheduler` is deployed but `orchestrator` logs "ABI missing", preventing automatic scheduling.
+- **Orchestrator HCS INVALID_SIGNATURE**: `JOB_CREATED` and `AUCTION_INVITE` HCS messages fail precheck — the operator key on account `0.0.7935670` may be rotated or the `.env` key doesn't match.
+- **ENS on Hedera**: Orchestrator logs one-time warn `network does not support ENS` when creating an auction — ethers.js tries ENS resolution on chainId 296. Non-blocking; falls back to off-chain.
 

@@ -73,7 +73,7 @@ export function createAgentWallet(agentName: string): AgentWallet {
     // ethers.js Wallet for EVM contract calls
     // We need the raw hex key for ethers — extract from the Hedera key
     const hexKey = hederaKey.toStringRaw();
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC);
+    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, undefined, { batchMaxCount: 1 });
     const evmWallet = new ethers.Wallet(hexKey, provider);
 
     return {

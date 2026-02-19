@@ -1,5 +1,4 @@
 import { ethers } from "ethers";
-import { createZGComputeNetworkBroker } from "@0glabs/0g-serving-broker";
 import { CONFIG } from "../shared/config.js";
 
 // ─── Error Types ────────────────────────────────────────────────────────────
@@ -30,7 +29,7 @@ export interface ZGInferenceResponse {
 
 // ─── Broker Singleton ───────────────────────────────────────────────────────
 
-let brokerInstance: Awaited<ReturnType<typeof createZGComputeNetworkBroker>> | null = null;
+let brokerInstance: any = null;
 let brokerInitialized = false;
 
 async function getBroker() {
@@ -50,6 +49,7 @@ async function getBroker() {
     provider
   );
 
+  const { createZGComputeNetworkBroker } = await import("@0glabs/0g-serving-broker");
   brokerInstance = await createZGComputeNetworkBroker(wallet);
   return brokerInstance;
 }

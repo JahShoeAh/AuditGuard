@@ -145,7 +145,7 @@ export class ContractClient {
    * Create a ContractClient from a raw private key hex string.
    */
   static fromPrivateKey(privateKey: string): ContractClient {
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC);
+    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, undefined, { batchMaxCount: 1 });
     const key = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(key, provider);
     return new ContractClient(wallet);
