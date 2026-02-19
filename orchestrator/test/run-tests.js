@@ -209,15 +209,172 @@ async function testSettlementOnFindings() {
   assert.equal(repUpdates, 1, "calls inft reputation hook");
 }
 
+async function testBidSubmissionValidation() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  const jobId = 555;
+  orch.jobs.set(jobId, {
+    contractAddress: "0xfeed000000000000000000000000000000000001",
+    contractType: "lending",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  // Agent below min stake should be rejected.
+  orch.handleAgentRegistered({
+    type: MessageType.AGENT_REGISTERED,
+    agentId: "low-stake",
+    timestamp: now(),
+    payload: {
+      evmAddress: "0x00000000000000000000000000000000000000aa",
+      stake: 1,
+      reputation: 90,
+      specializations: ["lending"],
+    },
+  });
+  orch.handleBidSubmitted({
+    type: "BID_SUBMITTED",
+    agentId: "low-stake",
+    timestamp: now(),
+    payload: {
+      contractAddress: "0xfeed000000000000000000000000000000000001",
+      bidAmount: 10,
+      collateral: 2,
+      estimatedTimeSec: 120,
+      reputation: 90,
+      evmAddress: "0x00000000000000000000000000000000000000aa",
+    },
+  });
+  assert.equal(orch.jobs.get(jobId).bidders.length, 0, "low-stake bid should be rejected");
+
+  // Valid agent and valid bid should be recorded.
+  orch.handleAgentRegistered({
+    type: MessageType.AGENT_REGISTERED,
+    agentId: "good-agent",
+    timestamp: now(),
+    payload: {
+      evmAddress: "0x00000000000000000000000000000000000000bb",
+      stake: 50,
+      reputation: 80,
+      specializations: ["lending"],
+    },
+  });
+  orch.handleBidSubmitted({
+    type: "BID_SUBMITTED",
+    agentId: "good-agent",
+    timestamp: now(),
+    payload: {
+      contractAddress: "0xfeed000000000000000000000000000000000001",
+      bidAmount: 15,
+      collateral: 4,
+      estimatedTimeSec: 90,
+      reputation: 80,
+      evmAddress: "0x00000000000000000000000000000000000000bb",
+    },
+  });
+  assert.equal(orch.jobs.get(jobId).bidders.length, 1, "valid bid should be recorded");
+}
+
+async function testSkipSettlementWhenAlreadySettledOnChain() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks();
+  let settleCalls = 0;
+  contracts.paymentSettlement.isJobSettled = async () => true;
+  contracts.paymentSettlement.settleJob = async () => { settleCalls++; };
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  const jobId = 777;
+  const winner = "0x0000000000000000000000000000000000000abc";
+  const job = {
+    winners: [winner],
+    findings: [
+      {
+        agentId: "static",
+        evmAddress: winner,
+        findingsCount: 2,
+        criticalCount: 0,
+        findingsHash: "0xhash",
+      },
+    ],
+    reportPublished: false,
+    settled: false,
+  };
+  orch.jobs.set(jobId, job);
+
+  await orch.handleReportPublished({
+    type: "REPORT_PUBLISHED",
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: { jobId, totalFindings: 2, criticalFindings: 0, reportHash: "0xrep" },
+  });
+
+  assert.equal(settleCalls, 0, "should not settle when already settled on-chain");
+  assert.equal(orch.jobs.get(jobId).settled, true, "job should be marked settled in-memory");
+  assert.ok(!auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "no settlement log expected");
+}
+
+async function testSkipSettlementWithInvalidReportAgentAddress() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks();
+  let settleCalls = 0;
+  contracts.getAddress = () => ""; // invalid orchestrator fallback address
+  contracts.paymentSettlement.isJobSettled = async () => false;
+  contracts.paymentSettlement.settleJob = async () => { settleCalls++; };
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  const jobId = 888;
+  const winner = "0x0000000000000000000000000000000000000abc";
+  orch.jobs.set(jobId, {
+    winners: [winner],
+    findings: [
+      {
+        agentId: "static",
+        evmAddress: winner,
+        findingsCount: 3,
+        criticalCount: 1,
+        findingsHash: "0xhash",
+      },
+    ],
+    reportPublished: false,
+    settled: false,
+  });
+
+  await orch.handleReportPublished({
+    type: "REPORT_PUBLISHED",
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: {
+      jobId,
+      totalFindings: 3,
+      criticalFindings: 1,
+      reportHash: "0xrep",
+      reportAgentAddress: "not-an-address",
+    },
+  });
+
+  assert.equal(settleCalls, 0, "should skip settlement with invalid report agent address");
+  assert.ok(!auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "no settlement log expected");
+}
+
 async function run() {
   const tests = [
     ["agent registration", testAgentRegistration],
     ["discovery invites", testDiscoveryInvites],
     ["fallback winners", testFallbackWinners],
+    ["bid submission validation", testBidSubmissionValidation],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["create sub-auction", testCreateSubAuction],
     ["accept sub result", testAcceptSubResult],
     ["settlement/report/alert on findings", testSettlementOnFindings],
+    ["skip settlement when already settled on-chain", testSkipSettlementWhenAlreadySettledOnChain],
+    ["skip settlement on invalid report agent", testSkipSettlementWithInvalidReportAgentAddress],
   ];
 
   let passed = 0;
