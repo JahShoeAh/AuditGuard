@@ -18,7 +18,14 @@
     "all:legacy": "concurrently \"npm run scanner\" \"npm run static\" \"npm run fuzzer\" \"npm run llm\" \"npm run dependency\" \"npm run report\" \"npm run alert\"",
     "fund": "tsx scripts/fund-agents.ts",
     "test": "vitest run --reporter=verbose",
-    "test:invite": "vitest run tests/auction-invite.test.ts --reporter=verbose"
+    "test:invite": "vitest run tests/auction-invite.test.ts --reporter=verbose",
+    "test:token-transfer": "tsx test-token-transfer.ts",
+    "test:staking": "tsx test-staking.ts",
+    "test:rewards": "tsx test-rewards.ts",
+    "test:ipfs": "tsx test-ipfs.ts",
+    "test:zg:diagnostics": "tsx test-zg-diagnostics.ts",
+    "test:zg:integration": "tsx test-zg-integration.ts",
+    "test:zg:model-update": "tsx test-model-update.ts"
   },
   "dependencies": {
     "@0glabs/0g-serving-broker": "^0.7.1",
