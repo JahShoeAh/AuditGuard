@@ -9,7 +9,6 @@ import {
 } from "../shared/index.js";
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
-import { CONFIG } from "../shared/config.js";
 import { ethers } from "ethers";
 import { formatReport, type Finding as ReportFinding } from "../shared/report-formatter.js";
 import { uploadToIPFSSafe } from "../shared/ipfs-client.js";

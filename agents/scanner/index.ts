@@ -51,6 +51,19 @@ type MirrorContract = {
 const seenContracts = new Set<string>();
 let lastSeenTimestamp: string | null = makeInitialTimestamp();
 
+// Round-robin index for test contract selection.
+let _testContractIndex = 0;
+
+function nextDiscoveryContract(): { key: string; address: string; deployer: string } {
+  const contracts = CONFIG.testContracts;
+  if (!contracts || contracts.length === 0) {
+    return { key: "unknown", address: `0x${randomHex(40)}`, deployer: `0x${randomHex(40)}` };
+  }
+  const pick = contracts[_testContractIndex % contracts.length];
+  _testContractIndex += 1;
+  return { key: pick.key, address: pick.address, deployer: pick.deployer };
+}
+
 // Backward-compatible helper for tests that import generateDiscovery().
 // Runtime scanning now uses mirror-node discovery instead.
 export function generateDiscovery() {

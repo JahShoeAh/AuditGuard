@@ -21,7 +21,6 @@ export class OrchestratorAgent {
     this.hcs = opts.hcs ?? new HCSClient();
     this.contracts = opts.contracts ?? this.buildContractClient();
     this.strictLive = opts.strictLive ?? CONFIG.strictLive;
-    this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
