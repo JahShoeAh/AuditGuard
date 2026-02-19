@@ -4,8 +4,8 @@
 
 :root {
   --bg-primary: #000000;
-  --bg-secondary: rgba(17, 24, 39, 0.8);
-  --bg-card: rgba(17, 24, 39, 0.8);
+  --bg-secondary: rgba(17, 24, 39, 0.6);
+  --bg-card: rgba(17, 24, 39, 0.6);
   --border: #111827;
   --text-primary: #E5E7EB;
   --text-secondary: #6B7280;
