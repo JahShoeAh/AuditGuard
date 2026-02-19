@@ -129,7 +129,7 @@ function AgentsTab() {
         )}
       </AnimatePresence>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-auto">
         <AgentLeaderboard />
       </div>
     </div>
@@ -139,7 +139,7 @@ function AgentsTab() {
 function ContractsTab() {
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-auto">
         <ContractHealth />
       </div>
       <AuditJobTracker />
@@ -149,7 +149,7 @@ function ContractsTab() {
 
 function SchedulesTab() {
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden">
+    <div className="h-full flex flex-col min-h-0 overflow-auto">
       <AuditSchedules />
     </div>
   );
@@ -187,7 +187,7 @@ function AnalyticsTab() {
         })}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-auto">
         {subTab === 'network' && (
           <div className="h-full flex flex-col min-h-0">
             <div className="flex-1 min-h-0">
@@ -258,7 +258,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <main className="flex-1 overflow-hidden min-h-0">
+      <main className="flex-1 overflow-auto min-h-0">
         <AnimatePresence mode="wait">
           {activeTab === 'liveFeed' && (
             <TabContent key="liveFeed">

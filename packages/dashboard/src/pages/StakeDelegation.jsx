@@ -79,7 +79,7 @@ export default function StakeDelegation() {
   const handleCloseWizard = ()    => setSelectedAgent(null);
 
   return (
-    <div className="h-screen flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-gray-950 text-gray-100">
       {/* Top nav */}
       <Header />
 
@@ -87,7 +87,7 @@ export default function StakeDelegation() {
       <StakeHeader hasPortfolio connected={connected} />
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <main className="flex-1 flex flex-col overflow-auto">
 
         {/* Portfolio section (only when connected) */}
         {connected && (
@@ -102,7 +102,7 @@ export default function StakeDelegation() {
         )}
 
         {/* Agent browser + wizard split */}
-        <div className="flex-1 flex gap-0 min-h-0 overflow-hidden mt-3">
+        <div className="flex-1 flex gap-0 min-h-[500px] overflow-auto mt-3">
 
           {/* ── Left 55%: Agent Browser ── */}
           <div className="w-[55%] flex flex-col min-h-0 px-4 pb-4 border-r border-gray-800">
@@ -113,7 +113,7 @@ export default function StakeDelegation() {
           </div>
 
           {/* ── Right 45%: Delegation Wizard ── */}
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden border-l border-gray-800 bg-gray-950">
+          <div className="flex-1 flex flex-col overflow-auto border-l border-gray-800 bg-gray-950">
             <DelegationWizard
               agentAddress={selectedAgent}
               onClose={handleCloseWizard}

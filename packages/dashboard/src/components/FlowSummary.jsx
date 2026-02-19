@@ -44,7 +44,7 @@ export default function FlowSummary() {
   const guardTokenId = config?.guardTokenId;
 
   return (
-    <div className="w-[148px] flex-shrink-0 border-l border-white/[0.04] px-3 py-2.5 flex flex-col gap-1.5">
+    <div className="w-[148px] flex-shrink-0 border-l border-white/[0.04] px-3 py-2.5 flex flex-col gap-1.5 overflow-hidden">
       {/* Section label */}
       <span className="text-[9px] text-gray-600 uppercase tracking-wider font-sans">10-min summary</span>
 
@@ -75,22 +75,23 @@ export default function FlowSummary() {
       </div>
 
       {/* HashScan links */}
-      <div className="border-t border-white/[0.04] pt-1 space-y-0.5">
+      <div className="border-t border-white/[0.04] pt-1 flex items-center gap-2 flex-wrap">
         {guardTokenId && (
           <a
             href={hashscan.token(guardTokenId)}
             target="_blank"
             rel="noopener noreferrer"
-            className="block text-[9px] text-gray-700 hover:text-guard-cyan transition-colors font-mono truncate"
+            className="text-[9px] text-gray-700 hover:text-guard-cyan transition-colors font-mono truncate"
           >
-            GUARD token↗
+            GUARD↗
           </a>
         )}
+        {guardTokenId && <span className="text-gray-800 text-[8px]">·</span>}
         <a
           href={hashscan.networkUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="block text-[9px] text-gray-700 hover:text-guard-cyan transition-colors font-mono"
+          className="text-[9px] text-gray-700 hover:text-guard-cyan transition-colors font-mono"
         >
           HashScan↗
         </a>

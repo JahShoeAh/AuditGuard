@@ -168,7 +168,7 @@ export default function AgentRegistration() {
   const isLastStep       = step === 4;
 
   return (
-    <div className="h-screen flex flex-col bg-black text-gray-100 overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-black text-gray-100">
       <Header />
 
       {/* Sub-header */}
