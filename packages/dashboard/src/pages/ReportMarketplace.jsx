@@ -30,7 +30,7 @@ function FilterPill({ label, icon, active, count, onClick }) {
         'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-mono font-semibold transition-all whitespace-nowrap',
         active
           ? 'bg-guard-amber/15 border border-guard-amber/50 text-guard-amber'
-          : 'bg-gray-900/80 border border-gray-900 text-gray-500 hover:border-gray-700 hover:text-gray-300',
+          : 'bg-gray-900/60 border border-gray-900 text-gray-500 hover:border-gray-700 hover:text-gray-300',
       ].join(' ')}
     >
       {icon && <span>{icon}</span>}
@@ -245,7 +245,7 @@ export default function ReportMarketplace() {
             value={contractSearch}
             onChange={(e) => updateContractSearch(e.target.value)}
             placeholder="Find reports for your contract: 0x…"
-            className="w-full bg-gray-900/80 border border-gray-900 rounded-lg pl-9 pr-4 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-guard-amber transition-colors"
+            className="w-full bg-gray-900/60 border border-gray-900 rounded-lg pl-9 pr-4 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-guard-amber transition-colors"
           />
           {contractSearch && (
             <button

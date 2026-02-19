@@ -126,7 +126,7 @@ function CountUp({ value, suffix = '' }) {
 
 function FeatureCard({ icon, title, description, onConnect }) {
   return (
-    <article className="rounded-lg border border-gray-900 bg-gray-900/80 p-5">
+    <article className="rounded-lg border border-gray-900 bg-gray-900/60 p-5">
       <div className="mb-3 text-2xl">{icon}</div>
       <h3 className="font-mono text-sm font-semibold uppercase tracking-wider text-gray-100">{title}</h3>
       <p className="mt-2 text-sm text-gray-400">{description}</p>
@@ -211,7 +211,7 @@ export default function WelcomeScreen() {
         </header>
 
         <section className="mx-auto flex min-h-[80vh] w-full max-w-6xl flex-col items-center justify-center px-6 text-center">
-          <div className="rounded-lg border border-gray-800 bg-gray-900/80 px-8 py-6 shadow-[0_0_80px_rgba(245,158,11,0.08)]">
+          <div className="rounded-lg border border-gray-800 bg-gray-900/60 px-8 py-6 shadow-[0_0_80px_rgba(245,158,11,0.08)]">
             <h1 className="font-mono text-4xl font-bold tracking-wide">
               <span className="text-guard-amber glow-text-subtle">AUDIT</span>
               <span className="text-gray-200">GUARD</span>
@@ -250,7 +250,7 @@ export default function WelcomeScreen() {
             )}
           </div>
 
-          <div className="mt-6 w-full max-w-3xl rounded-lg border border-gray-900 bg-gray-900/80 px-5 py-3 text-sm text-gray-300">
+          <div className="mt-6 w-full max-w-3xl rounded-lg border border-gray-900 bg-gray-900/60 px-5 py-3 text-sm text-gray-300">
             <p className="font-mono uppercase tracking-wider text-gray-400">Live Stats Preview</p>
             <p className="mt-1">{statsLine}</p>
           </div>

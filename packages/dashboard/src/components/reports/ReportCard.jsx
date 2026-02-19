@@ -127,7 +127,7 @@ export default function ReportCard({ listing, hasAccess, rating, onPurchase, onV
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       className={[
-        'rounded-xl border bg-gray-900/80 p-4 flex flex-col gap-3 transition-all',
+        'rounded-xl border bg-gray-900/60 p-4 flex flex-col gap-3 transition-all',
         hasAccess
           ? 'border-green-500/30'
           : isActive
