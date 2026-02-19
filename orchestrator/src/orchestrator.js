@@ -19,7 +19,7 @@ export class OrchestratorAgent {
   constructor(opts = {}) {
     this.log = opts.log ?? createLogger("orchestrator");
     this.hcs = opts.hcs ?? new HCSClient();
-    this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
+    this.contracts = opts.contracts ?? this.buildContractClient();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
@@ -27,20 +27,21 @@ export class OrchestratorAgent {
     this.enablePing = opts.enablePing ?? true;
   }
 
-  buildContractClientWithFallback() {
+  buildContractClient() {
     try {
-      return ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
+      const client = ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
+      const missing = [];
+      if (typeof client.auction?.createAuditJob !== "function") missing.push("auction.createAuditJob");
+      if (typeof client.selectWinners !== "function") missing.push("selectWinners");
+      if (typeof client.dataMarketplace?.purchaseData !== "function") missing.push("dataMarketplace.purchaseData");
+      if (typeof client.paymentSettlement?.settleJob !== "function") missing.push("paymentSettlement.settleJob");
+      if (missing.length) {
+        throw new Error(`Contract client missing required methods: ${missing.join(", ")}`);
+      }
+      return client;
     } catch (err) {
-      this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
-      return {
-        auction: {},
-        subAuction: {},
-        dataMarketplace: {},
-        paymentSettlement: {},
-        agentRegistry: {},
-        budgetVault: {},
-        getAddress: () => "",
-      };
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Contract client init failed (orchestrator requires live contract client): ${reason}`);
     }
   }
 
@@ -140,6 +141,10 @@ export class OrchestratorAgent {
     const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
     let jobId = Date.now(); // fallback
     let auctionOpenedOnChain = false;
+    const budgetGuardRaw = Number(budget ?? CONFIG.payments.totalGuard ?? 0);
+    const budgetGuard = Number.isFinite(budgetGuardRaw) && budgetGuardRaw > 0
+      ? budgetGuardRaw
+      : Number(CONFIG.payments.totalGuard);
     this.log.info(`New discovery ${contractAddress.slice(0, 12)}… type=${contractType}`);
 
     // Store job FIRST so incoming bids can be matched immediately
@@ -156,8 +161,11 @@ export class OrchestratorAgent {
     // Open auction on-chain (async — bids can arrive while this runs)
     try {
       const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
-      const budgetWei = parseUnits(String(budget ?? 0), CONFIG.guardToken.decimals);
-      const tx = await this.contracts.auction.createAuditJob?.(
+      const budgetWei = parseUnits(String(budgetGuard), CONFIG.guardToken.decimals);
+      const expectedJobIdRaw = await this.contracts.auction.nextJobId?.();
+      const expectedOnChainJobId = expectedJobIdRaw != null ? Number(expectedJobIdRaw) : null;
+
+      const tx = await this.contracts.auction.createAuditJob(
         contractAddress,
         "hedera-testnet",
         contractType ?? "unknown",
@@ -166,8 +174,12 @@ export class OrchestratorAgent {
         estimatedLOC ?? 0,
         auctionDurationSec
       );
-      const receipt = await tx?.wait?.();
-      let onChainJobId = null;
+      const receipt = await tx.wait();
+      if (!receipt || receipt.status !== 1) {
+        throw new Error(`createAuditJob tx failed: ${tx.hash}`);
+      }
+
+      let onChainJobId = Number.isFinite(expectedOnChainJobId) ? expectedOnChainJobId : null;
       if (receipt?.logs) {
         for (const log of receipt.logs) {
           try {
@@ -179,15 +191,20 @@ export class OrchestratorAgent {
           } catch { /* ignore */ }
         }
       }
+
+      if (onChainJobId == null || !Number.isFinite(onChainJobId)) {
+        throw new Error("createAuditJob succeeded but JobPosted jobId could not be resolved");
+      }
+
       if (onChainJobId != null && onChainJobId !== jobId) {
         const existing = this.jobs.get(jobId);
         this.jobs.delete(jobId);
-        existing.onChainJobId = onChainJobId;
+        existing.onChainJobId = Number(onChainJobId);
         this.jobs.set(onChainJobId, existing);
         jobId = onChainJobId;
       }
       auctionOpenedOnChain = true;
-      this.log.info(`Auction opened on-chain for job ${jobId}`);
+      this.log.info(`Auction opened on-chain for job ${jobId} (tx: ${tx.hash})`);
     } catch (err) {
       this.log.warn(`Auction create failed (continuing off-chain): ${err}`);
     }
@@ -202,7 +219,7 @@ export class OrchestratorAgent {
           jobId,
           contractAddress,
           contractType: contractType ?? "unknown",
-          budget: budget ?? 0,
+          budget: budgetGuard,
           riskScore: riskScore ?? 0,
           estimatedLOC: estimatedLOC ?? 0,
           onChain: auctionOpenedOnChain,
@@ -332,9 +349,14 @@ export class OrchestratorAgent {
     const { listingId, category, price, jobId } = payload;
     if (!CONFIG.dataMarketplace.allowedCategories.includes(category)) return;
     if (price > CONFIG.dataMarketplace.maxAutoBuyGuard) return;
+    const numericListingId = Number(listingId);
+    if (!Number.isFinite(numericListingId) || numericListingId <= 0) {
+      this.log.warn(`Auto-buy skipped: invalid listingId ${listingId}`);
+      return;
+    }
 
     try {
-      await this.contracts.dataMarketplace.purchaseData(Number(listingId ?? 0));
+      await this.contracts.dataMarketplace.purchaseData(numericListingId);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
       await this.hcs.publishAuditLog({
         type: "DATA_PURCHASED",
@@ -546,8 +568,8 @@ export class OrchestratorAgent {
           jobId,
           contractAddress: payload.contractAddress,
           contractType: payload.contractType,
-          budget: payload.budget ?? 0,
-          riskScore: payload.riskScore ?? 0,
+          budget: payload.budget ?? CONFIG.payments.totalGuard,
+          riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
           estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
           estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
         },
@@ -565,8 +587,8 @@ export class OrchestratorAgent {
 
     if (job.bidders && job.bidders.length > 0) {
       // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
-      const maxBid = Math.max(...job.bidders.map(b => b.bidAmount || 1));
-      const maxTime = Math.max(...job.bidders.map(b => b.estimatedTimeSec || 1));
+      const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
+      const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
 
       const scored = job.bidders.map((b, bidIndex) => {
         const repScore = ((b.reputation ?? 0) / 100) * 0.55;
@@ -576,7 +598,20 @@ export class OrchestratorAgent {
       });
 
       scored.sort((a, b) => b.score - a.score);
-      selectedWinners = scored.slice(0, 3);
+
+      const deduped = [];
+      const seenWinnerKeys = new Set();
+      for (const bid of scored) {
+        const key = bid.evmAddress
+          ? String(bid.evmAddress).toLowerCase()
+          : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
+        if (!key || seenWinnerKeys.has(key)) continue;
+        seenWinnerKeys.add(key);
+        deduped.push(bid);
+        if (deduped.length >= 3) break;
+      }
+
+      selectedWinners = deduped;
       winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
       this.log.info(
         `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
@@ -605,8 +640,13 @@ export class OrchestratorAgent {
 
     // Try on-chain first
     try {
-      const winningBidIndices = selectedWinners.map(w => w.bidIndex);
-      const receipt = await this.contracts.selectWinners(jobId, winningBidIndices);
+      const winningBidIndices = selectedWinners
+        .map((w) => w.bidIndex)
+        .filter((idx) => Number.isInteger(idx));
+      if (!winningBidIndices.length) {
+        throw new Error("No valid winning bid indices");
+      }
+      const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
       this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
       job.winnerSource = "on-chain";
       return;

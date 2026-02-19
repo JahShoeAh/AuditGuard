@@ -361,7 +361,7 @@ async function main() {
       const jobKey = String(jobId);
       const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
       if (startedJobs.has(dedupKey)) {
-        console.log("[LLMContextual-3] Already processing job " + jobKey + ", skipping");
+        log.info(`Already processing job ${jobKey}, skipping`);
         return;
       }
       const isWinner = Array.isArray(winners) && winners.some((w: any) => {
@@ -376,7 +376,7 @@ async function main() {
         return;
       }
 
-      console.log(`[LLMContextual-3] Won job ${jobKey} via fallback notification`);
+      log.info(`Won job ${jobKey} via fallback notification`);
       startedJobs.add(dedupKey);
       updatePricingAfterOutcome(true);
       pendingJobs.delete(jobKey);
@@ -562,7 +562,7 @@ async function simulateAuditCycle(
     const src = loadContractSource(sourceRef);
     if (src) {
       contractSource = src;
-      console.log(`[LLMContextual-3] Loaded ${src.length} chars of source for ${sourceRef}`);
+      log.info(`Loaded ${src.length} chars of source for ${sourceRef}`);
     }
   }
 

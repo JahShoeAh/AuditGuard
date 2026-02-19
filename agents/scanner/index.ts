@@ -21,6 +21,7 @@ const SCAN_INTERVAL_MS = DEMO_MODE ? 30 * 1000 : 300 * 1000; // 30s demo, 5m pro
 const HOT_LEAD_RISK_THRESHOLD = 80;
 const HOT_LEAD_PRICE = ethers.parseUnits("0.1", 8);   // 0.1 GUARD
 const HOT_LEAD_DELAY_MS = DEMO_MODE ? 10 * 1000 : 60 * 1000; // delay before public
+const DEFAULT_BUDGET_GUARD = Number(process.env.SCANNER_DISCOVERY_BUDGET_GUARD ?? "30");
 
 const log = createAgentLogger(AGENT_ID, "scanner");
 let discoveryContractIndex = 0;
@@ -66,6 +67,9 @@ export function generateDiscovery() {
   const pick = nextDiscoveryContract();
   const isTestMode = process.env.TEST_MODE === "true";
   const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault"];
+  const riskScore = isTestMode ? 75 : randomInt(20, 95);
+  const estimatedLOC = isTestMode ? 150 : randomInt(500, 10000);
+  const discoveryTimestamp = Math.floor(Date.now() / 1000);
 
   return {
     type: "CONTRACT_DISCOVERED" as const,
@@ -75,9 +79,13 @@ export function generateDiscovery() {
       contractAddress: pick.address,
       chain: "hedera-testnet",
       deployerAddress: pick.deployer,
-      estimatedLOC: isTestMode ? 150 : randomInt(500, 10000),
+      estimatedLOC,
+      estimatedLineCount: estimatedLOC,
       contractType: isTestMode ? "vault" : randomChoice(types),
-      riskScore: isTestMode ? 75 : randomInt(20, 95),
+      riskScore,
+      initialRiskScore: riskScore,
+      budget: DEFAULT_BUDGET_GUARD,
+      discoveryTimestamp,
       txHash: `0x${randomHex(64)}`,
       sourceRef: pick.key,
     },

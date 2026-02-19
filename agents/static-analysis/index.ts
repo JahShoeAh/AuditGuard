@@ -258,7 +258,7 @@ async function main() {
       const jobKey = String(jobId);
       const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
       if (startedJobs.has(dedupKey) || hasStartedJob(jobKey)) {
-        console.log("[StaticAnalysis-47] Already processing job " + jobKey + ", skipping");
+        log.info(`Already processing job ${jobKey}, skipping`);
         return;
       }
       const isWinner = Array.isArray(winners) && winners.some((w: any) => {
@@ -273,7 +273,7 @@ async function main() {
         return;
       }
 
-      console.log(`[StaticAnalysis-47] Won job ${jobKey} via fallback notification`);
+      log.info(`Won job ${jobKey} via fallback notification`);
       startedJobs.add(dedupKey);
       updatePricingAfterOutcome(true);
       pendingJobs.delete(jobKey);

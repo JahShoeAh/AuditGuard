@@ -83,11 +83,11 @@ async function main() {
       const { jobId, selectionEpoch } = (msg as any).payload ?? {};
       const dedupKey = `${String(jobId)}:${selectionEpoch ?? "0"}`;
       if (startedJobs.has(dedupKey)) {
-        console.log("[DependencyAgent-8] Already processing job " + String(jobId) + ", skipping");
+        log.info(`Already processing job ${String(jobId)}, skipping`);
         return;
       }
       startedJobs.add(dedupKey);
-      console.log("[DependencyAgent-8] Received main job fallback — ignoring (sub-contractor only)");
+      log.info("Received main job fallback, ignoring because this agent handles sub-contracts only");
       return;
     }
 

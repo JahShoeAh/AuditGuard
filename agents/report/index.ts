@@ -8,6 +8,7 @@ import {
 } from "../shared/index.js";
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
+import { CONFIG } from "../shared/config.js";
 import { ethers } from "ethers";
 import { formatReport, type Finding as ReportFinding } from "../shared/report-formatter.js";
 import { uploadToIPFSSafe } from "../shared/ipfs-client.js";
@@ -16,10 +17,23 @@ import { uploadToIPFSSafe } from "../shared/ipfs-client.js";
 const AGENT_ID = "report-aggregator-001";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const DIRECT_SETTLEMENT = process.env.REPORT_AGENT_DIRECT_SETTLEMENT === "true";
+const REPORT_AGENT_AUTO_REGISTER = process.env.REPORT_AGENT_AUTO_REGISTER === "true";
+const REPORT_AGENT_STAKE_GUARD = Number(process.env.REPORT_AGENT_STAKE_GUARD ?? "100");
+const REPORT_AGENT_UCP_ENDPOINT = process.env.REPORT_AGENT_UCP_ENDPOINT ?? "openclaw://report-aggregator-001";
+const REPORT_AGENT_SPECIALIZATIONS = (process.env.REPORT_AGENT_SPECIALIZATIONS ?? "reporting")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const AGGREGATION_WINDOW_MS = DEMO_MODE ? 20 * 1000 : 120 * 1000;
 const REPORT_FEE = 0.1;               // GUARD base fee per submitting agent
 const REPORT_FEE_DISCOUNTED = 0.05;   // GUARD discounted fee for rep > 90
 const HIGH_REP_THRESHOLD = 90;
+const GUARD_DECIMALS = 8;
+const ERC20_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address,address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+];
 
 const log = createAgentLogger(AGENT_ID, "report");
 
@@ -29,6 +43,76 @@ const jobFindings = new Map<string, {
   timer: ReturnType<typeof setTimeout> | null;
   agentAddresses: Map<string, string>; // agentId -> evmAddress
 }>();
+
+let marketplaceReady = false;
+
+async function ensureReportAgentCanList(contracts: ContractClient, walletAddress: string): Promise<boolean> {
+  if (marketplaceReady) return true;
+
+  try {
+    const active = await contracts.isActiveAgent(walletAddress);
+    if (active) {
+      marketplaceReady = true;
+      return true;
+    }
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    log.warn(`[ReportAgent] Could not verify AgentRegistry status: ${errMessage}`);
+  }
+
+  log.warn(
+    `[ReportAgent] ${walletAddress} is not an active AgentRegistry seller; ` +
+      `DataMarketplace listing will fail unless registered`
+  );
+
+  if (!REPORT_AGENT_AUTO_REGISTER) {
+    log.warn("[ReportAgent] Set REPORT_AGENT_AUTO_REGISTER=true to attempt self-registration");
+    return false;
+  }
+
+  try {
+    const stakeAmount = ethers.parseUnits(REPORT_AGENT_STAKE_GUARD.toString(), GUARD_DECIMALS);
+    const guardToken = new ethers.Contract(CONFIG.guardToken.evmAddress, ERC20_ABI, contracts.wallet);
+
+    const balance: bigint = await guardToken.balanceOf(walletAddress);
+    if (balance < stakeAmount) {
+      log.warn(
+        `[ReportAgent] Auto-register skipped: wallet has ${ethers.formatUnits(balance, GUARD_DECIMALS)} GUARD ` +
+          `but needs at least ${REPORT_AGENT_STAKE_GUARD}`
+      );
+      return false;
+    }
+
+    const allowance: bigint = await guardToken.allowance(walletAddress, CONFIG.contracts.agentRegistry);
+    if (allowance < stakeAmount) {
+      const approveTx = await guardToken.approve(CONFIG.contracts.agentRegistry, stakeAmount);
+      await approveTx.wait();
+      log.info(`[ReportAgent] Approved ${REPORT_AGENT_STAKE_GUARD} GUARD for AgentRegistry`);
+    }
+
+    const registerTx = await contracts.registerAgent(
+      AGENT_ID,
+      REPORT_AGENT_UCP_ENDPOINT,
+      REPORT_AGENT_SPECIALIZATIONS,
+      stakeAmount
+    );
+    await registerTx.wait();
+
+    const activeAfter = await contracts.isActiveAgent(walletAddress);
+    marketplaceReady = activeAfter;
+    if (activeAfter) {
+      log.info("[ReportAgent] Auto-registration succeeded; marketplace listing enabled");
+      return true;
+    }
+
+    log.warn("[ReportAgent] Auto-registration transaction completed but agent is still inactive");
+    return false;
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    log.warn(`[ReportAgent] Auto-register failed: ${errMessage}`);
+    return false;
+  }
+}
 
 // ---- Main ----
 
@@ -41,6 +125,7 @@ async function main() {
   const contracts = new ContractClient(wallet.evmWallet);
 
   log.info(`Wallet: ${wallet.evmAddress}`);
+  await ensureReportAgentCanList(contracts, wallet.evmAddress);
 
   // Listen for findings from auditor agents
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
@@ -279,37 +364,43 @@ async function aggregateAndPublish(
   const numericJobId = Number(jobId);
   const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
   let listingId: number | null = null;
-  try {
-    const priceRaw = ethers.parseUnits("0.5", 8);
-    const tx = await contracts.dataMarketplace.createListing(
-      parentJobId,
-      `Audit Report — Job #${jobId}`,
-      "Comprehensive vulnerability audit report",
-      6,
-      0,
-      priceRaw,
-      0,
-      contentHash,
-      0,
-      30 * 24 * 60 * 60
-    );
-    const receipt = await tx.wait();
-    if (receipt?.logs) {
-      for (const logItem of receipt.logs) {
-        try {
-          const parsed = contracts.dataMarketplace.interface.parseLog(logItem);
-          if (parsed?.name === "DataListed") {
-            listingId = Number(parsed.args?.listingId ?? parsed.args?.[0]);
-            break;
+  const canList = await ensureReportAgentCanList(contracts, myAddress);
+  if (canList) {
+    try {
+      const priceRaw = ethers.parseUnits("0.5", GUARD_DECIMALS);
+      const tx = await contracts.createListing(
+        parentJobId,
+        `Audit Report — Job #${jobId}`,
+        "Comprehensive vulnerability audit report",
+        6,
+        priceRaw,
+        contentHash,
+        0,
+        0,
+        0,
+        30 * 24 * 60 * 60
+      );
+      const receipt = await tx.wait();
+      if (receipt?.logs) {
+        for (const logItem of receipt.logs) {
+          try {
+            const parsed = contracts.dataMarketplace.interface.parseLog(logItem);
+            if (parsed?.name === "DataListed") {
+              listingId = Number(parsed.args?.listingId ?? parsed.args?.[0]);
+              break;
+            }
+          } catch {
+            // Ignore unrelated logs.
           }
-        } catch {
-          // Ignore unrelated logs.
         }
       }
+      log.info(`[ReportAgent] Marketplace listing: #${listingId}`);
+    } catch (err) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      log.warn(`[ReportAgent] Marketplace listing failed: ${errMessage}`);
     }
-    log.info(`[ReportAgent] Marketplace listing: #${listingId}`);
-  } catch (err) {
-    log.warn(`[ReportAgent] Marketplace listing failed: ${err}`);
+  } else {
+    log.warn(`[ReportAgent] Skipping marketplace listing for job ${jobId}: seller is not active`);
   }
 
   // Publish REPORT_METADATA for dashboard

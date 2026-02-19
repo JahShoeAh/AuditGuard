@@ -1,30 +1,37 @@
+import { mkdirSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import winston from "winston";
 import type { AgentRole } from "./types.js";
 
-const AGENT_COLORS: Record<string, string> = {
-  scanner: "\x1b[36m",        // cyan
-  static_analysis: "\x1b[32m", // green
-  fuzzer: "\x1b[33m",          // yellow
-  llm_contextual: "\x1b[35m",  // magenta
-  dependency: "\x1b[34m",      // blue
-  report: "\x1b[37m",          // white
-  alert: "\x1b[31m",           // red
-};
-const RESET = "\x1b[0m";
+const AGENTS_ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const DEFAULT_LOG_DIR = resolve(AGENTS_ROOT_DIR, "logs");
+
+function resolveLogDirectory(): string {
+  const configuredDir = process.env.AGENT_LOG_DIR?.trim();
+  if (!configuredDir) return DEFAULT_LOG_DIR;
+  return isAbsolute(configuredDir) ? configuredDir : resolve(process.cwd(), configuredDir);
+}
+
+function resolveLogFilePath(role: AgentRole): string {
+  const logDir = resolveLogDirectory();
+  mkdirSync(logDir, { recursive: true });
+  return join(logDir, `${role}.log`);
+}
 
 export function createAgentLogger(agentId: string, role: AgentRole) {
-  const color = AGENT_COLORS[role] || "\x1b[0m";
-  const tag = `[${role.toUpperCase().padEnd(16)}]`;
+  const tag = `[${role.toUpperCase().padEnd(16)}][${agentId}]`;
+  const logFilePath = resolveLogFilePath(role);
 
   return winston.createLogger({
-    level: "info",
+    level: process.env.AGENT_LOG_LEVEL ?? "info",
     format: winston.format.combine(
-      winston.format.timestamp({ format: "HH:mm:ss" }),
+      winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
       winston.format.printf(({ timestamp, level, message }) => {
         const lvl = level.toUpperCase().padEnd(5);
-        return `${timestamp} ${color}${tag}${RESET} ${lvl} ${message}`;
+        return `${timestamp} ${tag} ${lvl} ${String(message)}`;
       })
     ),
-    transports: [new winston.transports.Console()],
+    transports: [new winston.transports.File({ filename: logFilePath })],
   });
 }

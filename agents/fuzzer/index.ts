@@ -275,7 +275,7 @@ async function main() {
       const jobKey = String(jobId);
       const dedupKey = `${jobKey}:${selectionEpoch ?? "0"}`;
       if (startedJobs.has(dedupKey)) {
-        console.log("[Fuzzer-12] Already processing job " + jobKey + ", skipping");
+        log.info(`Already processing job ${jobKey}, skipping`);
         return;
       }
       const isWinner = Array.isArray(winners) && winners.some((w: any) => {
@@ -290,7 +290,7 @@ async function main() {
         return;
       }
 
-      console.log(`[Fuzzer-12] Won job ${jobKey} via fallback notification`);
+      log.info(`Won job ${jobKey} via fallback notification`);
       startedJobs.add(dedupKey);
       updatePricingAfterOutcome(true);
       pendingJobs.delete(jobKey);

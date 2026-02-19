@@ -68,6 +68,11 @@ export class EventListenerService {
         .filter(Boolean)
     );
     this.seenTestDiscoveries = new Set();
+    this.hcsHistorySkipped = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
+    };
 
     // HCS state — last seen sequence number per topic
     this.lastSeq = {
@@ -154,6 +159,15 @@ export class EventListenerService {
 
   async _pollHCSTopic(topicId, topicKey) {
     try {
+      if (this.onlyTestDiscoveries && !this.hcsHistorySkipped[topicKey]) {
+        const history = await this.fetchHCSMessages(topicId, 0);
+        if (history.length > 0) {
+          this.lastSeq[topicKey] = history[history.length - 1].sequenceNumber;
+        }
+        this.hcsHistorySkipped[topicKey] = true;
+        return;
+      }
+
       const messages = await this.fetchHCSMessages(topicId, this.lastSeq[topicKey]);
       if (messages.length === 0) return;
 
@@ -281,6 +295,15 @@ export class EventListenerService {
         });
         console.log(`[EventListener] REPORT_METADATA for job ${jobId}, CID: ${payload.cid}`);
       } else if (parsedData.type === 'JOB_CREATED') {
+        const contractAddress = String(payload.contractAddress ?? '').toLowerCase();
+        if (
+          this.onlyTestDiscoveries &&
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          return;
+        }
+
         const jobId = String(payload.jobId ?? sequenceNumber);
         this.store.setJob(jobId, {
           jobId,
@@ -332,8 +355,10 @@ export class EventListenerService {
       const currentBlock = await this.provider.getBlockNumber();
 
       if (this.lastProcessedBlock === null) {
-        // Catch the last ~100 blocks of history on first run
-        this.lastProcessedBlock = Math.max(0, currentBlock - 100);
+        // In test mode, skip historical backfill to avoid stale jobs on page load.
+        this.lastProcessedBlock = this.onlyTestDiscoveries
+          ? currentBlock
+          : Math.max(0, currentBlock - 100);
       }
 
       if (currentBlock <= this.lastProcessedBlock) return; // no new blocks
@@ -407,6 +432,15 @@ export class EventListenerService {
 
       for (const ev of jobPosted) {
         const a = ev.args;
+        const contractAddress = String(a.contractAddress ?? '').toLowerCase();
+        if (
+          this.onlyTestDiscoveries &&
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          continue;
+        }
+
         this.store.setJob(a.jobId.toString(), {
           jobId: a.jobId.toString(),
           contractAddress: a.contractAddress,
