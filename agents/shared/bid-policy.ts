@@ -105,9 +105,34 @@ export function normalizeBidFailureReasonCode(error: unknown): string {
   if (message.includes("job does not exist")) return "job_not_found";
   if (message.includes("insufficient funds")) return "insufficient_funds";
   if (message.includes("nonce")) return "nonce_conflict";
+  if (message.includes("server response 5")) return "network_error";
+  if (message.includes("bad gateway")) return "network_error";
+  if (message.includes("gateway")) return "network_error";
   if (message.includes("network")) return "network_error";
   if (message.includes("timeout")) return "network_timeout";
   if (message.includes("execution reverted")) return "contract_revert";
 
   return "unknown_error";
+}
+
+export function isRetriableBidFailure(error: unknown): boolean {
+  const message = String(error ?? "").toLowerCase();
+  const reasonCode = normalizeBidFailureReasonCode(error);
+
+  if (reasonCode === "network_error" || reasonCode === "network_timeout" || reasonCode === "nonce_conflict") {
+    return true;
+  }
+
+  if (message.includes("502 bad gateway")) return true;
+  if (message.includes("503")) return true;
+  if (message.includes("504")) return true;
+  if (message.includes("server response 5")) return true;
+  if (message.includes("temporarily unavailable")) return true;
+  if (message.includes("fetch failed")) return true;
+  if (message.includes("enotfound")) return true;
+  if (message.includes("econnreset")) return true;
+  if (message.includes("etimedout")) return true;
+  if (message.includes("replacement fee too low")) return true;
+
+  return false;
 }

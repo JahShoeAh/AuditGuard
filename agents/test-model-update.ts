@@ -1,15 +1,21 @@
 import { infer, probeProvider } from "./llm-contextual/zg-client.js";
 import { CONFIG } from "./shared/config.js";
+import {
+  ensureHttpReachableOrSkip,
+  ensureToggleOrSkip,
+  getEnvOrSkip,
+} from "./scripts/live-preflight.js";
 
 function requestedModel(): string {
   return process.env.ZG_MODEL ?? (CONFIG as any).zgInference?.model ?? "qwen-2.5-7b-instruct";
 }
 
 async function main(): Promise<void> {
-  const providerAddress = process.env.ZG_PROVIDER_ADDRESS;
-  if (!providerAddress) {
-    throw new Error("Set ZG_PROVIDER_ADDRESS before running model update test");
-  }
+  ensureToggleOrSkip("RUN_LIVE_ZG_TESTS", "0g live tests");
+  const rpcUrl = getEnvOrSkip("ZG_RPC_URL");
+  getEnvOrSkip("ZG_PRIVATE_KEY");
+  const providerAddress = getEnvOrSkip("ZG_PROVIDER_ADDRESS");
+  await ensureHttpReachableOrSkip(rpcUrl, "0g RPC");
 
   console.log("Probing provider...");
   const report = await probeProvider(providerAddress);

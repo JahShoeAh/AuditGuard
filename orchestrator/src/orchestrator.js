@@ -157,6 +157,22 @@ export class OrchestratorAgent {
     return donors;
   }
 
+  isNonceTooLowError(message) {
+    return /nonce too low/i.test(String(message ?? ""));
+  }
+
+  isInsufficientFundsError(message) {
+    return /(insufficient funds|insufficient_payer_balance|orchestrator_hbar_low)/i.test(
+      String(message ?? "")
+    );
+  }
+
+  isTransientRpcError(message) {
+    return /(502 bad gateway|server response 5\d\d|timeout|timed out|unavailable|fetch failed|busy|temporar)/i.test(
+      String(message ?? "")
+    );
+  }
+
   async ensureOrchestratorOperationalHbar(reason = "runtime", { force = false } = {}) {
     const provider = this.contracts.wallet?.provider;
     if (!provider || !this.orchestratorAddress) return;
@@ -353,14 +369,14 @@ export class OrchestratorAgent {
     // Open auction on-chain (async — bids can arrive while this runs)
     try {
       await this.withCreateAuditJobLock(async () => {
-        await this.ensureOrchestratorOperationalHbar("create_audit_job");
+        await this.ensureOrchestratorOperationalHbar("create_audit_job", { force: true });
         const auctionDurationSec = CONFIG.timeouts.winnerWaitMs / 1000;
         const budgetWei = parseUnits(String(budgetGuard), CONFIG.guardToken.decimals);
         const expectedJobIdRaw = await this.contracts.auction.nextJobId?.();
         const expectedOnChainJobId = expectedJobIdRaw != null ? Number(expectedJobIdRaw) : null;
 
         let tx = null;
-        const maxAttempts = 2;
+        const maxAttempts = 3;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
             tx = await this.contracts.auction.createAuditJob(
@@ -375,12 +391,32 @@ export class OrchestratorAgent {
             break;
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            const retriableNonceError = /nonce too low/i.test(message);
-            if (!retriableNonceError || attempt === maxAttempts) throw err;
-            this.log.warn(
-              `createAuditJob nonce race (attempt ${attempt}/${maxAttempts}) — retrying once`
-            );
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            const nonceError = this.isNonceTooLowError(message);
+            const lowFundsError = this.isInsufficientFundsError(message);
+            const transientRpc = this.isTransientRpcError(message);
+            const retriable = nonceError || lowFundsError || transientRpc;
+
+            if (!retriable || attempt === maxAttempts) throw err;
+
+            if (lowFundsError) {
+              this.log.warn(
+                `createAuditJob low-funds precheck (attempt ${attempt}/${maxAttempts}) — forcing HBAR top-up and retry`
+              );
+              try {
+                await this.ensureOrchestratorOperationalHbar("create_audit_job_retry", { force: true });
+              } catch (topupErr) {
+                this.log.warn(`createAuditJob top-up retry failed: ${topupErr instanceof Error ? topupErr.message : String(topupErr)}`);
+              }
+            } else if (nonceError) {
+              this.log.warn(
+                `createAuditJob nonce race (attempt ${attempt}/${maxAttempts}) — retrying`
+              );
+            } else {
+              this.log.warn(
+                `createAuditJob transient RPC failure (attempt ${attempt}/${maxAttempts}) — retrying`
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
           }
         }
 
@@ -693,7 +729,7 @@ export class OrchestratorAgent {
     }
 
     try {
-      await this.ensureOrchestratorOperationalHbar("data_marketplace_auto_buy");
+      await this.ensureOrchestratorOperationalHbar("data_marketplace_auto_buy", { force: true });
       const listingKey = this.toChainUint(listingId, "listingId");
       await this.contracts.dataMarketplace.purchaseData(listingKey);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
@@ -730,7 +766,7 @@ export class OrchestratorAgent {
     const paymentWei = parseUnits(payGuard.toString(), CONFIG.guardToken.decimals);
 
     try {
-      await this.ensureOrchestratorOperationalHbar("create_sub_auction");
+      await this.ensureOrchestratorOperationalHbar("create_sub_auction", { force: true });
       const parentId = this.toChainUint(parentJobId, "parentJobId");
       await this.contracts.subAuction.createSubAuction(
         parentId,
@@ -769,7 +805,7 @@ export class OrchestratorAgent {
   async handleSubResult(msg) {
     const { subAuctionId } = msg.payload || {};
     try {
-      await this.ensureOrchestratorOperationalHbar("accept_sub_result");
+      await this.ensureOrchestratorOperationalHbar("accept_sub_result", { force: true });
       const subId = this.toChainUint(subAuctionId, "subAuctionId");
       await this.contracts.subAuction.acceptResult(subId);
       this.log.info(`Accepted sub-auction result ${subAuctionId}`);
@@ -884,7 +920,7 @@ export class OrchestratorAgent {
     }
 
     try {
-      await this.ensureOrchestratorOperationalHbar("settle_job");
+      await this.ensureOrchestratorOperationalHbar("settle_job", { force: true });
       await this.contracts.paymentSettlement.settleJob(
         this.toChainJobId(jobId),
         payments,
@@ -1024,20 +1060,11 @@ export class OrchestratorAgent {
     job.winners = winnerAddresses;
 
     // On-chain winner selection only (no HCS fallback path).
-    try {
-      const winningBidIndices = selectedWinners
-        .map((w) => w.bidIndex)
-        .filter((idx) => Number.isInteger(idx));
-      if (!winningBidIndices.length) {
-        throw new Error("No valid winning bid indices");
-      }
-      await this.ensureOrchestratorOperationalHbar("select_winners");
-      const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
-      this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
-      job.winnerSource = "on-chain";
-      return;
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+    const winningBidIndices = selectedWinners
+      .map((w) => w.bidIndex)
+      .filter((idx) => Number.isInteger(idx));
+    if (!winningBidIndices.length) {
+      const error = "No valid winning bid indices";
       this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${error}`);
       job.failed = true;
       job.failureReason = error;
@@ -1067,6 +1094,81 @@ export class OrchestratorAgent {
       });
       return;
     }
+
+    let lastError = "";
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
+        const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
+        this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+        job.winnerSource = "on-chain";
+        return;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        lastError = error;
+        const nonceError = this.isNonceTooLowError(error);
+        const lowFundsError = this.isInsufficientFundsError(error);
+        const transientRpc = this.isTransientRpcError(error);
+        const retriable = nonceError || lowFundsError || transientRpc;
+        if (!retriable || attempt === maxAttempts) break;
+
+        if (lowFundsError) {
+          this.log.warn(
+            `[Orchestrator] selectWinners low-funds precheck for job ${jobId} ` +
+            `(attempt ${attempt}/${maxAttempts}) — forcing HBAR top-up and retry`
+          );
+          try {
+            await this.ensureOrchestratorOperationalHbar("select_winners_retry", { force: true });
+          } catch (topupErr) {
+            this.log.warn(
+              `[Orchestrator] selectWinners top-up retry failed for job ${jobId}: ` +
+              `${topupErr instanceof Error ? topupErr.message : String(topupErr)}`
+            );
+          }
+        } else if (nonceError) {
+          this.log.warn(
+            `[Orchestrator] selectWinners nonce race for job ${jobId} ` +
+            `(attempt ${attempt}/${maxAttempts}) — retrying`
+          );
+        } else {
+          this.log.warn(
+            `[Orchestrator] selectWinners transient RPC failure for job ${jobId} ` +
+            `(attempt ${attempt}/${maxAttempts}) — retrying`
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+      }
+    }
+
+    this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${lastError}`);
+    job.failed = true;
+    job.failureReason = lastError;
+    this.setJobByKey(key, job);
+    await this.hcs.publishAuditLog({
+      type: "ONCHAIN_TX_FAILED",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        phase: "select_winners",
+        strictLive: this.strictLive,
+        contractAddress: job.contractAddress,
+        jobId,
+        error: lastError,
+      },
+    });
+    await this.hcs.publishAuditLog({
+      type: "JOB_FAILED",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId,
+        contractAddress: job.contractAddress,
+        phase: "select_winners",
+        error: lastError,
+      },
+    });
+    return;
   }
 
   subscribeContractEvents() {

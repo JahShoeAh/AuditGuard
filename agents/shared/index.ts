@@ -9,6 +9,7 @@ export {
 export type { PaymentItem, ListingDetails, AuctionDetails } from "./contract-client.js";
 export {
   computeLiveBid,
+  isRetriableBidFailure,
   normalizeBidFailureReasonCode,
 } from "./bid-policy.js";
 export type {

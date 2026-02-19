@@ -1,12 +1,9 @@
 import { ethers } from "ethers";
-
-function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`Missing required env var: ${name}`);
-  }
-  return value;
-}
+import {
+  ensureHttpReachableOrSkip,
+  ensureToggleOrSkip,
+  getEnvOrSkip,
+} from "./scripts/live-preflight.js";
 
 function normalizePrivateKey(raw: string): string {
   return raw.startsWith("0x") ? raw : `0x${raw}`;
@@ -19,9 +16,11 @@ function errorMessage(err: unknown): string {
 async function main(): Promise<void> {
   console.log("=== 0g Broker Diagnostics ===\n");
 
-  const privateKey = requiredEnv("ZG_PRIVATE_KEY");
-  const rpcUrl = requiredEnv("ZG_RPC_URL");
-  const providerAddress = requiredEnv("ZG_PROVIDER_ADDRESS");
+  ensureToggleOrSkip("RUN_LIVE_ZG_TESTS", "0g live tests");
+  const privateKey = getEnvOrSkip("ZG_PRIVATE_KEY");
+  const rpcUrl = getEnvOrSkip("ZG_RPC_URL");
+  const providerAddress = getEnvOrSkip("ZG_PROVIDER_ADDRESS");
+  await ensureHttpReachableOrSkip(rpcUrl, "0g RPC");
 
   console.log("1. Environment Check:");
   console.log("   - ZG_PRIVATE_KEY:", `${privateKey.slice(0, 10)}...`);

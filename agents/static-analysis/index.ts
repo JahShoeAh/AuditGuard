@@ -4,6 +4,7 @@ import {
   ListingCategory,
   CONFIG,
   computeLiveBid,
+  isRetriableBidFailure,
   normalizeBidFailureReasonCode,
   createAgentLogger,
   createAgentWallet,
@@ -419,15 +420,37 @@ async function main() {
         log.info(`Waiting ${jitter}ms jitter before bidding...`);
         await sleep(jitter);
 
-        const tx = await contracts.submitBid(
-          jobId,
-          finalBid.amountWei,
-          finalBid.collateralWei,
-          finalBid.estimatedTimeSec,
-          SPECIALIZATIONS[0]
-        );
-        log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
-        submittedOnChain = true;
+        const maxAttempts = 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            const tx = await contracts.submitBid(
+              jobId,
+              finalBid.amountWei,
+              finalBid.collateralWei,
+              finalBid.estimatedTimeSec,
+              SPECIALIZATIONS[0]
+            );
+            log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
+            submittedOnChain = true;
+            return;
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            const reasonCode = normalizeBidFailureReasonCode(error);
+            if (reasonCode === "duplicate_bid") {
+              alreadyBidOnChain = true;
+              return;
+            }
+            const retriable = isRetriableBidFailure(error);
+            if (!retriable || attempt === maxAttempts) {
+              throw err;
+            }
+            log.warn(
+              `Transient bid submit failure for job #${jobId} ` +
+              `(attempt ${attempt}/${maxAttempts}): ${error}`
+            );
+            await sleep(300 * attempt);
+          }
+        }
       });
 
       if (alreadyBidOnChain) {

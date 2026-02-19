@@ -221,7 +221,7 @@ async function testStrictFailFastOnCreateFailure() {
   assert.ok(auditLogMessages.some((m) => m.type === "JOB_FAILED"), "job failure should be explicit");
 }
 
-async function testFallbackWinners() {
+async function testNoBidJobFailure() {
   const log = mockLog();
   const roster = new Roster(log);
   roster.upsert({
@@ -255,8 +255,10 @@ async function testFallbackWinners() {
   }
 
   assert.ok(
-    auditLogMessages.some((m) => m.type === MessageType.WINNERS_SELECTED_FALLBACK),
-    "fallback winners should be published"
+    auditLogMessages.some(
+      (m) => m.type === "JOB_FAILED" && m?.payload?.phase === "select_winners"
+    ),
+    "no-bid jobs should be marked as failed in no-fallback mode"
   );
 }
 
@@ -439,7 +441,7 @@ async function run() {
     ["invite summary telemetry", testInviteSummaryTelemetry],
     ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],
     ["strict fail-fast on create failure", testStrictFailFastOnCreateFailure],
-    ["fallback winners", testFallbackWinners],
+    ["no-bid job failure", testNoBidJobFailure],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],

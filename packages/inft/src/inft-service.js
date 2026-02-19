@@ -48,14 +48,28 @@ function parsePrivateKey(rawKey, keyTypeHint = "") {
 class INFTService {
   /**
    * @param {object} options
-   * @param {string} options.operatorId   - Hedera account ID (e.g., "0.0.12345")
-   * @param {string} options.operatorKey  - Private key (hex or DER)
+   * @param {string} [options.operatorId] - Hedera account ID (e.g., "0.0.12345")
+   * @param {string} [options.operatorKey]- Private key (hex or DER)
    * @param {string} [options.keyType]    - "ECDSA" | "ED25519" | auto
+   * @param {string} [options.payerId]    - Backward-compatible alias for operatorId
+   * @param {string} [options.payerKey]   - Backward-compatible alias for operatorKey
+   * @param {string} [options.payerKeyType]- Backward-compatible alias for keyType
    * @param {StorageAdapter} [options.storage] - Storage adapter (created if not provided)
    */
-  constructor({ operatorId, operatorKey, keyType, storage }) {
-    this.operatorId = AccountId.fromString(operatorId);
-    this.operatorKey = parsePrivateKey(operatorKey, keyType);
+  constructor({ operatorId, operatorKey, keyType, payerId, payerKey, payerKeyType, storage }) {
+    const resolvedOperatorId = operatorId || payerId;
+    const resolvedOperatorKey = operatorKey || payerKey;
+    const resolvedKeyType = keyType || payerKeyType;
+
+    if (!resolvedOperatorId || !resolvedOperatorKey) {
+      throw new Error(
+        "INFTService requires Hedera credentials. Provide operatorId/operatorKey " +
+          "or payerId/payerKey."
+      );
+    }
+
+    this.operatorId = AccountId.fromString(resolvedOperatorId);
+    this.operatorKey = parsePrivateKey(resolvedOperatorKey, resolvedKeyType);
     this.client = Client.forTestnet().setOperator(this.operatorId, this.operatorKey);
     this.client.setDefaultMaxTransactionFee(new Hbar(5));
     this.config = readConfig();

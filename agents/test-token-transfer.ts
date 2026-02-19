@@ -1,15 +1,26 @@
 import { ethers } from "ethers";
 import { ContractClient } from "./shared/contract-client.js";
+import {
+  ensureHttpReachableOrSkip,
+  ensureToggleOrSkip,
+  skipOrFail,
+} from "./scripts/live-preflight.js";
 
 function resolvePrivateKey(): string {
   const pk = process.env.HEDERA_PRIVATE_KEY ?? process.env.OPERATOR_PRIVATE_KEY;
   if (!pk) {
-    throw new Error("Set HEDERA_PRIVATE_KEY or OPERATOR_PRIVATE_KEY in env");
+    skipOrFail("missing HEDERA_PRIVATE_KEY/OPERATOR_PRIVATE_KEY");
   }
   return pk;
 }
 
 async function main(): Promise<void> {
+  ensureToggleOrSkip("RUN_LIVE_HEDERA_TESTS", "Hedera live tests");
+  await ensureHttpReachableOrSkip(
+    process.env.HEDERA_RPC_URL ?? "https://testnet.hashio.io/api",
+    "Hedera JSON-RPC"
+  );
+
   const client = ContractClient.fromPrivateKey(resolvePrivateKey());
   const myAddress = client.getAddress();
 

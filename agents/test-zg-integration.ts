@@ -1,11 +1,22 @@
 import { ZGClientError, infer, initZgClient } from "./llm-contextual/zg-client.js";
 import { CONFIG } from "./shared/config.js";
+import {
+  ensureHttpReachableOrSkip,
+  ensureToggleOrSkip,
+  getEnvOrSkip,
+} from "./scripts/live-preflight.js";
 
 function modelName(): string {
   return process.env.ZG_MODEL ?? (CONFIG as any).zgInference?.model ?? "qwen-2.5-7b-instruct";
 }
 
 async function main(): Promise<void> {
+  ensureToggleOrSkip("RUN_LIVE_ZG_TESTS", "0g live tests");
+  const rpcUrl = getEnvOrSkip("ZG_RPC_URL");
+  getEnvOrSkip("ZG_PRIVATE_KEY");
+  getEnvOrSkip("ZG_PROVIDER_ADDRESS");
+  await ensureHttpReachableOrSkip(rpcUrl, "0g RPC");
+
   console.log("Initializing 0g client...");
   await initZgClient();
   console.log("Client initialized");

@@ -1,6 +1,16 @@
 import { ipfsGatewayUrl, uploadToIPFS } from "./shared/ipfs-client.js";
+import {
+  ensureHttpReachableOrSkip,
+  ensureToggleOrSkip,
+} from "./scripts/live-preflight.js";
 
 async function main(): Promise<void> {
+  ensureToggleOrSkip("RUN_LIVE_IPFS_TESTS", "IPFS live tests");
+  const ipfsApi = process.env.IPFS_API_URL ?? "http://127.0.0.1:5001";
+  const ipfsGateway = process.env.IPFS_GATEWAY_URL ?? "http://127.0.0.1:8080";
+  await ensureHttpReachableOrSkip(ipfsApi, "IPFS API");
+  await ensureHttpReachableOrSkip(ipfsGateway, "IPFS gateway");
+
   const testContent = `
 # AuditGuard Test Report
 
