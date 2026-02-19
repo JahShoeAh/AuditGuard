@@ -18,6 +18,7 @@ import SettlementTimeline from './components/SettlementTimeline';
 import TreasuryEconomics from './components/TreasuryEconomics';
 import StoryMode from './components/StoryMode';
 import CompetitionHeatmap from './components/CompetitionHeatmap';
+import AuditSchedules from './components/AuditSchedules';
 
 function ErrorBanner({ message }) {
   return (
@@ -42,6 +43,7 @@ const TABS = [
   { key: 'agents', label: 'AGENTS', icon: '👤' },
   { key: 'contracts', label: 'CONTRACTS', icon: '🛡' },
   { key: 'analytics', label: 'ANALYTICS', icon: '📊' },
+  { key: 'schedules', label: 'SCHEDULES', icon: '⏱' },
 ];
 
 function TabBar({ activeTab, onSelect }) {
@@ -141,6 +143,14 @@ function ContractsTab() {
         <ContractHealth />
       </div>
       <AuditJobTracker />
+    </div>
+  );
+}
+
+function SchedulesTab() {
+  return (
+    <div className="h-full flex flex-col min-h-0 overflow-hidden">
+      <AuditSchedules />
     </div>
   );
 }
@@ -268,6 +278,11 @@ export default function Dashboard() {
           {activeTab === 'analytics' && (
             <TabContent key="analytics">
               <AnalyticsTab />
+            </TabContent>
+          )}
+          {activeTab === 'schedules' && (
+            <TabContent key="schedules">
+              <SchedulesTab />
             </TabContent>
           )}
         </AnimatePresence>

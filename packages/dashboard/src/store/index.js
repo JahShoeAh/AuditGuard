@@ -215,6 +215,12 @@ const useStore = create((set) => ({
       },
     })),
 
+  // ── HSS Schedule events (from AuditScheduler contract) ──────
+  // Events: AuditScheduled, AuditTriggered, AuditScheduleCancelled, ScheduleFailed
+  hssEvents: [],
+  addHssEvent: (ev) =>
+    set((s) => ({ hssEvents: [ev, ...s.hssEvents].slice(0, 500) })),
+
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,

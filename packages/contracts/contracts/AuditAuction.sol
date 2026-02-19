@@ -83,6 +83,10 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
     /// @notice Platform treasury address for future fee settlement.
     address public treasury;
 
+    /// @notice AuditScheduler contract — receives setAuditScheduler() registration.
+    /// @dev Orchestrator uses this to route onRedeployDetected() calls.
+    address public auditScheduler;
+
     /// @notice Platform fee percent retained by orchestrator flow (5% default).
     uint256 public platformFeePercent = 5;
 
@@ -156,6 +160,9 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
     
     /// @notice Emitted when auction contract is successfully associated to GUARD on HTS.
     event GuardTokenAssociated(address indexed token);
+
+    /// @notice Emitted when the AuditScheduler contract is registered.
+    event AuditSchedulerSet(address indexed auditScheduler);
 
     /// @dev Restricts execution to the configured orchestrator.
     modifier onlyOrchestrator() {
@@ -629,6 +636,16 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
         require(_agentRegistry != address(0), "AuditAuction: registry is zero");
         require(agentRegistry == address(0), "AuditAuction: registry already set");
         agentRegistry = _agentRegistry;
+    }
+
+    /// @notice Sets the AuditScheduler contract address.
+    /// @dev Called by owner after AuditScheduler is deployed. Used by orchestrator to
+    ///      look up the scheduler and call onRedeployDetected when scanner detects new bytecode.
+    /// @param _auditScheduler AuditScheduler contract address.
+    function setAuditScheduler(address _auditScheduler) external onlyOwner {
+        require(_auditScheduler != address(0), "AuditAuction: scheduler is zero");
+        auditScheduler = _auditScheduler;
+        emit AuditSchedulerSet(_auditScheduler);
     }
 
     /// @notice Updates orchestrator address used for privileged lifecycle actions.

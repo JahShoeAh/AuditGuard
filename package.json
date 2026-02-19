@@ -26,7 +26,8 @@
     "inft:listen": "npm --prefix packages/inft run listen",
     "orchestrator": "node orchestrator/src/index.js",
     "orchestrator:test": "npm --prefix orchestrator test",
-    "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test"
+    "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",
+    "deploy:audit-scheduler": "npx hardhat run scripts/deploy-audit-scheduler.js --network hedera_testnet"
   },
   "repository": {
     "type": "git",
