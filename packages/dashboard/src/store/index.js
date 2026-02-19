@@ -15,7 +15,7 @@ const useStore = create((set) => ({
     set({ isConnected: false, connectionError: error }),
 
   // Mock events toggle
-  useMockEvents: true,
+  useMockEvents: false,
   toggleMockEvents: () => set((s) => ({ useMockEvents: !s.useMockEvents })),
 
   // ── Contract discoveries (from HCS Discovery topic) ──────

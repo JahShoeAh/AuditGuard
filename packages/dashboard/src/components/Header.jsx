@@ -138,6 +138,14 @@ export default function Header() {
       <div className="flex items-center gap-2">
         <WalletGate>
           <Link
+            to="/dashboard/reports"
+            className="rounded border border-gray-600 bg-gray-800/60 px-3 py-1.5 text-[10px] font-bold font-mono uppercase tracking-wider text-gray-300 hover:bg-gray-700 hover:border-gray-500"
+          >
+            Reports
+          </Link>
+        </WalletGate>
+        <WalletGate>
+          <Link
             to="/dashboard/agents/register"
             className="rounded border border-cyan-500/50 bg-cyan-500/10 px-3 py-1.5 text-[10px] font-bold font-mono uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/20"
           >

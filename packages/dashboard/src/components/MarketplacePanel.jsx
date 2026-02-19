@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import useStore from '../store';
 import { useMarketplaceData } from '../hooks/useMarketplaceData';
 import MarketplaceListingRow from './MarketplaceListingRow';
@@ -132,11 +133,19 @@ export default function MarketplacePanel() {
               ({listings.length} active)
             </span>
           </div>
-          {missedCount > 0 && (
-            <span className="text-[9px] font-mono" style={{ color: 'var(--accent-amber)' }}>
-              +{missedCount} missed
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {missedCount > 0 && (
+              <span className="text-[9px] font-mono" style={{ color: 'var(--accent-amber)' }}>
+                +{missedCount} missed
+              </span>
+            )}
+            <Link
+              to="/dashboard/reports"
+              className="text-[9px] font-mono text-cyan-500 hover:text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded hover:border-cyan-500/60 transition-colors whitespace-nowrap"
+            >
+              Buy reports →
+            </Link>
+          </div>
         </div>
       </div>
 

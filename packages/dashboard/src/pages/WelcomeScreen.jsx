@@ -278,7 +278,13 @@ export default function WelcomeScreen() {
               icon="🛡"
               title="Buy Audit Reports"
               description="Purchase completed security reports for your smart contracts."
-              onConnect={() => openWalletModal({ action: 'buy audit reports' })}
+              onConnect={() => {
+                if (connected) {
+                  navigate('/dashboard/reports');
+                } else {
+                  openWalletModal({ action: 'buy audit reports' });
+                }
+              }}
             />
           </div>
         </section>
