@@ -12,7 +12,9 @@ import { fileURLToPath } from "url";
 import { readFileSync, existsSync } from "fs";
 
 const __configDir = dirname(fileURLToPath(import.meta.url));
-dotenvConfig({ path: join(__configDir, "..", ".env") });
+// Load root .env first, then optional agents/.env overrides.
+dotenvConfig({ path: join(__configDir, "..", "..", ".env") });
+dotenvConfig({ path: join(__configDir, "..", ".env"), override: true });
 
 // ─── Load SDK config.json ──────────────────────────────────────────────────
 
@@ -104,13 +106,19 @@ export const SDK_CONFIG_FILE = SDK_CONFIG_PATH;
 // Per-agent env vars — fill in .env
 export function getAgentEnv(agentName: string) {
   const prefix = agentName.toUpperCase();
-  const accountId = process.env[`${prefix}_ACCOUNT_ID`] || process.env.OPERATOR_ACCOUNT_ID;
-  const privateKey = process.env[`${prefix}_PRIVATE_KEY`] || process.env.OPERATOR_PRIVATE_KEY;
+  const accountId =
+    process.env[`${prefix}_ACCOUNT_ID`] ||
+    process.env.OPERATOR_ACCOUNT_ID ||
+    process.env.HEDERA_ACCOUNT_ID;
+  const privateKey =
+    process.env[`${prefix}_PRIVATE_KEY`] ||
+    process.env.OPERATOR_PRIVATE_KEY ||
+    process.env.HEDERA_PRIVATE_KEY;
 
   if (!accountId || !privateKey) {
     throw new Error(
       `Missing credentials for agent "${agentName}". ` +
-      `Set ${prefix}_ACCOUNT_ID/${prefix}_PRIVATE_KEY or OPERATOR_ACCOUNT_ID/OPERATOR_PRIVATE_KEY in .env`
+      `Set ${prefix}_ACCOUNT_ID/${prefix}_PRIVATE_KEY, OPERATOR_ACCOUNT_ID/OPERATOR_PRIVATE_KEY, or HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY in .env`
     );
   }
 

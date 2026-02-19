@@ -13,10 +13,14 @@
   },
   "scripts": {
     "build": "npm run --workspaces --if-present build",
+    "dev:all": "bash -lc 'npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & wait'",
+    "start:all": "npm run dev:all",
     "compile": "npx hardhat compile --config packages/contracts/hardhat.config.js",
     "test": "npx hardhat test --config packages/contracts/hardhat.config.js",
+    "test:all": "npm run test && npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator run test:e2e && npm --prefix agents test && npm --prefix packages/dashboard test",
     "deploy:token": "node scripts/deploy-guard-token.js",
     "deploy:contracts": "node scripts/deploy-all.js",
+    "deploy:timelock": "node scripts/deploy-timelock.js",
     "setup:hcs": "node scripts/setup-hcs-topics.js",
     "scanner": "npm --prefix agents run scanner",
     "agents": "npm --prefix agents run all",
@@ -24,7 +28,9 @@
     "inft:create-collections": "npm --prefix packages/inft run create-collections",
     "inft:listen": "npm --prefix packages/inft run listen",
     "orchestrator": "node orchestrator/src/index.js",
-    "orchestrator:test": "npm --prefix orchestrator test"
+    "orchestrator:test": "npm --prefix orchestrator test",
+    "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",
+    "deploy:audit-scheduler": "npx hardhat run scripts/deploy-audit-scheduler.js --network hedera_testnet"
   },
   "repository": {
     "type": "git",

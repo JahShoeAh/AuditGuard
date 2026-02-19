@@ -421,7 +421,10 @@ function runDay2Cycle(getState, cycleIndex) {
       parentJobId: jobId,
       seller: STATIC47_ADDR,
       sellerName: AGENTS.static47.name,
+      sellerReputation: AGENTS.static47.reputation,
+      sellerTier: 1, // SPECIALIZED
       title: `Static Analysis Report — ${contractLabel} v2.1`,
+      description: `Comprehensive static analysis of ${contractLabel} v2.1. Covers integer overflows, access control, and common DeFi vulnerability patterns.`,
       category: 0,          // SCAN_REPORT
       categoryStr: 'SCAN_REPORT',
       listingType: 0,        // ONE_TIME
@@ -429,6 +432,9 @@ function runDay2Cycle(getState, cycleIndex) {
       price,
       priceFormatted: parseGuardAmount(price),
       contentHash: randHex(32),
+      maxBuyers: 10,
+      buyerCount: 1,
+      listedAt: Math.floor(Date.now() / 1000),
       blockNumber: Math.floor(Math.random() * 900_000) + 100_000,
       active: true,
       _tx: mkTx(),
@@ -446,6 +452,150 @@ function runDay2Cycle(getState, cycleIndex) {
       _tx: listing._tx,
     });
   }, 38_000);
+
+  // ── Phase 7a-extra: Additional human-facing listings ─────
+  // LLM3 publishes an AUDIT_FINDING report (t=38.5s)
+  schedule(() => {
+    const s = getState();
+    const price2 = 120_000_000n; // 1.20 GUARD
+    const listingId2 = `${listingId}-af`;
+    const listing2 = {
+      listingId: listingId2,
+      parentJobId: jobId,
+      seller: LLM3_ADDR,
+      sellerName: AGENTS.llm3.name,
+      sellerReputation: AGENTS.llm3.reputation,
+      sellerTier: 2, // PREMIUM
+      title: `Audit Finding: Reentrancy Vector — ${contractLabel} v2.1`,
+      description: `Critical reentrancy vulnerability identified in the ${contractLabel} withdraw function. Includes full exploit PoC and recommended fix.`,
+      category: 6,          // AUDIT_FINDING
+      categoryStr: 'AUDIT_FINDING',
+      listingType: 0,        // ONE_TIME
+      listingTypeStr: 'ONE_TIME',
+      price: price2,
+      priceFormatted: parseGuardAmount(price2),
+      contentHash: randHex(32),
+      maxBuyers: 5,
+      buyerCount: 1,
+      listedAt: Math.floor(Date.now() / 1000),
+      active: true,
+      _tx: mkTx(),
+    };
+    s.addDataListing(listing2);
+    // Seed a mock purchase + rating for it
+    s.addDataPurchase({
+      listingId: listingId2,
+      buyer: FUZZER12_ADDR,
+      buyerName: AGENTS.fuzzer12.name,
+      sellerName: AGENTS.llm3.name,
+      pricePaid: price2,
+      pricePaidFormatted: parseGuardAmount(price2),
+      title: listing2.title,
+      timestamp: Date.now() - 120_000,
+      rating: 5,
+    });
+    s.updateDataPurchaseRating(listingId2, FUZZER12_ADDR, 5);
+  }, 38_500);
+
+  // DEP8 publishes a DEPENDENCY_ANALYSIS report (t=39s)
+  schedule(() => {
+    const s = getState();
+    const price3 = 80_000_000n; // 0.80 GUARD
+    const listingId3 = `${listingId}-dep`;
+    const listing3 = {
+      listingId: listingId3,
+      parentJobId: jobId,
+      seller: DEP8_ADDR,
+      sellerName: AGENTS.dep8.name,
+      sellerReputation: AGENTS.dep8.reputation,
+      sellerTier: 1, // SPECIALIZED
+      title: `Dependency Report — ${contractLabel} Library Audit`,
+      description: `Full transitive dependency analysis for ${contractLabel}. Identified 3 known CVEs in imported libraries. Upgrade paths included.`,
+      category: 1,          // DEPENDENCY_ANALYSIS
+      categoryStr: 'DEPENDENCY_ANALYSIS',
+      listingType: 0,        // ONE_TIME
+      listingTypeStr: 'ONE_TIME',
+      price: price3,
+      priceFormatted: parseGuardAmount(price3),
+      contentHash: randHex(32),
+      maxBuyers: 0, // unlimited
+      buyerCount: 2,
+      listedAt: Math.floor(Date.now() / 1000),
+      active: true,
+      _tx: mkTx(),
+    };
+    s.addDataListing(listing3);
+    // Seed a mock purchase + 4-star rating
+    s.addDataPurchase({
+      listingId: listingId3,
+      buyer: STATIC47_ADDR,
+      buyerName: AGENTS.static47.name,
+      sellerName: AGENTS.dep8.name,
+      pricePaid: price3,
+      pricePaidFormatted: parseGuardAmount(price3),
+      title: listing3.title,
+      timestamp: Date.now() - 60_000,
+      rating: 4,
+    });
+    s.updateDataPurchaseRating(listingId3, STATIC47_ADDR, 4);
+  }, 39_000);
+
+  // LLM3 publishes a weekly SUBSCRIPTION THREAT_INTEL feed (t=39.5s)
+  schedule(() => {
+    const s = getState();
+    const price4 = 200_000_000n; // 2.00 GUARD / week
+    const listingId4 = `${listingId}-sub`;
+    const listing4 = {
+      listingId: listingId4,
+      parentJobId: jobId,
+      seller: LLM3_ADDR,
+      sellerName: AGENTS.llm3.name,
+      sellerReputation: AGENTS.llm3.reputation,
+      sellerTier: 2, // PREMIUM
+      title: `Weekly Vulnerability Update — ${contractLabel} (Subscription)`,
+      description: `Ongoing threat intelligence subscription for ${contractLabel}. Updated every 7 days with new vulnerability patterns, MEV risks, and emerging exploit vectors.`,
+      category: 5,          // THREAT_INTEL
+      categoryStr: 'THREAT_INTEL',
+      listingType: 1,        // SUBSCRIPTION
+      listingTypeStr: 'SUBSCRIPTION',
+      subscriptionPeriod: 604800, // 7 days in seconds
+      price: price4,
+      priceFormatted: parseGuardAmount(price4),
+      contentHash: randHex(32),
+      maxBuyers: 0, // unlimited
+      buyerCount: 3,
+      listedAt: Math.floor(Date.now() / 1000),
+      expiresAt: Math.floor(Date.now() / 1000) + 30 * 86400, // 30 days
+      active: true,
+      _tx: mkTx(),
+    };
+    s.addDataListing(listing4);
+    // Seed two mock purchases with varied ratings: 3.5 avg → add 3 and 4
+    s.addDataPurchase({
+      listingId: listingId4,
+      buyer: FUZZER12_ADDR,
+      buyerName: AGENTS.fuzzer12.name,
+      sellerName: AGENTS.llm3.name,
+      pricePaid: price4,
+      pricePaidFormatted: parseGuardAmount(price4),
+      title: listing4.title,
+      timestamp: Date.now() - 180_000,
+      rating: 3,
+    });
+    s.addDataPurchase({
+      listingId: listingId4,
+      buyer: DEP8_ADDR,
+      buyerName: AGENTS.dep8.name,
+      sellerName: AGENTS.llm3.name,
+      pricePaid: price4,
+      pricePaidFormatted: parseGuardAmount(price4),
+      title: listing4.title,
+      timestamp: Date.now() - 90_000,
+      rating: 4,
+    });
+    s.updateDataPurchaseRating(listingId4, FUZZER12_ADDR, 3);
+    s.updateDataPurchaseRating(listingId4, DEP8_ADDR, 4);
+  }, 39_500);
 
   // ── Phase 6b: Sub-contractor selected (t=40s) ────────────
   schedule(() => {

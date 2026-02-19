@@ -49,6 +49,7 @@ export class OrchestratorAgent {
     this.subscribeAgentComms();
     this.subscribeAuditLog();
     this.subscribeContractEvents();
+    this.subscribeSchedulerEvents();  // HSS audit triggers
     if (this.enablePing) this.startPingLoop();
     this.log.info("Orchestrator started (isolated branch)");
   }
@@ -191,6 +192,26 @@ export class OrchestratorAgent {
 
     const eligible = this.roster.eligibleFor(contractType);
     await this.inviteAgents(jobId, eligible, msg.payload);
+
+    // ── Redeploy detection: notify AuditScheduler if contract is in REDEPLOY mode ──
+    if (this.contracts.auditScheduler?.getSchedule) {
+      try {
+        const sched = await this.contracts.auditScheduler.getSchedule(contractAddress);
+        // TriggerMode 1 = REDEPLOY; only notify if active
+        if (sched?.active && Number(sched.mode) === 1) {
+          const bytecodeHash = msg.payload?.bytecodeHash;
+          const storedHash = sched._bytecodeHash ?? null; // we track this in memory across calls
+          if (bytecodeHash && storedHash && bytecodeHash !== storedHash) {
+            await this.contracts.auditScheduler.onRedeployDetected(contractAddress);
+            this.log.info(`Redeploy detected for ${contractAddress.slice(0, 12)}… — HSS schedule armed`);
+          }
+          // Cache current hash for future comparisons
+          sched._bytecodeHash = bytecodeHash;
+        }
+      } catch (err) {
+        this.log.warn(`AuditScheduler redeploy check failed: ${err.message}`);
+      }
+    }
 
     // Fallback timer if no WinnersSelected event arrives
     setTimeout(() => this.selectWinnersFallback(jobId), CONFIG.timeouts.winnerWaitMs);
@@ -578,6 +599,94 @@ export class OrchestratorAgent {
       this.log.info("Listening for on-chain WinnersSelected events");
     } catch (err) {
       this.log.warn(`Contract event subscription failed (fallback selection only): ${err.message}`);
+    }
+  }
+
+  /**
+   * Subscribe to AuditScheduler.AuditTriggered events.
+   * This is where HSS integration closes the loop:
+   *   1. Vault owner calls AuditScheduler.scheduleAudit()
+   *   2. HSS fires triggerAudit() at the specified interval
+   *   3. AuditScheduler emits AuditTriggered
+   *   4. Orchestrator opens a new AuditAuction job here
+   *   5. Full pipeline (bidding → auditing → reporting) runs autonomously
+   */
+  subscribeSchedulerEvents() {
+    try {
+      if (!this.contracts.auditScheduler?.on) {
+        this.log.info("AuditScheduler not configured — scheduled audits disabled");
+        return;
+      }
+
+      this.contracts.auditScheduler.on(
+        "AuditTriggered",
+        async (contractAddress, scheduleAddress, triggeredAt, timesTriggered) => {
+          const addr = String(contractAddress);
+          this.log.info(
+            `HSS AuditTriggered for ${addr.slice(0, 12)}… ` +
+            `(schedule=${String(scheduleAddress).slice(0, 12)}…, #${timesTriggered})`
+          );
+
+          // Publish to HCS audit log so dashboard picks it up
+          await this.hcs.publishAuditLog({
+            type: "HSS_AUDIT_TRIGGERED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              contractAddress: addr,
+              scheduleAddress: String(scheduleAddress),
+              triggeredAt: Number(triggeredAt),
+              timesTriggered: Number(timesTriggered),
+            },
+          });
+
+          // Synthesize a discovery payload and run the full pipeline
+          await this.handleDiscovery({
+            type: "CONTRACT_DISCOVERED",
+            agentId: "audit-scheduler",
+            timestamp: now(),
+            payload: {
+              contractAddress: addr,
+              contractType: "scheduled_audit",
+              budget: CONFIG.payments.totalGuard,
+              riskScore: 50,
+              estimatedLOC: 0,
+              triggeredByHSS: true,
+              scheduleAddress: String(scheduleAddress),
+            },
+          });
+        }
+      );
+
+      this.contracts.auditScheduler.on(
+        "AuditScheduleCancelled",
+        (contractAddress, cancelledBy, reason) => {
+          this.log.info(
+            `AuditSchedule cancelled for ${String(contractAddress).slice(0, 12)}… ` +
+            `by ${String(cancelledBy).slice(0, 12)}… reason=${reason}`
+          );
+          this.hcs.publishAuditLog({
+            type: "HSS_SCHEDULE_CANCELLED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: { contractAddress, cancelledBy, reason },
+          }).catch(() => {});
+        }
+      );
+
+      this.contracts.auditScheduler.on(
+        "ScheduleFailed",
+        (contractAddress, responseCode, context) => {
+          this.log.warn(
+            `HSS ScheduleFailed for ${String(contractAddress).slice(0, 12)}… ` +
+            `rc=${responseCode} ctx=${context}`
+          );
+        }
+      );
+
+      this.log.info("Listening for on-chain AuditTriggered events (HSS)");
+    } catch (err) {
+      this.log.warn(`AuditScheduler event subscription failed: ${err.message}`);
     }
   }
 

@@ -182,11 +182,11 @@ export default function AgentLeaderboardRow({ rank, profile, isSelected, onSelec
       <WalletGate>
         <div className="mt-2 pl-7">
           <Link
-            to="/dashboard/stake"
+            to={`/dashboard/stake?agent=${profile.address}`}
             onClick={(e) => e.stopPropagation()}
             className="inline-flex rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/20"
           >
-            Delegate Stake
+            Delegate Stake →
           </Link>
         </div>
       </WalletGate>

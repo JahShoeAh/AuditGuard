@@ -1,0 +1,224 @@
+{
+  "generatedAt": 1771458843236,
+  "discoveries": [
+    {
+      "type": "CONTRACT_DISCOVERY",
+      "contractAddress": "0xdeadbeef00000000000000000000000000ff1111",
+      "contractType": "lending",
+      "chain": "hedera",
+      "estimatedLineCount": 1800,
+      "initialRiskScore": 82,
+      "discoveryTimestamp": "2026-02-18T23:54:03.236Z",
+      "timestamp": 1771458843237
+    }
+  ],
+  "activeJobs": {
+    "4242": {
+      "jobId": "4242",
+      "contractAddress": "0xdeadbeef00000000000000000000000000ff1111",
+      "contractChain": "hedera",
+      "contractType": "lending",
+      "budgetAvailable": 12000000000,
+      "auctionDeadline": 1771458963,
+      "initialRiskScore": 82,
+      "lineCount": 1800,
+      "discoveredAt": 1771458838237,
+      "postedAt": 1771458840237,
+      "winnersAt": 1771458842237
+    }
+  },
+  "bids": {
+    "4242": [
+      {
+        "jobId": "4242",
+        "agent": "0x00000000000000000000000000000000000000a1",
+        "agentName": "practice-static-1",
+        "bidAmount": 28,
+        "collateralLocked": 6,
+        "reputationAtBid": 91,
+        "estimatedCompletionTime": 220,
+        "timestamp": 1771458843233
+      },
+      {
+        "jobId": "4242",
+        "agent": "0x00000000000000000000000000000000000000b2",
+        "agentName": "practice-fuzzer-1",
+        "bidAmount": 26,
+        "collateralLocked": 5,
+        "reputationAtBid": 87,
+        "estimatedCompletionTime": 280,
+        "timestamp": 1771458843233
+      },
+      {
+        "jobId": "4242",
+        "agent": "0x00000000000000000000000000000000000000c3",
+        "agentName": "practice-llm-1",
+        "bidAmount": 34,
+        "collateralLocked": 8,
+        "reputationAtBid": 95,
+        "estimatedCompletionTime": 190,
+        "timestamp": 1771458843233
+      }
+    ]
+  },
+  "winners": {
+    "4242": {
+      "agents": [
+        "0x00000000000000000000000000000000000000a1",
+        "0x00000000000000000000000000000000000000c3",
+        "0x00000000000000000000000000000000000000b2"
+      ],
+      "winnerCount": 3,
+      "winnersAt": 1771458843237
+    }
+  },
+  "agents": {
+    "0x00000000000000000000000000000000000000a1": {
+      "address": "0x00000000000000000000000000000000000000a1",
+      "agentId": "practice-static-1",
+      "name": "practice-static-1",
+      "reputationScore": 9100,
+      "stakedAmount": 20000000000,
+      "specialization": "lending"
+    },
+    "0x00000000000000000000000000000000000000b2": {
+      "address": "0x00000000000000000000000000000000000000b2",
+      "agentId": "practice-fuzzer-1",
+      "name": "practice-fuzzer-1",
+      "reputationScore": 8700,
+      "stakedAmount": 18000000000,
+      "specialization": "lending"
+    },
+    "0x00000000000000000000000000000000000000c3": {
+      "address": "0x00000000000000000000000000000000000000c3",
+      "agentId": "practice-llm-1",
+      "name": "practice-llm-1",
+      "reputationScore": 9500,
+      "stakedAmount": 25000000000,
+      "specialization": "lending"
+    },
+    "0x00000000000000000000000000000000000000d4": {
+      "address": "0x00000000000000000000000000000000000000d4",
+      "agentId": "practice-lowstake",
+      "name": "practice-lowstake",
+      "reputationScore": 9900,
+      "stakedAmount": 100000000,
+      "specialization": "lending"
+    }
+  },
+  "settlements": [
+    {
+      "settlementId": "1",
+      "jobId": "4242",
+      "totalDisbursed": 0,
+      "recipientCount": 2,
+      "settledAt": 1771458843237
+    }
+  ],
+  "auditLog": [
+    {
+      "type": "WINNERS_SELECTED_FALLBACK",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843233,
+      "payload": {
+        "jobId": 4242,
+        "winners": [
+          "0x00000000000000000000000000000000000000a1",
+          "0x00000000000000000000000000000000000000c3",
+          "0x00000000000000000000000000000000000000b2"
+        ]
+      },
+      "id": "offline-1",
+      "source": "offline-test"
+    },
+    {
+      "type": "REPORT_PUBLISHED",
+      "agentId": "report-agent",
+      "timestamp": 1771458843235,
+      "payload": {
+        "jobId": 4242,
+        "totalFindings": 16,
+        "criticalFindings": 7,
+        "reportHash": "0xaaa111|0xbbb222|0xnoise333",
+        "contributors": [
+          "practice-static-1",
+          "practice-fuzzer-1",
+          "practice-lowstake"
+        ]
+      },
+      "id": "offline-2",
+      "source": "offline-test"
+    },
+    {
+      "type": "ALERT_FIRED",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843235,
+      "payload": {
+        "jobId": 4242,
+        "criticalFindings": 7
+      },
+      "id": "offline-3",
+      "source": "offline-test"
+    },
+    {
+      "type": "PAYMENT_SETTLED",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843236,
+      "payload": {
+        "jobId": 4242,
+        "recipients": [
+          "0x00000000000000000000000000000000000000a1",
+          "0x00000000000000000000000000000000000000b2"
+        ],
+        "reportAgent": "0x0000000000000000000000000000000000000abc",
+        "winnerCount": 3
+      },
+      "id": "offline-4",
+      "source": "offline-test"
+    },
+    {
+      "type": "REPUTATION_UPDATED",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843236,
+      "payload": {
+        "jobId": 4242,
+        "agentId": "practice-static-1",
+        "delta": 6
+      },
+      "id": "offline-5",
+      "source": "offline-test"
+    },
+    {
+      "type": "REPUTATION_UPDATED",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843236,
+      "payload": {
+        "jobId": 4242,
+        "agentId": "practice-fuzzer-1",
+        "delta": 5
+      },
+      "id": "offline-6",
+      "source": "offline-test"
+    },
+    {
+      "type": "REPUTATION_UPDATED",
+      "agentId": "orchestrator",
+      "timestamp": 1771458843236,
+      "payload": {
+        "jobId": 4242,
+        "agentId": "practice-lowstake",
+        "delta": 19
+      },
+      "id": "offline-7",
+      "source": "offline-test"
+    }
+  ],
+  "stats": {
+    "totalDiscoveries": 1,
+    "totalAuctions": 1,
+    "totalBids": 3,
+    "totalSubAuctions": 0,
+    "totalDataSales": 0,
+    "totalSettlements": 1
+  }
+}

@@ -15,7 +15,7 @@ const useStore = create((set) => ({
     set({ isConnected: false, connectionError: error }),
 
   // Mock events toggle
-  useMockEvents: true,
+  useMockEvents: false,
   toggleMockEvents: () => set((s) => ({ useMockEvents: !s.useMockEvents })),
 
   // ── Contract discoveries (from HCS Discovery topic) ──────
@@ -214,6 +214,12 @@ const useStore = create((set) => ({
         [addr]: [...(s.stakeHistory[addr] || []), snapshot].slice(-50),
       },
     })),
+
+  // ── HSS Schedule events (from AuditScheduler contract) ──────
+  // Events: AuditScheduled, AuditTriggered, AuditScheduleCancelled, ScheduleFailed
+  hssEvents: [],
+  addHssEvent: (ev) =>
+    set((s) => ({ hssEvents: [ev, ...s.hssEvents].slice(0, 500) })),
 
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({

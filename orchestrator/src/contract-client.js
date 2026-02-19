@@ -25,6 +25,24 @@ export class ContractClient {
     this.paymentSettlement = new ethers.Contract(CONFIG.contracts.paymentSettlement, loadABI("PaymentSettlement"), wallet);
     this.agentRegistry = new ethers.Contract(CONFIG.contracts.agentRegistry, loadABI("AgentRegistry"), wallet);
     this.budgetVault = new ethers.Contract(CONFIG.contracts.budgetVault, loadABI("AuditBudgetVault"), wallet);
+
+    // AuditScheduler — optional; only active after deploy:audit-scheduler has run
+    try {
+      if (CONFIG.contracts.auditScheduler) {
+        this.auditScheduler = new ethers.Contract(
+          CONFIG.contracts.auditScheduler,
+          loadABI("AuditScheduler"),
+          wallet
+        );
+        log.info(`AuditScheduler connected at ${CONFIG.contracts.auditScheduler}`);
+      } else {
+        this.auditScheduler = null;
+        log.info("AuditScheduler address not configured — scheduled audits disabled");
+      }
+    } catch (err) {
+      this.auditScheduler = null;
+      log.warn(`AuditScheduler init failed (ABI missing?): ${err.message}`);
+    }
   }
 
   static fromOperatorKey(hexKey) {
