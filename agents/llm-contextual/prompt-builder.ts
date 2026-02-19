@@ -8,6 +8,7 @@ export interface AuditContext {
   riskScore: number;
   hasDepAnalysis: boolean;
   depAnalysisSummary?: string;
+  contractSource?: string;
 }
 
 export function buildSystemPrompt(): string {
@@ -50,6 +51,10 @@ Risk Score: ${ctx.riskScore}/100`;
       prompt += ` Results:\n${ctx.depAnalysisSummary}`;
     }
     prompt += `\nIncorporate the dependency analysis insights into your vulnerability assessment.`;
+  }
+
+  if (ctx.contractSource) {
+    prompt += `\n\nContract Source Code:\n\`\`\`solidity\n${ctx.contractSource}\n\`\`\`\n\nAnalyze the above Solidity source code. Identify ALL security vulnerabilities including: reentrancy, access control, arithmetic errors, oracle manipulation, front-running, unchecked return values. For each finding provide: Severity (CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL), Title, Description, Location (function name), Recommendation.`;
   }
 
   prompt += `\n\nBased on the contract type "${ctx.contractType}" and risk score of ${ctx.riskScore}, identify the most likely vulnerabilities. Consider common attack vectors for ${ctx.contractType} contracts including reentrancy, oracle manipulation, access control issues, and economic exploits.`;

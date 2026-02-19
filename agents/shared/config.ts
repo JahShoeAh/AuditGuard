@@ -25,6 +25,7 @@ interface SdkConfig {
   guardTokenEvmAddress?: string;
   hcsTopics?: { discovery?: string; auditLog?: string; agentComms?: string };
   contracts?: Record<string, { id?: string; evmAddress?: string }>;
+  testContracts?: Array<{ key?: string; address?: string; deployer?: string }>;
   inftCollections?: Record<string, { tokenId?: string; evmAddress?: string }>;
   demoVault?: { contractAddress?: string; weeklyMonitoring?: number; criticalBounty?: number };
   day2?: { settlementPreFunded?: number; deployedAt?: string };
@@ -65,6 +66,12 @@ export const CONFIG = {
     dataMarketplace: sdk?.contracts?.dataMarketplace?.evmAddress ?? "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     paymentSettlement: sdk?.contracts?.paymentSettlement?.evmAddress ?? "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
   },
+
+  testContracts: (sdk?.testContracts ?? []).map((tc) => ({
+    key: tc.key ?? "",
+    address: tc.address ?? "",
+    deployer: tc.deployer ?? "",
+  })),
 
   inftCollections: {
     auditJob: {

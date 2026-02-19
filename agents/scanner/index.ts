@@ -23,23 +23,63 @@ const HOT_LEAD_PRICE = ethers.parseUnits("0.1", 8);   // 0.1 GUARD
 const HOT_LEAD_DELAY_MS = DEMO_MODE ? 10 * 1000 : 60 * 1000; // delay before public
 
 const log = createAgentLogger(AGENT_ID, "scanner");
+let discoveryContractIndex = 0;
+type DiscoveryContract = { key?: string; address: string; deployer: string };
+
+const FALLBACK_DISCOVERY_CONTRACTS = [
+  {
+    key: "fallback-vault-1",
+    address: "0x0000000000000000000000000000000000000001",
+    deployer: "0x0000000000000000000000000000000000000010",
+  },
+  {
+    key: "fallback-vault-2",
+    address: "0x0000000000000000000000000000000000000002",
+    deployer: "0x0000000000000000000000000000000000000010",
+  },
+  {
+    key: "fallback-vault-3",
+    address: "0x0000000000000000000000000000000000000003",
+    deployer: "0x0000000000000000000000000000000000000010",
+  },
+] as const satisfies readonly DiscoveryContract[];
+
+function nextDiscoveryContract(): DiscoveryContract {
+  const configured: DiscoveryContract[] = (CONFIG.testContracts ?? [])
+    .filter((c) => Boolean(c?.address) && Boolean(c?.deployer))
+    .map((c) => ({
+      key: c.key || undefined,
+      address: String(c.address).toLowerCase(),
+      deployer: String(c.deployer).toLowerCase(),
+    }));
+  const pool: readonly DiscoveryContract[] = configured.length > 0
+    ? configured
+    : FALLBACK_DISCOVERY_CONTRACTS;
+  const pick = pool[discoveryContractIndex % pool.length];
+  discoveryContractIndex += 1;
+  return pick;
+}
 
 // ---- Discovery Generator ----
 
 export function generateDiscovery() {
+  const pick = nextDiscoveryContract();
+  const isTestMode = process.env.TEST_MODE === "true";
   const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault"];
+
   return {
     type: "CONTRACT_DISCOVERED" as const,
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
-      contractAddress: `0x${randomHex(40)}`,
+      contractAddress: pick.address,
       chain: "hedera-testnet",
-      deployerAddress: `0x${randomHex(40)}`,
-      estimatedLOC: randomInt(500, 10000),
-      contractType: randomChoice(types),
-      riskScore: randomInt(20, 95),
+      deployerAddress: pick.deployer,
+      estimatedLOC: isTestMode ? 150 : randomInt(500, 10000),
+      contractType: isTestMode ? "vault" : randomChoice(types),
+      riskScore: isTestMode ? 75 : randomInt(20, 95),
       txHash: `0x${randomHex(64)}`,
+      sourceRef: pick.key,
     },
   };
 }

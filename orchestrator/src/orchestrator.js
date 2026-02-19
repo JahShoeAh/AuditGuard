@@ -556,10 +556,11 @@ export class OrchestratorAgent {
     this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
   }
 
-  selectWinnersFallback(jobId) {
+  async selectWinnersFallback(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return;
 
+    let selectedWinners;
     let winnerAddresses;
 
     if (job.bidders && job.bidders.length > 0) {
@@ -567,16 +568,16 @@ export class OrchestratorAgent {
       const maxBid = Math.max(...job.bidders.map(b => b.bidAmount || 1));
       const maxTime = Math.max(...job.bidders.map(b => b.estimatedTimeSec || 1));
 
-      const scored = job.bidders.map(b => {
+      const scored = job.bidders.map((b, bidIndex) => {
         const repScore = ((b.reputation ?? 0) / 100) * 0.55;
         const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
         const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
-        return { ...b, score: repScore + priceScore + speedScore };
+        return { ...b, bidIndex, score: repScore + priceScore + speedScore };
       });
 
       scored.sort((a, b) => b.score - a.score);
-      const winners = scored.slice(0, 3);
-      winnerAddresses = winners.map(w => w.evmAddress).filter(Boolean);
+      selectedWinners = scored.slice(0, 3);
+      winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
       this.log.info(
         `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
         `${winnerAddresses.join(", ")}`
@@ -592,18 +593,47 @@ export class OrchestratorAgent {
         return;
       }
 
-      winnerAddresses = candidates.map((c) => c.evmAddress);
+      selectedWinners = candidates.map((c) => ({
+        agentId: c.agentId,
+        evmAddress: c.evmAddress,
+      }));
+      winnerAddresses = selectedWinners.map((w) => w.evmAddress);
       this.log.info(`Roster-fallback winners for job ${jobId}: ${winnerAddresses.join(", ")}`);
     }
 
     job.winners = winnerAddresses;
 
-    this.hcs.publishAuditLog({
-      type: MessageType.WINNERS_SELECTED_FALLBACK,
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: { jobId, winners: winnerAddresses },
-    }).catch((err) => this.log.warn(`Failed to publish fallback winners: ${err}`));
+    // Try on-chain first
+    try {
+      const winningBidIndices = selectedWinners.map(w => w.bidIndex);
+      const receipt = await this.contracts.selectWinners(jobId, winningBidIndices);
+      this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+      job.winnerSource = "on-chain";
+      return;
+    } catch (err) {
+      this.log.warn(`[Orchestrator] On-chain selectWinners failed: ${err.message}. Falling back to HCS.`);
+    }
+
+    // Fallback: publish to agentComms (NOT just auditLog)
+    const selectionEpoch = Date.now();
+    job.selectionEpoch = selectionEpoch;
+    job.winnerSource = "fallback";
+
+    const fallbackPayload = {
+      type: "WINNERS_SELECTED_FALLBACK",
+      payload: {
+        jobId,
+        winners: selectedWinners.map(w => ({ agentId: w.agentId, evmAddress: w.evmAddress })),
+        selectionEpoch,
+        winnerSource: "fallback"
+      }
+    };
+
+    // Publish to agentComms so agents receive it
+    await this.hcs.publish(CONFIG.hcsTopics.agentComms, fallbackPayload);
+    // Also publish to auditLog for dashboard visibility
+    await this.hcs.publish(CONFIG.hcsTopics.auditLog, fallbackPayload);
+    this.log.info(`[Orchestrator] Published WINNERS_SELECTED_FALLBACK to agentComms + auditLog for job ${jobId}`);
   }
 
   subscribeContractEvents() {

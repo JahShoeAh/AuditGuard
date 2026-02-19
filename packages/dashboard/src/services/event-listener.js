@@ -60,6 +60,15 @@ export class EventListenerService {
     this.store     = store;
     this.provider  = provider;
 
+    this.onlyTestDiscoveries = import.meta.env.VITE_TEST_MODE === 'true';
+    const testContracts = Array.isArray(config?.testContracts) ? config.testContracts : [];
+    this.allowedDiscoveryContracts = new Set(
+      testContracts
+        .map((tc) => String(tc?.address || '').toLowerCase())
+        .filter(Boolean)
+    );
+    this.seenTestDiscoveries = new Set();
+
     // HCS state — last seen sequence number per topic
     this.lastSeq = {
       discovery:  0,
@@ -71,6 +80,13 @@ export class EventListenerService {
     this.lastProcessedBlock = null;
 
     this._intervals = [];
+
+    if (this.onlyTestDiscoveries) {
+      console.log(
+        `[EventListener] TEST_MODE discovery filter enabled ` +
+        `(${this.allowedDiscoveryContracts.size} configured test contracts)`
+      );
+    }
   }
 
   // ── public ───────────────────────────────────────────────
@@ -211,6 +227,19 @@ export class EventListenerService {
     };
 
     if (topicKey === 'discovery') {
+      if (this.onlyTestDiscoveries) {
+        const contractAddress = String(entry.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
+        if (!contractAddress) return;
+        if (
+          this.allowedDiscoveryContracts.size > 0 &&
+          !this.allowedDiscoveryContracts.has(contractAddress)
+        ) {
+          return;
+        }
+        if (this.seenTestDiscoveries.has(contractAddress)) return;
+        this.seenTestDiscoveries.add(contractAddress);
+      }
+
       this.store.addDiscovery(entry);
       this.store.incrementStat('totalDiscoveries');
       this.store.addLogEntry({ ...entry, source: 'discovery' });
@@ -229,9 +258,29 @@ export class EventListenerService {
           jobId: String(payload.jobId ?? sequenceNumber),
         };
       }
-      this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
+      if (parsedData.type !== 'REPORT_METADATA') {
+        this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
+      }
       // Also update specific slices based on type
-      if (parsedData.type === 'JOB_CREATED') {
+      if (parsedData.type === 'REPORT_METADATA') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.addReportMetadata?.(jobId, {
+          cid: payload.cid,
+          listingId: payload.listingId,
+          contentHash: payload.contentHash,
+          deployer: payload.deployer,
+          agentCount: payload.agentCount,
+          findingCount: payload.findingCount,
+        });
+        this.store.addLogEntry({
+          type: 'REPORT_PUBLISHED',
+          jobId,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { cid: payload.cid, findingCount: payload.findingCount },
+          source: 'auditLog',
+        });
+        console.log(`[EventListener] REPORT_METADATA for job ${jobId}, CID: ${payload.cid}`);
+      } else if (parsedData.type === 'JOB_CREATED') {
         const jobId = String(payload.jobId ?? sequenceNumber);
         this.store.setJob(jobId, {
           jobId,

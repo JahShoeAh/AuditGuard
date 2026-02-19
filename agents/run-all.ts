@@ -64,7 +64,11 @@ function spawnAgent(state: AgentState): void {
 
     const child = spawn("npx", ["tsx", join(__dir, def.script)], {
         cwd: __dir,
-        env: { ...process.env, DEMO_MODE: isDemo ? "true" : "false" },
+        env: {
+            ...process.env,
+            DEMO_MODE: isDemo ? "true" : "false",
+            ...(def.name === "Scanner" ? { TEST_MODE: "true" } : {}),
+        },
         stdio: ["ignore", "pipe", "pipe"],
     });
 

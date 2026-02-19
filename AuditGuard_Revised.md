@@ -1,5 +1,7 @@
 ## Project 1: Agentic AuditGuard (Autonomous Security Marketplace)
 
+> Current build notes (2026-02-19): live implementation includes orchestrator-driven `AUCTION_INVITE`, agent `PING`/`PONG` liveness, and invite race handling so agents can bid without strict discovery-first ordering.
+
 **Core Idea:** An autonomous agent economy where intelligent Auditor Agents compete to discover, evaluate, and audit smart contracts across multiple chains, negotiating prices, bidding for jobs, purchasing specialized analysis from other agents, and settling payments entirely autonomously. Humans are passive beneficiaries who observe the self-organizing security marketplace through a read-only dashboard.
 
 ### 1. Agent Experience (AX) Walkthrough - The Primary User Journey
