@@ -88,6 +88,16 @@ export const CONFIG = {
     weeklyMonitoring: sdk?.demoVault?.weeklyMonitoring ?? 10,
     criticalBounty: sdk?.demoVault?.criticalBounty ?? 50,
   },
+
+  // 0g Compute Network inference config (uses @0glabs/0g-serving-broker SDK)
+  zgInference: {
+    rpcUrl: process.env.ZG_RPC_URL ?? "https://evmrpc-testnet.0g.ai",
+    providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
+    model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
+    timeoutMs: Number(process.env.ZG_TIMEOUT_MS ?? "30000"),
+    depositAmount: Number(process.env.ZG_DEPOSIT_AMOUNT ?? "5"),
+    enabled: process.env.ZG_ENABLED !== "false",
+  },
 } as const;
 
 /** Path to the SDK config.json for direct reading (used by INFTBridge). */
