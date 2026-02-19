@@ -195,8 +195,32 @@ export class EventListenerService {
       this.store.addLogEntry({ ...entry, source: 'auditLog' });
       // Also update specific slices based on type
       if (parsedData.type === 'JOB_CREATED') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.setJob(jobId, {
+          jobId,
+          contractAddress: payload.contractAddress,
+          contractChain: payload.chain ?? 'hedera',
+          contractType: payload.contractType ?? 'unknown',
+          budgetAvailable: payload.budget ?? 0,
+          budgetFormatted: parseGuardAmount(payload.budget ?? 0),
+          initialRiskScore: Number(payload.riskScore ?? 0),
+          lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+          postedAt: Date.now(),
+        });
         this.store.incrementStat('totalAuctions');
       } else if (parsedData.type === 'BID_SUBMITTED') {
+        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+        this.store.addBid(jobId, {
+          agent: payload.evmAddress ?? payload.agentAddress ?? payload.agentId,
+          agentName: payload.agentId ?? 'unknown',
+          bidAmount: payload.bidAmount ?? 0,
+          bidFormatted: parseGuardAmount(payload.bidAmount ?? 0),
+          collateralLocked: payload.collateral ?? 0,
+          reputationAtBid: Number(payload.reputation ?? 0),
+          specialization: payload.specialization ?? 'unknown',
+          estimatedCompletionTime: Number(payload.estimatedTimeSec ?? 0),
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
         this.store.incrementStat('totalBids');
       }
     } else if (topicKey === 'agentComms') {
