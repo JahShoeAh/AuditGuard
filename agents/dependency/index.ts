@@ -92,6 +92,11 @@ async function main() {
 
     // Submit sub-bid on-chain
     try {
+      // Add jitter to avoid race conditions
+      const jitter = randomInt(1000, 5000);
+      log.info(`Waiting ${jitter}ms jitter before sub-bidding...`);
+      await sleep(jitter);
+
       await contracts.submitSubBid(
         0,
         ethers.parseUnits(bid.amount.toString(), 8),

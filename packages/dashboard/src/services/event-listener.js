@@ -78,8 +78,31 @@ export class EventListenerService {
   startAll() {
     this.startHCSPolling();
     this.startContractEventPolling();
+    // Sync historical agents (fire-and-forget)
+    this._syncHistoricalAgents().catch(err => 
+      console.warn('[EventListener] Agent history sync failed:', err)
+    );
     console.log('[EventListener] All polling loops started');
     return () => this.stopAll();
+  }
+
+  async _syncHistoricalAgents() {
+    if (!this.contracts?.agentRegistryContract) return;
+    
+    console.log('[EventListener] Syncing historical agents...');
+    const agents = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
+    
+    for (const ev of agents) {
+      const a = ev.args;
+      this.store.setAgent(a.agent, {
+        address: a.agent,
+        agentId: a.agentId,
+        ucpEndpoint: a.ucpEndpoint,
+        stakedAmount: a.stakedAmount,
+        stakedFormatted: parseGuardAmount(a.stakedAmount),
+      });
+    }
+    console.log(`[EventListener] Synced ${agents.length} historical agents`);
   }
 
   stopAll() {

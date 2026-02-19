@@ -172,6 +172,11 @@ async function main() {
 
     // Submit bid on-chain with real jobId
     try {
+      // Add jitter to avoid race conditions (nonce/gas collisions) with other agents
+      const jitter = randomInt(1000, 5000);
+      log.info(`Waiting ${jitter}ms jitter before bidding...`);
+      await sleep(jitter);
+
       const tx = await contracts.submitBid(
         jobId,
         ethers.parseUnits(bid.amount.toString(), 8),

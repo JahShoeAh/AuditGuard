@@ -328,13 +328,20 @@ AuditGuard/
 
 ### Live Demo Honesty Summary
 
-| Layer | Status |
-|---|---|
-| GUARD token (HTS) | ✅ Real |
-| HCS messaging | ✅ Real messages on testnet |
-| Smart contract transactions | ✅ Real — bids, escrow, settlements, staking |
-| Dashboard event feed | ✅ Polling real mirror node + contract events |
-| Agent auction participation | ✅ Real wallet transactions |
-| Agent audit findings | ⚠️ Generated (randomized), not real code analysis |
-| LLM analysis (0g Compute) | ⚠️ Attempts real inference; falls back to mock |
-| HSS scheduling | ❌ Contract not yet deployed |
+| Layer | Status | Notes |
+|---|---|---|
+| GUARD token (HTS) | ✅ Real | Fully functional on testnet. |
+| HCS messaging | ✅ Real | Topics are live; Dashboard polls mirror node. |
+| Smart contract transactions | ✅ Real | Bids, escrow, settlements, staking are real txs. |
+| **Agent Registry (Dashboard)** | ✅ Real (Synced) | Dashboard fetches full registration history on startup. |
+| **iNFT Minting** | ✅ Live | Successfully minting Audit Job & Contract Health iNFTs to 0g Storage. |
+| Agent auction participation | ✅ Real | Real wallet transactions for bids & wins. |
+| Agent audit findings | ⚠️ Simulated | Logic is mock/randomized; not real static analysis. |
+| LLM analysis (0g Compute) | ⚠️ Hybrid | Attempts real inference; falls back to mock if 0g unreachable. |
+| **HSS Scheduling** | ⚠️ Partial | Contract deployed (`0x39AB...`); Orchestrator missing ABI; not yet fully integrated. |
+
+### Known Issues
+- **Dashboard Agent List**: The "Agents" tab will be empty if you open the dashboard *after* agents have already started. Restarting agents (`npm run agents`) while the dashboard is open will populate the list.
+- **RPC Rate Limits**: Occasional `429` errors from Hedera public mirror node during high traffic.
+- **HSS Integration**: `AuditScheduler` is deployed but `orchestrator` logs "ABI missing", preventing automatic scheduling.
+
