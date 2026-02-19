@@ -6,13 +6,12 @@ import {
   createAgentWallet,
   CONFIG,
   randomInt,
-  randomBool,
   randomChoice,
   randomHex,
   hashOf,
   sleep,
 } from "../shared/index.js";
-import type { ContractType, HCSMessage } from "../shared/types.js";
+import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
 
 // ---- Config ----

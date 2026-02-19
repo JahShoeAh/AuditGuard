@@ -3,10 +3,8 @@ import {
   ContractClient,
   createAgentLogger,
   createAgentWallet,
-  CONFIG,
   randomFloat,
   hashOf,
-  sleep,
 } from "../shared/index.js";
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";

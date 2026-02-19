@@ -98,7 +98,7 @@ export class AgentMetrics {
 
 // ── Infrastructure health monitoring (functional API) ────────────────────────
 // Tracks process-level health: cycles, errors, restarts, heartbeats, messages.
-// Used by run-all.ts and run-demo.ts for the health dashboard.
+// Used by run-all.ts for the health dashboard.
 
 export interface InfraMetrics {
   name: string;

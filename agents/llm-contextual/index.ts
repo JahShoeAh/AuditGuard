@@ -20,7 +20,7 @@ import type {
   SubResultDeliveredEvent,
 } from "../shared/types.js";
 import { ethers } from "ethers";
-import { callInference, ZGClientError, initZgClient } from "./zg-client.js";
+import { callInference, initZgClient } from "./zg-client.js";
 import { buildMessages } from "./prompt-builder.js";
 import { parseFindings } from "./response-parser.js";
 import type { AuditContext } from "./prompt-builder.js";
@@ -43,6 +43,7 @@ const pendingSubResults: Map<string, (result: SubResultDeliveredEvent) => void> 
 
 // Track pending jobs awaiting winner selection
 const pendingJobs = new Map<string, {
+  jobId: string;
   contractAddress: string;
   contractType: ContractType;
   loc: number;
@@ -307,6 +308,7 @@ async function main() {
       }
 
       pendingJobs.set(String(jobId), {
+        jobId: String(jobId),
         contractAddress,
         contractType: resolved.contractType,
         loc: resolved.loc,
@@ -334,6 +336,7 @@ async function main() {
           updatePricingAfterOutcome(true);
           pendingJobs.delete(String(jobId));
           await simulateAuditCycle(
+            String(jobId),
             contractAddress,
             resolved.contractType,
             resolved.loc,
@@ -360,7 +363,15 @@ async function main() {
     updatePricingAfterOutcome(true);
     pendingJobs.delete(jobKey);
 
-    simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
+    simulateAuditCycle(
+      pending.jobId,
+      pending.contractAddress,
+      pending.contractType,
+      pending.loc,
+      hcs,
+      contracts,
+      wallet.evmAddress
+    )
       .catch(err => log.error(`Audit cycle failed: ${err}`));
   });
 
@@ -392,6 +403,7 @@ async function main() {
 }
 
 async function simulateAuditCycle(
+  jobId: string,
   contractAddress: string,
   contractType: ContractType,
   loc: number,
@@ -408,17 +420,33 @@ async function simulateAuditCycle(
       `(${SUB_CONTRACT_PAYMENT} GUARD, ${SUB_CONTRACT_SLA}s SLA)`
     );
 
-    const subAuctionId = `sub-${Date.now()}-${randomInt(1000, 9999)}`;
+    let subAuctionId = `sub-${Date.now()}-${randomInt(1000, 9999)}`;
+    const numericJobId = Number(jobId);
+    const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
 
     // Create sub-auction on-chain
     try {
-      await contracts.createSubAuction(
-        0, // parentJobId
+      const tx = await contracts.createSubAuction(
+        parentJobId,
         "Dependency analysis for audit job",  // taskDescription
         "dependency_analysis",                // requiredSpecialization
         ethers.parseUnits(SUB_CONTRACT_PAYMENT.toString(), 8),
         SUB_CONTRACT_SLA,
       );
+      const receipt = await tx.wait();
+      if (receipt?.logs) {
+        for (const log of receipt.logs) {
+          try {
+            const parsed = contracts.subAuction.interface.parseLog(log);
+            if (parsed?.name === "SubAuctionCreated") {
+              subAuctionId = String(parsed.args.subJobId);
+              break;
+            }
+          } catch {
+            // Ignore unrelated logs.
+          }
+        }
+      }
       log.info("Sub-auction created on-chain");
     } catch (err) {
       log.warn(`On-chain sub-auction failed (continuing via HCS): ${err}`);
@@ -434,7 +462,7 @@ async function simulateAuditCycle(
         taskType: "dependency_analysis",
         paymentAmount: SUB_CONTRACT_PAYMENT,
         slaDurationSec: SUB_CONTRACT_SLA,
-        parentJobId: contractAddress,
+        parentJobId: jobId,
       },
     });
 
@@ -446,7 +474,7 @@ async function simulateAuditCycle(
         subAuctionId,
         taskType: "dependency_analysis",
         payment: SUB_CONTRACT_PAYMENT,
-        parentJobId: contractAddress,
+        parentJobId: jobId,
       },
     });
 
@@ -459,7 +487,8 @@ async function simulateAuditCycle(
 
       // Accept result on-chain
       try {
-        await contracts.acceptResult(0);
+        const numericSubAuctionId = Number(subAuctionId);
+        await contracts.acceptResult(Number.isFinite(numericSubAuctionId) ? numericSubAuctionId : 0);
         log.info("Sub-result accepted on-chain");
       } catch (err) {
         log.warn(`On-chain accept failed (continuing): ${err}`);
@@ -505,7 +534,7 @@ async function simulateAuditCycle(
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
-      jobId: contractAddress,
+      jobId,
       findingsHash,
       findingsCount: findings.length,
       criticalCount,

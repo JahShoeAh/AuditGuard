@@ -3,9 +3,7 @@ import {
   ContractClient,
   createAgentLogger,
   createAgentWallet,
-  CONFIG,
   randomInt,
-  randomBool,
   randomFloat,
   randomSeveritySkewedHigh,
   randomFindingTitle,
@@ -32,6 +30,7 @@ const log = createAgentLogger(AGENT_ID, "fuzzer");
 
 // Track pending jobs awaiting winner selection
 const pendingJobs = new Map<string, {
+  jobId: string;
   contractAddress: string;
   contractType: ContractType;
   loc: number;
@@ -181,13 +180,18 @@ async function main() {
 
     if (msg.type === "DATA_LISTING_CREATED" && msg.agentId !== AGENT_ID) {
       const { listingId, price, description, jobId, category } = msg.payload as any;
-      if (category === "SCAN_REPORT" && price <= MAX_DATA_PURCHASE_PRICE) {
+      const numericListingId = Number(listingId);
+      if (
+        category === "SCAN_REPORT" &&
+        price <= MAX_DATA_PURCHASE_PRICE &&
+        Number.isFinite(numericListingId)
+      ) {
         log.info(`Scan report available from ${msg.agentId}: ${price} GUARD`);
-        availableReports.set(jobId, {
-          listingId,
+        availableReports.set(String(jobId), {
+          listingId: String(listingId),
           price,
           seller: msg.agentId,
-          jobId,
+          jobId: String(jobId),
         });
       }
     }
@@ -225,6 +229,7 @@ async function main() {
       }
 
       pendingJobs.set(String(jobId), {
+        jobId: String(jobId),
         contractAddress,
         contractType: resolved.contractType,
         loc: resolved.loc,
@@ -251,6 +256,7 @@ async function main() {
           updatePricingAfterOutcome(true);
           pendingJobs.delete(String(jobId));
           await simulateAuditCycle(
+            String(jobId),
             contractAddress,
             resolved.contractType,
             resolved.loc,
@@ -277,7 +283,15 @@ async function main() {
     updatePricingAfterOutcome(true);
     pendingJobs.delete(jobKey);
 
-    simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
+    simulateAuditCycle(
+      pending.jobId,
+      pending.contractAddress,
+      pending.contractType,
+      pending.loc,
+      hcs,
+      contracts,
+      wallet.evmAddress
+    )
       .catch(err => log.error(`Audit cycle failed: ${err}`));
   });
 
@@ -307,6 +321,7 @@ async function main() {
 }
 
 async function simulateAuditCycle(
+  jobId: string,
   contractAddress: string,
   contractType: ContractType,
   loc: number,
@@ -317,33 +332,36 @@ async function simulateAuditCycle(
   let hasExternalData = false;
 
   // ── Day 2: Try to buy scan report from DataMarketplace ──
-  const affordableReport = availableReports.get(contractAddress);
+  const affordableReport = availableReports.get(jobId);
   if (affordableReport) {
-    log.info(
-      `Purchasing scan from ${affordableReport.seller}: ` +
-      `${affordableReport.price} GUARD (listing ${affordableReport.listingId})`
-    );
+    const listingId = Number(affordableReport.listingId);
+    if (Number.isFinite(listingId)) {
+      log.info(
+        `Purchasing scan from ${affordableReport.seller}: ` +
+        `${affordableReport.price} GUARD (listing ${affordableReport.listingId})`
+      );
 
-    try {
-      await contracts.purchaseData(Number(affordableReport.listingId));
-      hasExternalData = true;
-      log.info("Report purchased — optimizing fuzzing");
+      try {
+        await contracts.purchaseData(listingId);
+        hasExternalData = true;
+        log.info("Report purchased — optimizing fuzzing");
 
-      await hcs.publishAuditLog({
-        type: "DATA_PURCHASED",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {
-          listingId: affordableReport.listingId,
-          seller: affordableReport.seller,
-          price: affordableReport.price,
-        },
-      });
-    } catch (err) {
-      log.warn(`Purchase failed (continuing without data): ${err}`);
+        await hcs.publishAuditLog({
+          type: "DATA_PURCHASED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {
+            listingId: affordableReport.listingId,
+            seller: affordableReport.seller,
+            price: affordableReport.price,
+          },
+        });
+      } catch (err) {
+        log.warn(`Purchase failed (continuing without data): ${err}`);
+      }
     }
 
-    availableReports.delete(contractAddress);
+    availableReports.delete(jobId);
   }
 
   // Fuzz with optional time reduction from purchased data
@@ -366,7 +384,7 @@ async function simulateAuditCycle(
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
-      jobId: contractAddress,
+      jobId,
       findingsHash,
       findingsCount: findings.length,
       criticalCount,

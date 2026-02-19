@@ -3,9 +3,7 @@ import {
   ContractClient,
   createAgentLogger,
   createAgentWallet,
-  CONFIG,
   randomInt,
-  randomBool,
   hashOf,
   sleep,
 } from "../shared/index.js";
@@ -15,7 +13,6 @@ import { ethers } from "ethers";
 // ---- Config ----
 const AGENT_ID = "dependency-analyzer-008";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
-const MAX_BACKLOG = 3;
 let currentBacklog = 0;
 
 const log = createAgentLogger(AGENT_ID, "dependency");
@@ -97,6 +94,8 @@ async function main() {
     );
 
     const bid = calculateSubBid(paymentAmount, currentBacklog);
+    const numericSubAuctionId = Number(subAuctionId);
+    const onChainSubAuctionId = Number.isFinite(numericSubAuctionId) ? numericSubAuctionId : 0;
 
     log.info(`Sub-bidding: ${bid.amount} GUARD (est. ${bid.estimatedTimeSec}s)`);
 
@@ -108,7 +107,7 @@ async function main() {
       await sleep(jitter);
 
       await contracts.submitSubBid(
-        0,
+        onChainSubAuctionId,
         ethers.parseUnits(bid.amount.toString(), 8),
         bid.estimatedTimeSec,
         ethers.parseUnits((bid.amount * 0.5).toString(), 8), // 50% collateral
@@ -149,7 +148,7 @@ async function main() {
 
         // Deliver result on-chain
         try {
-          await contracts.deliverResult(0, result.analysisHash);
+          await contracts.deliverResult(onChainSubAuctionId, result.analysisHash);
           log.info("Result delivered on-chain");
         } catch (err) {
           log.warn(`On-chain delivery failed (continuing via HCS): ${err}`);

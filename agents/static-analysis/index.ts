@@ -4,9 +4,7 @@ import {
   ListingCategory,
   createAgentLogger,
   createAgentWallet,
-  CONFIG,
   randomInt,
-  randomBool,
   randomFloat,
   randomSeveritySkewedLow,
   randomFindingTitle,
@@ -32,6 +30,7 @@ const log = createAgentLogger(AGENT_ID, "static_analysis");
 
 // Track pending jobs awaiting winner selection
 const pendingJobs = new Map<string, {
+  jobId: string;
   contractAddress: string;
   contractType: ContractType;
   loc: number;
@@ -201,6 +200,7 @@ async function main() {
 
     // Track for winner selection
     pendingJobs.set(String(jobId), {
+      jobId: String(jobId),
       contractAddress,
       contractType: resolved.contractType,
       loc: resolved.loc,
@@ -228,6 +228,7 @@ async function main() {
         updatePricingAfterOutcome(true);
         pendingJobs.delete(String(jobId));
         await simulateAuditCycle(
+          String(jobId),
           contractAddress,
           resolved.contractType,
           resolved.loc,
@@ -253,7 +254,15 @@ async function main() {
     updatePricingAfterOutcome(true);
     pendingJobs.delete(jobKey);
 
-    simulateAuditCycle(pending.contractAddress, pending.contractType, pending.loc, hcs, contracts, wallet.evmAddress)
+    simulateAuditCycle(
+      pending.jobId,
+      pending.contractAddress,
+      pending.contractType,
+      pending.loc,
+      hcs,
+      contracts,
+      wallet.evmAddress
+    )
       .catch(err => log.error(`Audit cycle failed: ${err}`));
   });
 
@@ -285,6 +294,7 @@ async function main() {
 }
 
 async function simulateAuditCycle(
+  jobId: string,
   contractAddress: string,
   contractType: ContractType,
   loc: number,
@@ -311,7 +321,7 @@ async function simulateAuditCycle(
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
-      jobId: contractAddress,
+      jobId,
       findingsHash,
       findingsCount: findings.length,
       criticalCount,
@@ -326,29 +336,49 @@ async function simulateAuditCycle(
 
   // ── Day 2: Sell scan report on DataMarketplace for 0.5 GUARD ──
   const reportPrice = ethers.parseUnits("0.5", 8);
+  const numericJobId = Number(jobId);
+  const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
+  let listingId: string | null = null;
   try {
-    await contracts.createListing(
-      0,                                 // parentJobId
+    const tx = await contracts.createListing(
+      parentJobId,
       `Scan report: ${contractType}`,     // title
       `Static analysis report for ${contractAddress.slice(0, 12)}...`, // description
       ListingCategory.SCAN_REPORT,        // category (uint8)
       reportPrice,                        // price
       findingsHash,                       // contentHash (bytes32)
     );
+    const receipt = await tx.wait();
+    if (receipt?.logs) {
+      for (const log of receipt.logs) {
+        try {
+          const parsed = contracts.dataMarketplace.interface.parseLog(log);
+          if (parsed?.name === "DataListed") {
+            listingId = String(parsed.args.listingId);
+            break;
+          }
+        } catch {
+          // Ignore unrelated logs.
+        }
+      }
+    }
     log.info("Scan report listed on DataMarketplace for 0.5 GUARD");
   } catch (err) {
     log.warn(`DataMarketplace listing failed (continuing): ${err}`);
   }
+
+  if (!listingId) return;
 
   await hcs.publishAgentComms({
     type: "DATA_LISTING_CREATED",
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
+      listingId,
       category: "SCAN_REPORT",
       price: 0.5,
       description: `Static analysis report for ${contractType} contract`,
-      jobId: contractAddress,
+      jobId,
     },
   });
 }
