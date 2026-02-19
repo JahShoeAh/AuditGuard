@@ -20,6 +20,8 @@ export class OrchestratorAgent {
     this.log = opts.log ?? createLogger("orchestrator");
     this.hcs = opts.hcs ?? new HCSClient();
     this.contracts = opts.contracts ?? this.buildContractClient();
+    this.strictLive = opts.strictLive ?? CONFIG.strictLive;
+    this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
@@ -40,6 +42,9 @@ export class OrchestratorAgent {
       }
       return client;
     } catch (err) {
+      if (this.strictLive && !CONFIG.demoMode) {
+        throw new Error(`Contract client init failed in strict live mode: ${err.message}`);
+      }
       this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
       return {
         auction: {},
@@ -279,8 +284,10 @@ export class OrchestratorAgent {
         const existing = this.getJobByKey(jobId);
         this.jobs.delete(this.normalizeJobId(jobId));
         this.jobs.delete(jobId);
-        existing.onChainJobId = onChainJobId;
-        this.jobs.set(onChainJobId, existing);
+        if (existing) {
+          existing.onChainJobId = onChainJobId;
+          this.setJobByKey(onChainJobId, existing);
+        }
         jobId = onChainJobId;
       }
       auctionOpenedOnChain = true;
@@ -506,8 +513,46 @@ export class OrchestratorAgent {
       return;
     }
 
+    if (this.strictLive) {
+      const buyer = this.orchestratorAddress;
+      if (!buyer || !ethers.isAddress(buyer)) {
+        this.log.warn(`Strict live: skipping auto-buy for listing ${listingId}, invalid orchestrator buyer address`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "invalid_buyer_address" },
+        });
+        return;
+      }
+
+      if (!this.contracts.agentRegistry?.isActiveAgent) {
+        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, cannot verify buyer activity`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "agent_registry_unavailable", buyer },
+        });
+        return;
+      }
+
+      const isActive = await this.contracts.agentRegistry.isActiveAgent(buyer);
+      if (!isActive) {
+        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, buyer ${buyer} is not an active agent`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "inactive_buyer_agent", buyer },
+        });
+        return;
+      }
+    }
+
     try {
-      await this.contracts.dataMarketplace.purchaseData(Number(listingId ?? 0));
+      const listingKey = this.toChainUint(listingId, "listingId");
+      await this.contracts.dataMarketplace.purchaseData(listingKey);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
       await this.hcs.publishAuditLog({
         type: "DATA_PURCHASED",
@@ -774,8 +819,9 @@ export class OrchestratorAgent {
     this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
   }
 
-  selectWinnersFallback(jobId) {
-    const job = this.jobs.get(jobId);
+  async selectWinnersFallback(jobId) {
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key);
     if (!job) return;
 
     let selectedWinners;
@@ -834,12 +880,42 @@ export class OrchestratorAgent {
 
     job.winners = winnerAddresses;
 
-    this.hcs.publishAuditLog({
-      type: MessageType.WINNERS_SELECTED_FALLBACK,
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: { jobId, winners: winnerAddresses },
-    }).catch((err) => this.log.warn(`Failed to publish fallback winners: ${err}`));
+    // Try on-chain first
+    try {
+      const winningBidIndices = selectedWinners
+        .map((w) => w.bidIndex)
+        .filter((idx) => Number.isInteger(idx));
+      if (!winningBidIndices.length) {
+        throw new Error("No valid winning bid indices");
+      }
+      const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
+      this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+      job.winnerSource = "on-chain";
+      return;
+    } catch (err) {
+      this.log.warn(`[Orchestrator] On-chain selectWinners failed: ${err.message}. Falling back to HCS.`);
+    }
+
+    // Fallback: publish to agentComms (NOT just auditLog)
+    const selectionEpoch = Date.now();
+    job.selectionEpoch = selectionEpoch;
+    job.winnerSource = "fallback";
+
+    const fallbackPayload = {
+      type: "WINNERS_SELECTED_FALLBACK",
+      payload: {
+        jobId,
+        winners: selectedWinners.map(w => ({ agentId: w.agentId, evmAddress: w.evmAddress })),
+        selectionEpoch,
+        winnerSource: "fallback"
+      }
+    };
+
+    // Publish to agentComms so agents receive it
+    await this.hcs.publish(CONFIG.hcsTopics.agentComms, fallbackPayload);
+    // Also publish to auditLog for dashboard visibility
+    await this.hcs.publish(CONFIG.hcsTopics.auditLog, fallbackPayload);
+    this.log.info(`[Orchestrator] Published WINNERS_SELECTED_FALLBACK to agentComms + auditLog for job ${jobId}`);
   }
 
   subscribeContractEvents() {
