@@ -8,6 +8,15 @@ import {
 } from "@hashgraph/sdk";
 import { CONFIG, getOperatorKeys } from "./config.js";
 
+function parsePrivateKey(raw) {
+  const key = String(raw ?? "").trim().replace(/^['"]|['"]$/g, "");
+  const stripped = key.startsWith("0x") ? key.slice(2) : key;
+  if (/^[0-9a-fA-F]{64}$/.test(stripped)) {
+    return PrivateKey.fromStringECDSA(stripped);
+  }
+  return PrivateKey.fromString(key);
+}
+
 // Simple HCS wrapper with JSON payloads
 export class HCSClient {
   constructor(client) {
@@ -17,7 +26,7 @@ export class HCSClient {
   static buildClient() {
     const { accountId, privateKey } = getOperatorKeys();
     const client = Client.forTestnet();
-    client.setOperator(AccountId.fromString(accountId), PrivateKey.fromString(privateKey));
+    client.setOperator(AccountId.fromString(accountId), parsePrivateKey(privateKey));
     return client;
   }
 

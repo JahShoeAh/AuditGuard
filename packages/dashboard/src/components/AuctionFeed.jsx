@@ -42,6 +42,8 @@ function EmptyState() {
 export default function AuctionFeed() {
   const activeJobs = useStore((s) => s.activeJobs);
   const bids = useStore((s) => s.bids);
+  const jobBidStatus = useStore((s) => s.jobBidStatus);
+  const llmInferenceStatus = useStore((s) => s.llmInferenceStatus);
   const winners = useStore((s) => s.winners);
   const config = useStore((s) => s.config);
 
@@ -56,6 +58,8 @@ export default function AuctionFeed() {
       .map((job) => ({
         job,
         bids: bids[job.jobId] || [],
+        bidLifecycle: jobBidStatus[job.jobId] || [],
+        llmInference: llmInferenceStatus[job.jobId] || [],
         winnerData: winners[job.jobId] || null,
       }))
       .sort((a, b) => {
@@ -65,7 +69,7 @@ export default function AuctionFeed() {
         if (aHasWinner !== bHasWinner) return aHasWinner - bHasWinner;
         return Number(b.job.jobId) - Number(a.job.jobId);
       });
-  }, [activeJobs, bids, winners]);
+  }, [activeJobs, bids, jobBidStatus, llmInferenceStatus, winners]);
 
   // Track recently-arrived bids (within last 3s) for highlight effect
   const recentBidTimestamps = useMemo(() => {
@@ -119,11 +123,13 @@ export default function AuctionFeed() {
               <EmptyState />
             </motion.div>
           ) : (
-            auctions.map(({ job, bids: jobBids, winnerData }) => (
+            auctions.map(({ job, bids: jobBids, bidLifecycle, llmInference, winnerData }) => (
               <AuctionCard
                 key={job.jobId}
                 job={job}
                 bids={jobBids}
+                bidLifecycle={bidLifecycle}
+                llmInference={llmInference}
                 winnerData={winnerData}
                 recentBidTimestamps={recentBidTimestamps}
               />

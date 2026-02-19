@@ -19,6 +19,7 @@ import {
 import { getAgentEnv } from "./config.js";
 
 const HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
+const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 
 export interface AgentWallet {
     /** ethers.js Wallet connected to Hedera JSON-RPC (for EVM contract calls) */
@@ -73,7 +74,10 @@ export function createAgentWallet(agentName: string): AgentWallet {
     // ethers.js Wallet for EVM contract calls
     // We need the raw hex key for ethers — extract from the Hedera key
     const hexKey = hederaKey.toStringRaw();
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, undefined, { batchMaxCount: 1 });
+    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, HEDERA_NETWORK, {
+        batchMaxCount: 1,
+        staticNetwork: true,
+    });
     const evmWallet = new ethers.Wallet(hexKey, provider);
 
     return {

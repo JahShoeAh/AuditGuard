@@ -1,6 +1,6 @@
 {
-  "guardTokenId": "0.0.7936262",
-  "guardTokenEvmAddress": "0x0000000000000000000000000000000000791906",
+  "guardTokenId": "0.0.7977433",
+  "guardTokenEvmAddress": "0x000000000000000000000000000000000079b9d9",
   "hcsTopics": {
     "discovery": "0.0.7940144",
     "auditLog": "0.0.7940145",
@@ -8,49 +8,49 @@
   },
   "contracts": {
     "agentRegistry": {
-      "id": "0.0.e86218b5bf5c21ca7a69cba04c5be0d3c2be2303",
-      "evmAddress": "0xe86218b5Bf5C21CA7a69cba04C5be0D3c2Be2303"
+      "id": "0.0.1ee673fc57112b0174db88431c37792338e58b70",
+      "evmAddress": "0x1ee673fC57112b0174dB88431c37792338e58b70"
     },
     "budgetVault": {
-      "id": "0.0.68780a12b36f3ed04cef937efc38b593683c5fcd",
-      "evmAddress": "0x68780A12b36f3ed04CEF937EFc38b593683c5fCd"
+      "id": "0.0.e960142c47bccdea16fe504acee8282233fea0de",
+      "evmAddress": "0xE960142c47BCCdEa16fE504acee8282233FeA0de"
     },
     "auctionContract": {
-      "id": "0.0.95a0a0e78a32c849526d6ac32e98c6829fb2cd88",
-      "evmAddress": "0x95A0A0e78a32c849526d6AC32e98c6829FB2Cd88"
+      "id": "0.0.49699e9eb9d2f14b0d641e4c1b30bec8ade02bc7",
+      "evmAddress": "0x49699E9eB9D2f14B0D641E4C1b30BEc8ade02Bc7"
     },
     "subAuction": {
-      "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
-      "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+      "id": "0.0.7977479",
+      "evmAddress": "0x9180cc0FE26C48B76C2Ae742b0DFE21f7A0C7d08"
     },
     "dataMarketplace": {
-      "id": "0.0.e7f1725e7734ce288f8367e1bb143e90bb3f0512",
-      "evmAddress": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+      "id": "0.0.7977483",
+      "evmAddress": "0x8Df5782c83e03488F68f92e87617e8941F602D36"
     },
     "paymentSettlement": {
-      "id": "0.0.9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
-      "evmAddress": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      "id": "0.0.7977485",
+      "evmAddress": "0x191c385DF72E110d1D8Db3f65a149E014516BfDA"
     },
     "vaultFactory": {
-      "id": "0.0.9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
-      "evmAddress": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      "id": "0.0.7977489",
+      "evmAddress": "0xf8EdB1F55894F6b196245f4a46bDe9e4fb04a750"
     },
     "stakingManager": {
-      "id": "0.0.e7f1725e7734ce288f8367e1bb143e90bb3f0512",
-      "evmAddress": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+      "id": "0.0.7977488",
+      "evmAddress": "0xd76B95CEBdEcf431D3D1376551e6764000e6ffc7"
     },
     "treasury": {
-      "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
-      "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+      "id": "0.0.7977486",
+      "evmAddress": "0xC4736e92fbd50663b0C1bd68d7Bf6cdC1FC04D9e"
     },
     "delegatedStaking": {
-      "id": "0.0.5fbdb2315678afecb367f032d93f642f64180aa3",
-      "evmAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+      "id": "0.0.7977494",
+      "evmAddress": "0x5843aF31d9BB3b85b05bD715E4770199c091d9Ad"
     },
     "auditScheduler": {
-      "address": "0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6",
-      "evmAddress": "0x39abe1e38dbd77a89e445ab9957c3c9b27cba5f6",
-      "deployedAt": "2026-02-19T00:23:58.441Z"
+      "address": "0x67d67C1c721241f9350d3ecA0C0a1B6D53E69860",
+      "evmAddress": "0x67d67c1c721241f9350d3eca0c0a1b6d53e69860",
+      "deployedAt": "2026-02-19T04:40:23.961Z"
     }
   },
   "seededAgents": {},
@@ -63,7 +63,7 @@
   },
   "day2": {
     "settlementPreFunded": 500,
-    "deployedAt": "2026-02-15T20:03:45.941Z"
+    "deployedAt": "2026-02-19T04:48:18.232Z"
   },
   "inftCollections": {
     "auditJob": {
@@ -110,11 +110,11 @@
         "skipped": true
       }
     },
-    "deployedAt": "2026-02-17T03:36:14.488Z"
+    "deployedAt": "2026-02-19T04:52:12.873Z"
   },
   "day4": {
-    "delegatedStakingAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    "deployedAt": "2026-02-18T23:18:00.114Z",
+    "delegatedStakingAddress": "0x5843aF31d9BB3b85b05bD715E4770199c091d9Ad",
+    "deployedAt": "2026-02-19T04:52:58.829Z",
     "notes": [
       "GUARD amounts use 8 decimal places (minDelegation = 10 * 10**8).",
       "Frontend must use parseUnits(amount, 8) — NOT parseUnits(amount, 18).",
@@ -125,10 +125,20 @@
     ]
   },
   "timelockVault": {
-    "evmAddress": "0x6121D1B63E349D26Fd147FDCa791c515FfdDbE60",
-    "contractId": "0.0.6121d1b63e349d26fd147fdca791c515ffddbe60",
-    "deployedAt": "2026-02-18T23:34:26.979Z",
-    "deployer": "0x49b10D6983BFB1BcA4706E34151fd83e7FEC8B9b",
+    "evmAddress": "0x07619dF86928416Ba8757bd5359415A256684483",
+    "contractId": "0.0.07619df86928416ba8757bd5359415a256684483",
+    "deployedAt": "2026-02-19T04:39:33.488Z",
+    "deployer": "0xDC126e103fC1193B6eeCFc336c10746e9D9D885a",
     "description": "HBAR time-lock vault — AuditGuard pipeline demo target"
+  },
+  "vaults": {
+    "lendingProtocolV2": {
+      "contractAddress": "0x1212121212121212121212121212121212121212",
+      "vaultInstanceAddress": "0xCCA0aAd5644A677375dD58e312864a6C98a517C8",
+      "budget": 300,
+      "weeklyMonitoring": 10,
+      "criticalBounty": 50,
+      "reauditInterval": 300
+    }
   }
 }

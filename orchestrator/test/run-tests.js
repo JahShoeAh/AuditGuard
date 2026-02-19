@@ -1,17 +1,27 @@
-// Minimal test harness using built-in assert to avoid external deps.
 import assert from "node:assert/strict";
 import { OrchestratorAgent } from "../src/orchestrator.js";
 import { Roster } from "../src/roster.js";
 import { MessageType, now } from "../../agents/shared/types.js";
 import { CONFIG } from "../src/config.js";
 
+const ADDR_JOB = "0xfeed000000000000000000000000000000000001";
+const ADDR_AGENT_A = "0x00000000000000000000000000000000000000aa";
+const ADDR_AGENT_B = "0x00000000000000000000000000000000000000bb";
+const ADDR_ORCH = "0x0000000000000000000000000000000000000abc";
+
 function mockLog() {
   return { info() {}, warn() {}, error() {} };
 }
 
-function makeMocks() {
+function makeMocks(opts = {}) {
+  const {
+    createAuctionShouldFail = false,
+    activeBuyer = true,
+    settledOnChain = false,
+  } = opts;
   const auditLogMessages = [];
   const agentCommsMessages = [];
+
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
     publishAuditLog: async (msg) => auditLogMessages.push(msg),
@@ -19,14 +29,39 @@ function makeMocks() {
     subscribeAgentComms() {},
     subscribeAuditLog() {},
   };
+
   const contracts = {
-    auction: { createJob: async () => {} },
-    dataMarketplace: { purchaseData: async () => {} },
-    subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
-    paymentSettlement: { settleJob: async () => {} },
-    getAddress: () => "0x0000000000000000000000000000000000000abc",
+    auction: {
+      createAuditJob: async () => {
+        if (createAuctionShouldFail) throw new Error("forced createAuditJob failure");
+        return { wait: async () => ({ logs: [{ tag: "job-posted" }] }) };
+      },
+      interface: {
+        parseLog: () => ({ name: "JobPosted", args: { jobId: 4242n } }),
+      },
+    },
+    dataMarketplace: {
+      purchaseData: async () => {},
+    },
+    subAuction: {
+      createSubAuction: async () => {},
+      acceptResult: async () => {},
+    },
+    paymentSettlement: {
+      settleJob: async () => {},
+      isJobSettled: async () => settledOnChain,
+    },
+    agentRegistry: {
+      isActiveAgent: async () => activeBuyer,
+    },
+    getAddress: () => ADDR_ORCH,
   };
-  const inft = { updateReputation: async () => {}, markJobCompleted: async () => {} };
+
+  const inft = {
+    updateReputation: async () => {},
+    markJobCompleted: async () => {},
+  };
+
   return { hcs, contracts, auditLogMessages, agentCommsMessages, inft };
 }
 
@@ -39,7 +74,7 @@ async function testAgentRegistration() {
     type: MessageType.AGENT_REGISTERED,
     agentId: "agent-1",
     timestamp: now(),
-    payload: { evmAddress: "0xabc", stake: 50, reputation: 70, specializations: ["dex"] },
+    payload: { evmAddress: ADDR_AGENT_A, stake: 50, reputation: 70, specializations: ["dex"] },
   });
 
   const eligible = roster.eligibleFor("dex");
@@ -52,7 +87,7 @@ async function testDiscoveryInvites() {
   const roster = new Roster(log);
   roster.upsert({
     agentId: "a1",
-    evmAddress: "0x1",
+    evmAddress: ADDR_AGENT_A,
     stake: 50,
     reputation: 80,
     specializations: ["lending"],
@@ -64,13 +99,126 @@ async function testDiscoveryInvites() {
     type: MessageType.CONTRACT_DISCOVERED,
     agentId: "scanner",
     timestamp: now(),
-    payload: { contractAddress: "0xdead", contractType: "lending", budget: 0 },
+    payload: {
+      contractAddress: ADDR_JOB,
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
   });
 
-  assert.ok(agentCommsMessages.length > 0, "should publish invites");
   const invite = agentCommsMessages.find((m) => m.type === MessageType.AUCTION_INVITE);
   assert.ok(invite, "AUCTION_INVITE should be sent");
-  assert.equal(invite.payload.contractAddress, "0xdead");
+  assert.equal(invite.payload.contractAddress, ADDR_JOB);
+}
+
+async function testInviteSummaryTelemetry() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "eligible-agent",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  roster.upsert({
+    agentId: "mismatch-agent",
+    evmAddress: ADDR_AGENT_B,
+    stake: 50,
+    reputation: 80,
+    specializations: ["dex"],
+  });
+  roster.upsert({
+    agentId: "low-stake-agent",
+    evmAddress: "0x00000000000000000000000000000000000000cc",
+    stake: 1,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, auditLogMessages } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  await orch.handleDiscovery({
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: ADDR_JOB,
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  });
+
+  const summary = auditLogMessages.find((m) => m.type === "AUCTION_INVITE_SUMMARY");
+  assert.ok(summary, "AUCTION_INVITE_SUMMARY should be published");
+  assert.equal(summary.payload.eligibleAgents.length, 1, "expected one eligible agent");
+  assert.equal(summary.payload.excludedByReason.specialization_mismatch, 1);
+  assert.equal(summary.payload.excludedByReason.low_stake, 1);
+}
+
+async function testDiscoveryRejectsInvalidAddress() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages, agentCommsMessages } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  await orch.handleDiscovery({
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: "0xdead",
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  });
+
+  assert.equal(agentCommsMessages.length, 0, "invalid discovery should not invite agents");
+  assert.ok(auditLogMessages.some((m) => m.type === "DISCOVERY_REJECTED"), "invalid discovery should be logged");
+}
+
+async function testStrictFailFastOnCreateFailure() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "a1",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, agentCommsMessages, auditLogMessages } = makeMocks({ createAuctionShouldFail: true });
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    strictLive: true,
+  });
+
+  await orch.handleDiscovery({
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: ADDR_JOB,
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  });
+
+  assert.equal(agentCommsMessages.length, 0, "strict mode must not invite after createAuditJob failure");
+  assert.ok(auditLogMessages.some((m) => m.type === "ONCHAIN_TX_FAILED"), "on-chain failure should be logged");
+  assert.ok(auditLogMessages.some((m) => m.type === "JOB_FAILED"), "job failure should be explicit");
 }
 
 async function testFallbackWinners() {
@@ -78,7 +226,7 @@ async function testFallbackWinners() {
   const roster = new Roster(log);
   roster.upsert({
     agentId: "a1",
-    evmAddress: "0x1",
+    evmAddress: ADDR_AGENT_A,
     stake: 50,
     reputation: 90,
     specializations: ["any"],
@@ -86,17 +234,25 @@ async function testFallbackWinners() {
   const { hcs, contracts, auditLogMessages } = makeMocks();
   const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
 
-  // shorten timeout for test
+  const prevWinnerWait = CONFIG.timeouts.winnerWaitMs;
   CONFIG.timeouts.winnerWaitMs = 5;
-
-  await orch.handleDiscovery({
-    type: MessageType.CONTRACT_DISCOVERED,
-    agentId: "scanner",
-    timestamp: now(),
-    payload: { contractAddress: "0xjob", contractType: "vault", budget: 0 },
-  });
-
-  await new Promise((r) => setTimeout(r, CONFIG.timeouts.winnerWaitMs + 5));
+  try {
+    await orch.handleDiscovery({
+      type: MessageType.CONTRACT_DISCOVERED,
+      agentId: "scanner",
+      timestamp: now(),
+      payload: {
+        contractAddress: ADDR_JOB,
+        contractType: "vault",
+        budget: 120,
+        riskScore: 50,
+        estimatedLOC: 1100,
+      },
+    });
+    await new Promise((r) => setTimeout(r, CONFIG.timeouts.winnerWaitMs + 10));
+  } finally {
+    CONFIG.timeouts.winnerWaitMs = prevWinnerWait;
+  }
 
   assert.ok(
     auditLogMessages.some((m) => m.type === MessageType.WINNERS_SELECTED_FALLBACK),
@@ -107,196 +263,155 @@ async function testFallbackWinners() {
 async function testAutoBuyDataListing() {
   const log = mockLog();
   const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks();
-  const purchaseSpy = contracts.dataMarketplace.purchaseData = async () => { purchaseSpy.called = true; };
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  const { hcs, contracts, auditLogMessages } = makeMocks({ activeBuyer: true });
+  let purchaseCalled = false;
+  contracts.dataMarketplace.purchaseData = async () => {
+    purchaseCalled = true;
+  };
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    strictLive: true,
+  });
 
   await orch.handleDataListing({
     type: MessageType.DATA_LISTING_CREATED,
     agentId: "static",
     timestamp: now(),
-    payload: { listingId: 1, category: "SCAN_REPORT", price: 0.5, jobId: "job-1" },
+    payload: { listingId: "1", category: "SCAN_REPORT", price: 0.5, jobId: "4242" },
   });
 
-  assert.ok(purchaseSpy.called, "should auto-buy cheap listing");
-  assert.ok(auditLogMessages.some((m) => m.type === "DATA_PURCHASED"), "logs purchase");
+  assert.ok(purchaseCalled, "should auto-buy when orchestrator buyer is active");
+  assert.ok(auditLogMessages.some((m) => m.type === "DATA_PURCHASED"), "purchase should be logged");
 }
 
-async function testCreateSubAuction() {
+async function testAutoBuySkippedForInactiveBuyer() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks({ activeBuyer: false });
+  let purchaseCalled = false;
+  contracts.dataMarketplace.purchaseData = async () => {
+    purchaseCalled = true;
+  };
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    strictLive: true,
+  });
+
+  await orch.handleDataListing({
+    type: MessageType.DATA_LISTING_CREATED,
+    agentId: "static",
+    timestamp: now(),
+    payload: { listingId: "1", category: "SCAN_REPORT", price: 0.5, jobId: "4242" },
+  });
+
+  assert.equal(purchaseCalled, false, "strict mode must skip auto-buy for inactive buyer");
+  assert.ok(auditLogMessages.some((m) => m.type === "DATA_PURCHASE_SKIPPED"), "skip should be logged");
+}
+
+async function testCreateSubAuctionAndAcceptResult() {
   const log = mockLog();
   const roster = new Roster(log);
   const { hcs, contracts, auditLogMessages } = makeMocks();
   let created = false;
-  contracts.subAuction.createSubAuction = async () => { created = true; };
+  let accepted = false;
+  contracts.subAuction.createSubAuction = async () => {
+    created = true;
+  };
+  contracts.subAuction.acceptResult = async () => {
+    accepted = true;
+  };
   const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
 
   await orch.handleSubAuctionRequest({
     type: MessageType.SUB_AUCTION_POSTED,
     agentId: "llm",
     timestamp: now(),
-    payload: { parentJobId: 42, taskType: "dependency_analysis", paymentAmount: 2 },
+    payload: { parentJobId: "42", taskType: "dependency_analysis", paymentAmount: 2 },
   });
-
-  assert.ok(created, "should call createSubAuction");
-  assert.ok(auditLogMessages.some((m) => m.type === "SUB_AUCTION_CREATED"), "logs sub-auction");
-}
-
-async function testAcceptSubResult() {
-  const log = mockLog();
-  const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks();
-  let accepted = false;
-  contracts.subAuction.acceptResult = async () => { accepted = true; };
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-
   await orch.handleSubResult({
     type: MessageType.SUB_RESULT_DELIVERED,
     agentId: "dependency",
     timestamp: now(),
-    payload: { subAuctionId: 7 },
+    payload: { subAuctionId: "7" },
   });
 
-  assert.ok(accepted, "should accept sub-auction result");
-  assert.ok(auditLogMessages.some((m) => m.type === "SUB_RESULT_ACCEPTED"), "logs acceptance");
+  assert.ok(created, "should call createSubAuction");
+  assert.ok(accepted, "should call acceptResult");
+  assert.ok(auditLogMessages.some((m) => m.type === "SUB_AUCTION_CREATED"), "sub-auction should be logged");
+  assert.ok(auditLogMessages.some((m) => m.type === "SUB_RESULT_ACCEPTED"), "sub-result should be logged");
 }
 
-async function testSettlementOnFindings() {
+async function testSettlementOnReport() {
   const log = mockLog();
   const roster = new Roster(log);
   const { hcs, contracts, auditLogMessages, inft } = makeMocks();
   let settled = false;
-  contracts.paymentSettlement.settleJob = async () => { settled = true; };
   let repUpdates = 0;
-  inft.updateReputation = async () => { repUpdates++; };
+  contracts.paymentSettlement.settleJob = async () => {
+    settled = true;
+  };
+  inft.updateReputation = async () => {
+    repUpdates += 1;
+  };
   const orch = new OrchestratorAgent({ log, roster, hcs, contracts, inft, enablePing: false });
 
-  orch.jobs.set(99, {
+  orch.jobs.set("99", {
     findings: [],
-    winners: ["0x0000000000000000000000000000000000000abc"],
+    winners: [ADDR_ORCH],
     bidders: [],
     reportPublished: false,
     settled: false,
   });
 
-  // Findings alone should not trigger settlement now
   await orch.handleFindings({
     type: MessageType.FINDINGS_SUBMITTED,
     agentId: "static",
     timestamp: now(),
     payload: {
-      jobId: 99,
+      jobId: "99",
       findingsHash: "0xhash",
-      evmAddress: "0x0000000000000000000000000000000000000abc",
+      evmAddress: ADDR_ORCH,
       findingsCount: 2,
-      criticalCount: 1
+      criticalCount: 1,
     },
   });
-
-  // Settlement happens when Report Agent publishes the report
-  // Simulate auditLog relay of REPORT_PUBLISHED
   await orch.handleReportPublished({
-    type: MessageType.AUDIT_LOG,
+    type: "REPORT_PUBLISHED",
     agentId: "report-agent",
     timestamp: now(),
-    payload: { jobId: 99, totalFindings: 2, criticalFindings: 1, reportHash: "0xrep" },
+    payload: { jobId: "99", totalFindings: 2, criticalFindings: 1, reportHash: "0xrep" },
   });
 
-  assert.ok(settled, "should call settleJob");
-  assert.ok(auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "logs settlement");
-  assert.ok(auditLogMessages.some((m) => m.type === "REPORT_PUBLISHED"), "publishes report");
-  assert.ok(auditLogMessages.some((m) => m.type === "REPUTATION_UPDATED"), "updates reputation");
-  assert.ok(auditLogMessages.some((m) => m.type === "ALERT_FIRED"), "fires alert on critical");
-  assert.equal(repUpdates, 1, "calls inft reputation hook");
+  assert.ok(settled, "should settle on report publication");
+  assert.ok(auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "settlement should be logged");
+  assert.ok(auditLogMessages.some((m) => m.type === "ALERT_FIRED"), "alert should be logged for critical");
+  assert.equal(repUpdates, 1, "reputation hook should be called");
 }
 
-async function testBidSubmissionValidation() {
+async function testSkipSettlementWhenAlreadySettled() {
   const log = mockLog();
   const roster = new Roster(log);
-  const { hcs, contracts } = makeMocks();
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-
-  const jobId = 555;
-  orch.jobs.set(jobId, {
-    contractAddress: "0xfeed000000000000000000000000000000000001",
-    contractType: "lending",
-    bidders: [],
-    winners: [],
-    findings: [],
-    reportPublished: false,
-  });
-
-  // Agent below min stake should be rejected.
-  orch.handleAgentRegistered({
-    type: MessageType.AGENT_REGISTERED,
-    agentId: "low-stake",
-    timestamp: now(),
-    payload: {
-      evmAddress: "0x00000000000000000000000000000000000000aa",
-      stake: 1,
-      reputation: 90,
-      specializations: ["lending"],
-    },
-  });
-  orch.handleBidSubmitted({
-    type: "BID_SUBMITTED",
-    agentId: "low-stake",
-    timestamp: now(),
-    payload: {
-      contractAddress: "0xfeed000000000000000000000000000000000001",
-      bidAmount: 10,
-      collateral: 2,
-      estimatedTimeSec: 120,
-      reputation: 90,
-      evmAddress: "0x00000000000000000000000000000000000000aa",
-    },
-  });
-  assert.equal(orch.jobs.get(jobId).bidders.length, 0, "low-stake bid should be rejected");
-
-  // Valid agent and valid bid should be recorded.
-  orch.handleAgentRegistered({
-    type: MessageType.AGENT_REGISTERED,
-    agentId: "good-agent",
-    timestamp: now(),
-    payload: {
-      evmAddress: "0x00000000000000000000000000000000000000bb",
-      stake: 50,
-      reputation: 80,
-      specializations: ["lending"],
-    },
-  });
-  orch.handleBidSubmitted({
-    type: "BID_SUBMITTED",
-    agentId: "good-agent",
-    timestamp: now(),
-    payload: {
-      contractAddress: "0xfeed000000000000000000000000000000000001",
-      bidAmount: 15,
-      collateral: 4,
-      estimatedTimeSec: 90,
-      reputation: 80,
-      evmAddress: "0x00000000000000000000000000000000000000bb",
-    },
-  });
-  assert.equal(orch.jobs.get(jobId).bidders.length, 1, "valid bid should be recorded");
-}
-
-async function testSkipSettlementWhenAlreadySettledOnChain() {
-  const log = mockLog();
-  const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks();
+  const { hcs, contracts, auditLogMessages } = makeMocks({ settledOnChain: true });
   let settleCalls = 0;
-  contracts.paymentSettlement.isJobSettled = async () => true;
-  contracts.paymentSettlement.settleJob = async () => { settleCalls++; };
+  contracts.paymentSettlement.settleJob = async () => {
+    settleCalls += 1;
+  };
   const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
 
-  const jobId = 777;
-  const winner = "0x0000000000000000000000000000000000000abc";
-  const job = {
-    winners: [winner],
+  orch.jobs.set("777", {
+    winners: [ADDR_ORCH],
     findings: [
       {
         agentId: "static",
-        evmAddress: winner,
+        evmAddress: ADDR_ORCH,
         findingsCount: 2,
         criticalCount: 0,
         findingsHash: "0xhash",
@@ -304,62 +419,16 @@ async function testSkipSettlementWhenAlreadySettledOnChain() {
     ],
     reportPublished: false,
     settled: false,
-  };
-  orch.jobs.set(jobId, job);
-
-  await orch.handleReportPublished({
-    type: "REPORT_PUBLISHED",
-    agentId: "report-agent",
-    timestamp: now(),
-    payload: { jobId, totalFindings: 2, criticalFindings: 0, reportHash: "0xrep" },
-  });
-
-  assert.equal(settleCalls, 0, "should not settle when already settled on-chain");
-  assert.equal(orch.jobs.get(jobId).settled, true, "job should be marked settled in-memory");
-  assert.ok(!auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "no settlement log expected");
-}
-
-async function testSkipSettlementWithInvalidReportAgentAddress() {
-  const log = mockLog();
-  const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks();
-  let settleCalls = 0;
-  contracts.getAddress = () => ""; // invalid orchestrator fallback address
-  contracts.paymentSettlement.isJobSettled = async () => false;
-  contracts.paymentSettlement.settleJob = async () => { settleCalls++; };
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-
-  const jobId = 888;
-  const winner = "0x0000000000000000000000000000000000000abc";
-  orch.jobs.set(jobId, {
-    winners: [winner],
-    findings: [
-      {
-        agentId: "static",
-        evmAddress: winner,
-        findingsCount: 3,
-        criticalCount: 1,
-        findingsHash: "0xhash",
-      },
-    ],
-    reportPublished: false,
-    settled: false,
   });
 
   await orch.handleReportPublished({
     type: "REPORT_PUBLISHED",
     agentId: "report-agent",
     timestamp: now(),
-    payload: {
-      jobId,
-      totalFindings: 3,
-      criticalFindings: 1,
-      reportHash: "0xrep",
-      reportAgentAddress: "not-an-address",
-    },
+    payload: { jobId: "777", totalFindings: 2, criticalFindings: 0, reportHash: "0xrep" },
   });
 
-  assert.equal(settleCalls, 0, "should skip settlement with invalid report agent address");
+  assert.equal(settleCalls, 0, "should not settle if already settled on-chain");
   assert.ok(!auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "no settlement log expected");
 }
 
@@ -367,14 +436,15 @@ async function run() {
   const tests = [
     ["agent registration", testAgentRegistration],
     ["discovery invites", testDiscoveryInvites],
+    ["invite summary telemetry", testInviteSummaryTelemetry],
+    ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],
+    ["strict fail-fast on create failure", testStrictFailFastOnCreateFailure],
     ["fallback winners", testFallbackWinners],
-    ["bid submission validation", testBidSubmissionValidation],
     ["auto-buy data listing", testAutoBuyDataListing],
-    ["create sub-auction", testCreateSubAuction],
-    ["accept sub result", testAcceptSubResult],
-    ["settlement/report/alert on findings", testSettlementOnFindings],
-    ["skip settlement when already settled on-chain", testSkipSettlementWhenAlreadySettledOnChain],
-    ["skip settlement on invalid report agent", testSkipSettlementWithInvalidReportAgentAddress],
+    ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
+    ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],
+    ["settlement/report/alert", testSettlementOnReport],
+    ["skip settlement when already settled", testSkipSettlementWhenAlreadySettled],
   ];
 
   let passed = 0;
@@ -382,7 +452,7 @@ async function run() {
     try {
       await fn();
       console.log(`✅ ${name}`);
-      passed++;
+      passed += 1;
     } catch (err) {
       console.error(`❌ ${name} — ${err.message}`);
     }

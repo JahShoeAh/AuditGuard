@@ -526,10 +526,13 @@ async function migrateAgentStakes(deployer, config, state) {
       // We need the agent's private key to sign, but in the hackathon setup
       // the deployer holds all agent keys via env vars. If agent keys aren't
       // available, the agent can stake later on their own.
-      const envKeyName = spec.label === "staticAnalysis47" ? "AUDITOR_AGENT_1"
+      const keyName = spec.label === "staticAnalysis47" ? "STATIC"
+        : spec.label === "fuzzer12" ? "FUZZER"
+        : "LLM";
+      const legacyKey = spec.label === "staticAnalysis47" ? "AUDITOR_AGENT_1"
         : spec.label === "fuzzer12" ? "AUDITOR_AGENT_2"
         : "AUDITOR_AGENT_3";
-      const rawPk = process.env[`${envKeyName}_PRIVATE_KEY`];
+      const rawPk = process.env[`${keyName}_PRIVATE_KEY`] || process.env[`${legacyKey}_PRIVATE_KEY`];
 
       if (rawPk) {
         try {

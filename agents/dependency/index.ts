@@ -1,6 +1,7 @@
 import {
   HCSClient,
   ContractClient,
+  CONFIG,
   createAgentLogger,
   createAgentWallet,
   randomInt,
@@ -13,9 +14,18 @@ import { ethers } from "ethers";
 // ---- Config ----
 const AGENT_ID = "dependency-analyzer-008";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const STRICT_LIVE = CONFIG.strictLive;
 let currentBacklog = 0;
 
 const log = createAgentLogger(AGENT_ID, "dependency");
+
+function parseChainUint(value: string | number | bigint): bigint {
+  const normalized = typeof value === "bigint" ? value.toString() : String(value);
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid numeric id: ${normalized}`);
+  }
+  return BigInt(normalized);
+}
 
 // ---- Bidding Logic ----
 
@@ -94,8 +104,23 @@ async function main() {
     );
 
     const bid = calculateSubBid(paymentAmount, currentBacklog);
-    const numericSubAuctionId = Number(subAuctionId);
-    const onChainSubAuctionId = Number.isFinite(numericSubAuctionId) ? numericSubAuctionId : 0;
+    let onChainSubAuctionId: bigint;
+    try {
+      onChainSubAuctionId = parseChainUint(subAuctionId);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Invalid sub-auction id: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "SUB_BID_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { subAuctionId, parentJobId, strictLive: true, error },
+        });
+        return;
+      }
+      onChainSubAuctionId = BigInt(0);
+    }
 
     log.info(`Sub-bidding: ${bid.amount} GUARD (est. ${bid.estimatedTimeSec}s)`);
 
@@ -114,7 +139,17 @@ async function main() {
       );
       log.info("Sub-bid submitted on-chain");
     } catch (err) {
-      log.warn(`On-chain sub-bid failed (continuing via HCS): ${err}`);
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`On-chain sub-bid failed: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "SUB_BID_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { subAuctionId, parentJobId, strictLive: true, error },
+        });
+        return;
+      }
     }
 
     await hcs.publishAuditLog({
@@ -151,7 +186,17 @@ async function main() {
           await contracts.deliverResult(onChainSubAuctionId, result.analysisHash);
           log.info("Result delivered on-chain");
         } catch (err) {
-          log.warn(`On-chain delivery failed (continuing via HCS): ${err}`);
+          const error = err instanceof Error ? err.message : String(err);
+          log.warn(`On-chain delivery failed: ${error}`);
+          if (STRICT_LIVE && !DEMO_MODE) {
+            await hcs.publishAuditLog({
+              type: "SUB_RESULT_DELIVERY_FAILED",
+              agentId: AGENT_ID,
+              timestamp: Date.now(),
+              payload: { subAuctionId, parentJobId, strictLive: true, error },
+            });
+            return;
+          }
         }
 
         // Notify requester via HCS

@@ -82,6 +82,9 @@ export default function AgentDetail({ addr }) {
   const profile       = useStore((s) => s.agents[addr] || {});
   const enriched      = useStore((s) => s.agentProfiles[addr] || {});
   const history       = useStore((s) => s.reputationHistory[addr] || []);
+  const jobBidStatus  = useStore((s) => s.jobBidStatus || {});
+  const llmProviderStatus = useStore((s) => s.llmProviderStatus || {});
+  const llmInferenceStatus = useStore((s) => s.llmInferenceStatus || {});
   const allSlashes    = useStore((s) => s.slashEvents);
   const mySlashes     = allSlashes.filter((e) => e.agent?.toLowerCase() === addr?.toLowerCase());
 
@@ -187,9 +190,29 @@ export default function AgentDetail({ addr }) {
   const successfulFindings = profile.successfulFindings || 0;
   const falsePositives     = profile.falsePositives     || 0;
   const falseNegatives     = profile.falseNegatives     || 0;
+  const bidPipeline = Object.entries(jobBidStatus)
+    .flatMap(([jobId, entries]) =>
+      (entries || []).map((entry) => ({ ...entry, jobId }))
+    )
+    .filter((entry) => {
+      const idMatch = (entry.agentId || '').toLowerCase() === (profile.agentId || '').toLowerCase();
+      const addrMatch = (entry.evmAddress || '').toLowerCase() === (addr || '').toLowerCase();
+      return idMatch || addrMatch;
+    })
+    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+    .slice(0, 8);
   const accuracy = completedJobs > 0
     ? ((successfulFindings / Math.max(1, successfulFindings + falsePositives)) * 100).toFixed(1)
     : '—';
+  const providerEvents = llmProviderStatus[profile.agentId || ''] || [];
+  const latestProviderEvent = providerEvents[0] || null;
+  const inferenceEvents = Object.entries(llmInferenceStatus)
+    .flatMap(([jobId, entries]) =>
+      (entries || []).map((entry) => ({ ...entry, jobId }))
+    )
+    .filter((entry) => (entry.agentId || '').toLowerCase() === (profile.agentId || '').toLowerCase())
+    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+    .slice(0, 6);
 
   return (
     <div className="h-full overflow-y-auto px-4 py-3 font-mono text-xs text-gray-300">
@@ -307,6 +330,44 @@ export default function AgentDetail({ addr }) {
         )}
       </Section>
 
+      {profile.agentId === 'llm-contextual-003' && (
+        <Section title="0g Inference">
+          <div className="grid grid-cols-2 gap-1 mb-2">
+            <span className="text-gray-500">Provider status</span>
+            <span className={`text-right ${
+              latestProviderEvent?.status === 'ready' ? 'text-green-400' :
+              latestProviderEvent?.status === 'unhealthy' ? 'text-red-400' : 'text-gray-500'
+            }`}>
+              {latestProviderEvent?.status || 'unknown'}
+            </span>
+            <span className="text-gray-500">Provider</span>
+            <span className="text-right text-gray-400 truncate">{latestProviderEvent?.providerAddress || '—'}</span>
+            <span className="text-gray-500">Model</span>
+            <span className="text-right text-gray-400 truncate">{latestProviderEvent?.model || '—'}</span>
+          </div>
+          <div className="space-y-1">
+            {inferenceEvents.length === 0 ? (
+              <div className="text-gray-600">No inference events yet.</div>
+            ) : (
+              inferenceEvents.map((entry, idx) => (
+                <div key={`${entry.jobId}-${idx}`} className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-gray-500">Job #{entry.jobId}</span>
+                  <span className={`font-semibold ${
+                    entry.status === 'succeeded' ? 'text-green-400' :
+                    entry.status === 'failed' ? 'text-red-400' : 'text-cyan-400'
+                  }`}>
+                    {entry.status}
+                  </span>
+                  <span className="text-gray-500 truncate max-w-[45%]">
+                    {entry.reason || entry.reasonCode || entry.model || '—'}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </Section>
+      )}
+
       {/* ── Reputation ── */}
       <Section title="Reputation">
         <ReputationGraph history={history} currentReputation={repRaw} />
@@ -394,6 +455,36 @@ export default function AgentDetail({ addr }) {
           <span className="text-gray-500">False Negatives</span>
           <span className="text-red-400 text-right">{falseNegatives}</span>
         </div>
+      </Section>
+
+      {/* ── Bid Pipeline ── */}
+      <Section title="Bid Pipeline">
+        {bidPipeline.length === 0 ? (
+          <div className="text-gray-600">No invite/bid lifecycle events yet.</div>
+        ) : (
+          <div className="space-y-1.5">
+            {bidPipeline.map((entry, idx) => (
+              <div key={`${entry.jobId}-${idx}`} className="flex items-start justify-between gap-2">
+                <span className="text-gray-500">Job #{entry.jobId}</span>
+                <span className="text-right">
+                  <span className={
+                    entry.status === 'submitted' ? 'text-green-400' :
+                    entry.status === 'failed' ? 'text-red-400' :
+                    entry.status === 'skipped' ? 'text-amber-400' :
+                    'text-cyan-400'
+                  }>
+                    {(entry.status || 'invite_sent').replace('_', ' ').toUpperCase()}
+                  </span>
+                  {entry.reason && (
+                    <span className="block text-gray-500 text-[10px] max-w-[220px] truncate">
+                      {entry.reason}
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </Section>
 
       {/* ── Slash History ── */}

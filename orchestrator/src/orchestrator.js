@@ -19,11 +19,12 @@ export class OrchestratorAgent {
   constructor(opts = {}) {
     this.log = opts.log ?? createLogger("orchestrator");
     this.hcs = opts.hcs ?? new HCSClient();
+    this.strictLive = opts.strictLive ?? CONFIG.strictLive;
     this.contracts = opts.contracts ?? this.buildContractClientWithFallback();
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
-    this.jobs = new Map(); // jobId -> state
+    this.jobs = new Map(); // jobId(string) -> state
     this.enablePing = opts.enablePing ?? true;
   }
 
@@ -31,6 +32,9 @@ export class OrchestratorAgent {
     try {
       return ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
     } catch (err) {
+      if (this.strictLive && !CONFIG.demoMode) {
+        throw new Error(`Contract client init failed in strict live mode: ${err.message}`);
+      }
       this.log.warn(`Contract client init failed; running HCS-only mode: ${err.message}`);
       return {
         auction: {},
@@ -41,6 +45,58 @@ export class OrchestratorAgent {
         budgetVault: {},
         getAddress: () => "",
       };
+    }
+  }
+
+  normalizeId(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "bigint") return value.toString();
+    return String(value);
+  }
+
+  normalizeJobId(jobId) {
+    return this.normalizeId(jobId);
+  }
+
+  toChainJobId(jobId) {
+    const key = this.normalizeJobId(jobId);
+    if (!/^\d+$/.test(key)) {
+      throw new Error(`Invalid numeric jobId for chain call: ${key}`);
+    }
+    return BigInt(key);
+  }
+
+  toChainUint(value, label) {
+    const key = this.normalizeId(value);
+    if (!/^\d+$/.test(key)) {
+      throw new Error(`Invalid numeric ${label}: ${key}`);
+    }
+    return BigInt(key);
+  }
+
+  getJobByKey(jobId) {
+    const key = this.normalizeJobId(jobId);
+    if (this.jobs.has(key)) return this.jobs.get(key);
+    return this.jobs.get(jobId);
+  }
+
+  setJobByKey(jobId, job) {
+    const key = this.normalizeJobId(jobId);
+    this.jobs.set(key, job);
+  }
+
+  validateDiscoveryPayload(payload) {
+    if (!ethers.isAddress(payload.contractAddress)) {
+      throw new Error(`invalid contractAddress: ${payload.contractAddress}`);
+    }
+    if (!Number.isFinite(Number(payload.budget)) || Number(payload.budget) <= 0) {
+      throw new Error(`invalid budget: ${payload.budget}`);
+    }
+    if (!Number.isInteger(Number(payload.riskScore)) || Number(payload.riskScore) < 0 || Number(payload.riskScore) > 100) {
+      throw new Error(`invalid riskScore: ${payload.riskScore}`);
+    }
+    if (!Number.isFinite(Number(payload.estimatedLOC)) || Number(payload.estimatedLOC) < 0) {
+      throw new Error(`invalid estimatedLOC: ${payload.estimatedLOC}`);
     }
   }
 
@@ -138,12 +194,31 @@ export class OrchestratorAgent {
 
   async handleDiscovery(msg) {
     const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
-    let jobId = Date.now(); // fallback
+    try {
+      this.validateDiscoveryPayload({ contractAddress, budget, riskScore, estimatedLOC });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Discovery rejected: ${reason}`);
+      await this.hcs.publishAuditLog({
+        type: "DISCOVERY_REJECTED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          reason,
+          strictLive: this.strictLive,
+          contractAddress: contractAddress ?? "",
+          contractType: contractType ?? "unknown",
+        },
+      });
+      return;
+    }
+
+    let jobId = this.normalizeJobId(Date.now()); // fallback
     let auctionOpenedOnChain = false;
     this.log.info(`New discovery ${contractAddress.slice(0, 12)}… type=${contractType}`);
 
     // Store job FIRST so incoming bids can be matched immediately
-    this.jobs.set(jobId, {
+    this.setJobByKey(jobId, {
       contractAddress,
       contractType,
       bidders: [],
@@ -173,23 +248,60 @@ export class OrchestratorAgent {
           try {
             const parsed = this.contracts.auction.interface.parseLog(log);
             if (parsed?.name === "JobPosted") {
-              onChainJobId = Number(parsed.args.jobId);
+              onChainJobId = this.normalizeJobId(parsed.args.jobId);
               break;
             }
           } catch { /* ignore */ }
         }
       }
       if (onChainJobId != null && onChainJobId !== jobId) {
-        const existing = this.jobs.get(jobId);
+        const existing = this.getJobByKey(jobId);
+        this.jobs.delete(this.normalizeJobId(jobId));
         this.jobs.delete(jobId);
-        existing.onChainJobId = onChainJobId;
-        this.jobs.set(onChainJobId, existing);
+        if (existing) {
+          existing.onChainJobId = onChainJobId;
+          this.setJobByKey(onChainJobId, existing);
+        }
         jobId = onChainJobId;
       }
       auctionOpenedOnChain = true;
       this.log.info(`Auction opened on-chain for job ${jobId}`);
     } catch (err) {
-      this.log.warn(`Auction create failed (continuing off-chain): ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Auction create failed: ${message}`);
+      await this.hcs.publishAuditLog({
+        type: "ONCHAIN_TX_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          phase: "create_audit_job",
+          strictLive: this.strictLive,
+          contractAddress,
+          jobId,
+          error: message,
+        },
+      });
+      if (this.strictLive) {
+        this.log.warn(`Strict live mode: halting job ${jobId} after createAuditJob failure`);
+        const failed = this.getJobByKey(jobId);
+        if (failed) {
+          failed.failed = true;
+          failed.failureReason = message;
+          this.setJobByKey(jobId, failed);
+        }
+        await this.hcs.publishAuditLog({
+          type: "JOB_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            jobId,
+            contractAddress,
+            phase: "create_audit_job",
+            error: message,
+          },
+        });
+        return;
+      }
     }
 
     // Publish a normalized auction-opened signal for dashboard/live listeners.
@@ -212,7 +324,39 @@ export class OrchestratorAgent {
       this.log.warn(`Failed to publish JOB_CREATED for ${contractAddress?.slice(0, 12)}: ${err}`);
     }
 
-    const eligible = this.roster.eligibleFor(contractType);
+    const eligibility = typeof this.roster.evaluateEligibility === "function"
+      ? this.roster.evaluateEligibility(contractType)
+      : { eligible: this.roster.eligibleFor(contractType), excluded: [] };
+    const eligible = eligibility.eligible;
+    const excludedByReason = {};
+    for (const item of eligibility.excluded) {
+      for (const reason of item.reasons ?? []) {
+        excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
+      }
+    }
+    this.log.info(
+      `Invite eligibility for job ${jobId}: eligible=${eligible.length} excluded=${eligibility.excluded.length} ` +
+      `${JSON.stringify(excludedByReason)}`
+    );
+    try {
+      await this.hcs.publishAuditLog({
+        type: "AUCTION_INVITE_SUMMARY",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId,
+          contractType: contractType ?? "unknown",
+          eligibleAgents: eligible.map((agent) => ({
+            agentId: agent.agentId,
+            evmAddress: agent.evmAddress,
+          })),
+          excludedAgents: eligibility.excluded,
+          excludedByReason,
+        },
+      });
+    } catch (err) {
+      this.log.warn(`Failed to publish AUCTION_INVITE_SUMMARY for job ${jobId}: ${err}`);
+    }
     try {
       await this.inviteAgents(jobId, eligible, msg.payload);
     } catch (err) {
@@ -240,15 +384,18 @@ export class OrchestratorAgent {
     }
 
     // Fallback timer if no WinnersSelected event arrives
-    setTimeout(() => this.selectWinnersFallback(jobId), CONFIG.timeouts.winnerWaitMs);
+    if (!this.strictLive || auctionOpenedOnChain) {
+      const winnerTimer = setTimeout(() => this.selectWinnersFallback(jobId), CONFIG.timeouts.winnerWaitMs);
+      winnerTimer.unref?.();
+    }
   }
 
   async handleFindings(msg) {
     const { jobId, findingsHash, evmAddress, findingsCount = 0, criticalCount = 0 } = msg.payload;
     this.log.info(`Findings submitted for job ${jobId}: ${findingsHash?.slice(0, 12)}…`);
 
-    const key = Number(jobId);
-    const job = this.jobs.get(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false, settled: false };
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false, settled: false };
     const resolvedAddress =
       (typeof evmAddress === "string" && ethers.isAddress(evmAddress) ? evmAddress : undefined) ??
       this.roster.get(msg.agentId)?.evmAddress;
@@ -260,17 +407,18 @@ export class OrchestratorAgent {
       findingsCount,
       criticalCount
     });
-    this.jobs.set(key, job);
+    this.setJobByKey(key, job);
 
     // Start time-based auto-publish timer on first finding
     if (job.findings.length === 1 && !job.reportPublished) {
-      setTimeout(async () => {
-        const latest = this.jobs.get(key);
+      const publishTimer = setTimeout(async () => {
+        const latest = this.getJobByKey(key);
         if (latest && !latest.reportPublished) {
           this.log.info(`Auto-publish timeout for job ${jobId} — publishing report`);
           await this.autoPublishReport(key, latest);
         }
       }, CONFIG.reporting.autoPublishTimeoutMs);
+      publishTimer.unref?.();
     }
 
     // Threshold-based auto-publish
@@ -281,9 +429,10 @@ export class OrchestratorAgent {
 
   async autoPublishReport(jobId, job) {
     if (job.reportPublished) return;
+    const key = this.normalizeJobId(jobId);
     await this.handleReportPublished({
       payload: {
-        jobId,
+        jobId: key,
         totalFindings: job.findings.reduce((s, f) => s + (f.findingsCount ?? 0), 0),
         criticalFindings: job.findings.reduce((s, f) => s + (f.criticalCount ?? 0), 0),
         reportHash: job.findings.map((f) => f.findingsHash).join("|").slice(0, 66),
@@ -294,13 +443,13 @@ export class OrchestratorAgent {
   async handleReportPublished(msg) {
     const { jobId, totalFindings = 0, reportHash } = msg.payload || {};
     const criticalFindings = Number(msg.payload?.criticalFindings ?? msg.payload?.criticalCount ?? 0);
-    const key = Number(jobId);
-    const job = this.jobs.get(key) ?? { findings: [], winners: [], reportPublished: false, settled: false };
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key) ?? { findings: [], winners: [], reportPublished: false, settled: false };
     if (job.reportPublished) return;
 
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);
     job.reportPublished = true;
-    this.jobs.set(key, job);
+    this.setJobByKey(key, job);
 
     // Relay report publish to auditLog (ensures HCS has the hash)
     await this.hcs.publishAuditLog({
@@ -320,11 +469,11 @@ export class OrchestratorAgent {
       this.selectWinnersFallback(key);
     }
 
-    await this.maybeAlert(jobId, criticalFindings);
+    await this.maybeAlert(key, criticalFindings);
     const reportAgentAddress = this.resolveReportAgentAddress(msg);
-    await this.settleAll(jobId, job, reportAgentAddress);
-    await this.updateReputation(jobId, job.findings);
-    await this.inft.markJobCompleted(jobId, null);
+    await this.settleAll(key, job, reportAgentAddress);
+    await this.updateReputation(key, job.findings);
+    await this.inft.markJobCompleted(key, null);
   }
 
   async handleDataListing(msg) {
@@ -333,8 +482,46 @@ export class OrchestratorAgent {
     if (!CONFIG.dataMarketplace.allowedCategories.includes(category)) return;
     if (price > CONFIG.dataMarketplace.maxAutoBuyGuard) return;
 
+    if (this.strictLive) {
+      const buyer = this.orchestratorAddress;
+      if (!buyer || !ethers.isAddress(buyer)) {
+        this.log.warn(`Strict live: skipping auto-buy for listing ${listingId}, invalid orchestrator buyer address`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "invalid_buyer_address" },
+        });
+        return;
+      }
+
+      if (!this.contracts.agentRegistry?.isActiveAgent) {
+        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, cannot verify buyer activity`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "agent_registry_unavailable", buyer },
+        });
+        return;
+      }
+
+      const isActive = await this.contracts.agentRegistry.isActiveAgent(buyer);
+      if (!isActive) {
+        this.log.info(`Strict live: skipping auto-buy for listing ${listingId}, buyer ${buyer} is not an active agent`);
+        await this.hcs.publishAuditLog({
+          type: "DATA_PURCHASE_SKIPPED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { listingId, price, jobId, reason: "inactive_buyer_agent", buyer },
+        });
+        return;
+      }
+    }
+
     try {
-      await this.contracts.dataMarketplace.purchaseData(Number(listingId ?? 0));
+      const listingKey = this.toChainUint(listingId, "listingId");
+      await this.contracts.dataMarketplace.purchaseData(listingKey);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
       await this.hcs.publishAuditLog({
         type: "DATA_PURCHASED",
@@ -343,7 +530,22 @@ export class OrchestratorAgent {
         payload: { listingId, price, jobId, buyer: "orchestrator" },
       });
     } catch (err) {
-      this.log.warn(`Auto-buy failed for listing ${listingId}: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Auto-buy failed for listing ${listingId}: ${message}`);
+      if (this.strictLive) {
+        await this.hcs.publishAuditLog({
+          type: "ONCHAIN_TX_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            phase: "data_marketplace_auto_buy",
+            listingId,
+            strictLive: true,
+            error: message,
+            jobId,
+          },
+        });
+      }
     }
   }
 
@@ -354,8 +556,9 @@ export class OrchestratorAgent {
     const paymentWei = parseUnits(payGuard.toString(), CONFIG.guardToken.decimals);
 
     try {
+      const parentId = this.toChainUint(parentJobId, "parentJobId");
       await this.contracts.subAuction.createSubAuction(
-        Number(parentJobId ?? 0),
+        parentId,
         taskType ?? "dependency_analysis",
         taskType ?? "dependency_analysis",
         paymentWei,
@@ -370,14 +573,29 @@ export class OrchestratorAgent {
         payload: { parentJobId, taskType, paymentGuard: payGuard },
       });
     } catch (err) {
-      this.log.warn(`Sub-auction creation failed: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Sub-auction creation failed: ${message}`);
+      if (this.strictLive) {
+        await this.hcs.publishAuditLog({
+          type: "ONCHAIN_TX_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            phase: "create_sub_auction",
+            strictLive: true,
+            parentJobId: this.normalizeJobId(parentJobId),
+            error: message,
+          },
+        });
+      }
     }
   }
 
   async handleSubResult(msg) {
     const { subAuctionId } = msg.payload || {};
     try {
-      await this.contracts.subAuction.acceptResult(Number(subAuctionId ?? 0));
+      const subId = this.toChainUint(subAuctionId, "subAuctionId");
+      await this.contracts.subAuction.acceptResult(subId);
       this.log.info(`Accepted sub-auction result ${subAuctionId}`);
       await this.hcs.publishAuditLog({
         type: "SUB_RESULT_ACCEPTED",
@@ -386,7 +604,21 @@ export class OrchestratorAgent {
         payload: { subAuctionId },
       });
     } catch (err) {
-      this.log.warn(`Accepting sub result failed: ${err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Accepting sub result failed: ${message}`);
+      if (this.strictLive) {
+        await this.hcs.publishAuditLog({
+          type: "ONCHAIN_TX_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            phase: "accept_sub_result",
+            strictLive: true,
+            subAuctionId: this.normalizeId(subAuctionId),
+            error: message,
+          },
+        });
+      }
     }
   }
 
@@ -416,7 +648,7 @@ export class OrchestratorAgent {
     if (onChainSettled) {
       this.log.info(`Job ${jobId} already settled on-chain, skipping`);
       job.settled = true;
-      this.jobs.set(Number(jobId), job);
+      this.setJobByKey(jobId, job);
       return;
     }
 
@@ -477,12 +709,12 @@ export class OrchestratorAgent {
 
     try {
       await this.contracts.paymentSettlement.settleJob(
-        Number(jobId ?? 0),
+        this.toChainJobId(jobId),
         payments,
         reportAgent
       );
       job.settled = true;
-      this.jobs.set(Number(jobId), job);
+      this.setJobByKey(jobId, job);
       await this.hcs.publishAuditLog({
         type: "PAYMENT_SETTLED",
         agentId: "orchestrator",
@@ -513,7 +745,7 @@ export class OrchestratorAgent {
   async isJobAlreadySettledOnChain(jobId) {
     try {
       if (!this.contracts.paymentSettlement?.isJobSettled) return false;
-      return await this.contracts.paymentSettlement.isJobSettled(Number(jobId));
+      return await this.contracts.paymentSettlement.isJobSettled(this.toChainJobId(jobId));
     } catch {
       return false;
     }
@@ -557,7 +789,8 @@ export class OrchestratorAgent {
   }
 
   selectWinnersFallback(jobId) {
-    const job = this.jobs.get(jobId);
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key);
     if (!job) return;
 
     let winnerAddresses;
@@ -602,7 +835,7 @@ export class OrchestratorAgent {
       type: MessageType.WINNERS_SELECTED_FALLBACK,
       agentId: "orchestrator",
       timestamp: now(),
-      payload: { jobId, winners: winnerAddresses },
+      payload: { jobId: key, winners: winnerAddresses },
     }).catch((err) => this.log.warn(`Failed to publish fallback winners: ${err}`));
   }
 
@@ -610,8 +843,8 @@ export class OrchestratorAgent {
     try {
       if (!this.contracts.auction?.on) return;
       this.contracts.auction.on("WinnersSelected", (jobId, winners, totalEscrowed, platformFee) => {
-        const key = Number(jobId);
-        const job = this.jobs.get(key);
+        const key = this.normalizeJobId(jobId);
+        const job = this.getJobByKey(key);
         if (!job) return;
 
         const winnerAddrs = Array.isArray(winners) ? winners.map(String) : [];
@@ -732,8 +965,10 @@ export class OrchestratorAgent {
         timestamp: now(),
         payload: {},
       }).catch(() => {});
-      setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
+      const pingTimer = setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
+      pingTimer.unref?.();
     };
-    setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
+    const firstPingTimer = setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
+    firstPingTimer.unref?.();
   }
 }

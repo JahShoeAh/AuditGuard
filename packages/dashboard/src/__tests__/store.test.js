@@ -64,6 +64,35 @@ describe('Store — Auction jobs and bids', () => {
     expect(bids['1']).toHaveLength(2);
     expect(bids['1'][0].agentId).toBe('static-47');
   });
+
+  it('should track bid lifecycle status per job', () => {
+    useStore.getState().addJobBidStatus('1', { status: 'invite_sent', agentId: 'static-47' });
+    useStore.getState().addJobBidStatus('1', { status: 'skipped', agentId: 'static-47', reason: 'inactive_agent' });
+
+    const lifecycle = useStore.getState().jobBidStatus['1'];
+    expect(lifecycle).toHaveLength(2);
+    expect(lifecycle[0].status).toBe('skipped');
+  });
+});
+
+describe('Store — LLM provider/inference status', () => {
+  it('should record LLM provider status entries', () => {
+    useStore.getState().setLlmProviderStatus('llm-contextual-003', { status: 'ready', model: 'qwen' });
+    useStore.getState().setLlmProviderStatus('llm-contextual-003', { status: 'unhealthy', reasonCode: 'zg_timeout' });
+
+    const entries = useStore.getState().llmProviderStatus['llm-contextual-003'];
+    expect(entries).toHaveLength(2);
+    expect(entries[0].status).toBe('unhealthy');
+  });
+
+  it('should record LLM inference lifecycle per job', () => {
+    useStore.getState().addLlmInferenceStatus('7', { status: 'started', model: 'qwen' });
+    useStore.getState().addLlmInferenceStatus('7', { status: 'succeeded', findingsCount: 4 });
+
+    const entries = useStore.getState().llmInferenceStatus['7'];
+    expect(entries).toHaveLength(2);
+    expect(entries[0].status).toBe('succeeded');
+  });
 });
 
 describe('Store — Agent profiles', () => {

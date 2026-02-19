@@ -1,0 +1,14 @@
+suite,command,exit_code,duration_sec,log
+contracts_auditguard,"npm exec -- hardhat test packages/contracts/test/AuditGuard.test.js --config packages/contracts/hardhat.config.js",0,3,recon/test-logs/contracts_auditguard.log
+contracts_auditscheduler,"npm exec -- hardhat test packages/contracts/test/AuditScheduler.test.js --config packages/contracts/hardhat.config.js",0,3,recon/test-logs/contracts_auditscheduler.log
+agents_vitest_all,"npm --workspace agents run test",0,2,recon/test-logs/agents_vitest_all.log
+orchestrator_mocks,"node orchestrator/test/run-tests.js",0,1,recon/test-logs/orchestrator_mocks.log
+orchestrator_offline_live_flow,"node orchestrator/test/offline-live-flow.test.js",0,0,recon/test-logs/orchestrator_offline_live_flow.log
+orchestrator_e2e_simulation,"node orchestrator/test/e2e-simulation.test.js",0,0,recon/test-logs/orchestrator_e2e_simulation.log
+dashboard_store_test,"npm --prefix packages/dashboard run test -- src/__tests__/store.test.js",0,2,recon/test-logs/dashboard_store_test.log
+dashboard_event_listener_test,"npm --prefix packages/dashboard run test -- src/__tests__/event-listener.test.js",0,1,recon/test-logs/dashboard_event_listener_test.log
+dashboard_build,"npm --prefix packages/dashboard run build",0,4,recon/test-logs/dashboard_build.log
+dashboard_preview_smoke,"npm --prefix packages/dashboard run preview -- --host 127.0.0.1 --port 4173 > recon/test-logs/dashboard_preview_server.log 2>&1 & pid=$!; sleep 5; curl -sf http://127.0.0.1:4173 >/dev/null 2>&1; rc=$?; kill $pid >/dev/null 2>&1; wait $pid >/dev/null 2>&1 || true; exit $rc",7,5,recon/test-logs/dashboard_preview_smoke.log
+inft_module_load_smoke,"node -e 'require(""./packages/inft/src/inft-service.js""); console.log(""inft-service module load ok"");'",0,1,recon/test-logs/inft_module_load_smoke.log
+inft_discovery_listener_startup,"node packages/inft/src/discovery-listener.js > recon/test-logs/inft_discovery_listener_runtime.log 2>&1 & pid=$!; sleep 5; if kill -0 $pid >/dev/null 2>&1; then kill $pid >/dev/null 2>&1; wait $pid >/dev/null 2>&1 || true; exit 0; else wait $pid; exit $?; fi",0,5,recon/test-logs/inft_discovery_listener_startup.log
+inft_event_listener_startup,"node packages/inft/src/event-listener.js > recon/test-logs/inft_event_listener_runtime.log 2>&1 & pid=$!; sleep 5; if kill -0 $pid >/dev/null 2>&1; then kill $pid >/dev/null 2>&1; wait $pid >/dev/null 2>&1 || true; exit 0; else wait $pid; exit $?; fi",0,5,recon/test-logs/inft_event_listener_startup.log

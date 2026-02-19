@@ -553,6 +553,19 @@
       "type": "function"
     },
     {
+      "inputs": [],
+      "name": "delegatedStaking",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
       "inputs": [
         {
           "internalType": "uint256",
@@ -1155,6 +1168,19 @@
         }
       ],
       "name": "setAppealWindow",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "_delegatedStaking",
+          "type": "address"
+        }
+      ],
+      "name": "setDelegatedStaking",
       "outputs": [],
       "stateMutability": "nonpayable",
       "type": "function"

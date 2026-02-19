@@ -215,7 +215,7 @@ async function main() {
 
     // 4) Winner selection fallback (offline mode).
     orch.selectWinnersFallback(4242);
-    const job = orch.jobs.get(4242);
+    const job = orch.jobs.get("4242");
     assert.ok(job, "job must exist");
     assert.ok(job.winners.length > 0, "winners should be selected");
 
@@ -300,7 +300,7 @@ async function main() {
     assert.equal(settledCalls.length, 1, "duplicate report must not resettle");
 
     // 7) Write dashboard replay snapshot so UI can render this offline run.
-    const jobSnapshot = orch.jobs.get(4242);
+    const jobSnapshot = orch.jobs.get("4242");
     const offlineState = {
       generatedAt: Date.now(),
       discoveries: [

@@ -36,10 +36,13 @@ const TOKEN_CONFIG = {
 };
 
 const INITIAL_ALLOCATIONS = {
-  SCANNER_AGENT: 100,
-  AUDITOR_AGENT_1: 500,  // Static Analysis (commodity tier)
-  AUDITOR_AGENT_2: 750,  // Fuzzer (specialized tier)
-  AUDITOR_AGENT_3: 1000, // LLM Contextual (premium tier)
+  SCANNER: 100,
+  STATIC: 500,      // Static Analysis (commodity tier)
+  FUZZER: 750,      // Fuzzer (specialized tier)
+  LLM: 1000,        // LLM Contextual (premium tier)
+  DEPENDENCY: 300,
+  REPORT: 250,
+  ALERT: 200,
 };
 
 // ============================================================================
@@ -97,6 +100,10 @@ function tokenIdToEvmAddress(tokenId) {
   return `0x${tokenId.toSolidityAddress()}`;
 }
 
+function getAgentEnvValue(prefix, legacyPrefix, suffix) {
+  return process.env[`${prefix}_${suffix}`] || (legacyPrefix ? process.env[`${legacyPrefix}_${suffix}`] : undefined);
+}
+
 /**
  * Load agent account info from environment
  */
@@ -106,33 +113,48 @@ function loadAgentAccounts() {
   const agentConfigs = [
     {
       name: 'Scanner Agent',
-      accountIdKey: 'SCANNER_AGENT_ACCOUNT_ID',
-      privateKeyKey: 'SCANNER_AGENT_PRIVATE_KEY',
-      allocation: INITIAL_ALLOCATIONS.SCANNER_AGENT,
+      prefix: 'SCANNER',
+      legacyPrefix: 'SCANNER_AGENT',
+      allocation: INITIAL_ALLOCATIONS.SCANNER,
     },
     {
-      name: 'Auditor Agent 1 (Static Analysis)',
-      accountIdKey: 'AUDITOR_AGENT_1_ACCOUNT_ID',
-      privateKeyKey: 'AUDITOR_AGENT_1_PRIVATE_KEY',
-      allocation: INITIAL_ALLOCATIONS.AUDITOR_AGENT_1,
+      name: 'Static Analysis Agent',
+      prefix: 'STATIC',
+      legacyPrefix: 'AUDITOR_AGENT_1',
+      allocation: INITIAL_ALLOCATIONS.STATIC,
     },
     {
-      name: 'Auditor Agent 2 (Fuzzer)',
-      accountIdKey: 'AUDITOR_AGENT_2_ACCOUNT_ID',
-      privateKeyKey: 'AUDITOR_AGENT_2_PRIVATE_KEY',
-      allocation: INITIAL_ALLOCATIONS.AUDITOR_AGENT_2,
+      name: 'Fuzzer Agent',
+      prefix: 'FUZZER',
+      legacyPrefix: 'AUDITOR_AGENT_2',
+      allocation: INITIAL_ALLOCATIONS.FUZZER,
     },
     {
-      name: 'Auditor Agent 3 (LLM Contextual)',
-      accountIdKey: 'AUDITOR_AGENT_3_ACCOUNT_ID',
-      privateKeyKey: 'AUDITOR_AGENT_3_PRIVATE_KEY',
-      allocation: INITIAL_ALLOCATIONS.AUDITOR_AGENT_3,
+      name: 'LLM Contextual Agent',
+      prefix: 'LLM',
+      legacyPrefix: 'AUDITOR_AGENT_3',
+      allocation: INITIAL_ALLOCATIONS.LLM,
+    },
+    {
+      name: 'Dependency Analyzer Agent',
+      prefix: 'DEPENDENCY',
+      allocation: INITIAL_ALLOCATIONS.DEPENDENCY,
+    },
+    {
+      name: 'Report Aggregator Agent',
+      prefix: 'REPORT',
+      allocation: INITIAL_ALLOCATIONS.REPORT,
+    },
+    {
+      name: 'Alert Sentinel Agent',
+      prefix: 'ALERT',
+      allocation: INITIAL_ALLOCATIONS.ALERT,
     },
   ];
 
   for (const config of agentConfigs) {
-    const accountId = process.env[config.accountIdKey];
-    const privateKey = process.env[config.privateKeyKey];
+    const accountId = getAgentEnvValue(config.prefix, config.legacyPrefix, "ACCOUNT_ID");
+    const privateKey = getAgentEnvValue(config.prefix, config.legacyPrefix, "PRIVATE_KEY");
 
     if (!accountId || accountId === '0.0.XXXXXX' || !privateKey) {
       console.log(`⚠️  Skipping ${config.name}: Missing credentials in .env`);

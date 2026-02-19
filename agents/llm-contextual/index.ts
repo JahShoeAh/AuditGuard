@@ -4,6 +4,8 @@ import {
   createAgentLogger,
   createAgentWallet,
   CONFIG,
+  computeLiveBid,
+  normalizeBidFailureReasonCode,
   randomInt,
   randomFloat,
   randomBool,
@@ -20,7 +22,12 @@ import type {
   SubResultDeliveredEvent,
 } from "../shared/types.js";
 import { ethers } from "ethers";
-import { callInference, initZgClient } from "./zg-client.js";
+import {
+  ensureZgReady,
+  infer,
+  getReadinessSnapshot,
+  ZGClientError,
+} from "./zg-client.js";
 import { buildMessages } from "./prompt-builder.js";
 import { parseFindings } from "./response-parser.js";
 import type { AuditContext } from "./prompt-builder.js";
@@ -28,6 +35,7 @@ import type { AuditContext } from "./prompt-builder.js";
 // ---- Config ----
 const AGENT_ID = "llm-contextual-003";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const STRICT_LIVE = (process.env.STRICT_LIVE ?? String(CONFIG.strictLive)) === "true";
 const SPECIALIZATIONS: ContractType[] = ["lending", "bridge", "dex"];
 const BASE_REPUTATION = 87;
 const MIN_RISK_SCORE = 50;       // only take complex jobs
@@ -35,6 +43,10 @@ const MIN_LOC = 1000;            // not worth my time below this
 const SUB_CONTRACT_PAYMENT = 3;  // GUARD for dependency analysis
 const SUB_CONTRACT_SLA = DEMO_MODE ? 120 : 900; // 2 min demo, 15 min prod
 const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;
+const GUARD_DECIMALS = 8;
+const ZG_REQUIRED_IN_LIVE =
+  (process.env.ZG_REQUIRED_IN_LIVE ?? String((CONFIG as any).zgInference?.requiredInLive ?? true)) !== "false";
+const STRICT_LIVE_ZG_REQUIRED = STRICT_LIVE && !DEMO_MODE && ZG_REQUIRED_IN_LIVE;
 
 const log = createAgentLogger(AGENT_ID, "llm_contextual");
 
@@ -54,6 +66,19 @@ let bidMultiplier = 1.0;
 let totalBids = 0;
 let totalWins = 0;
 const PRICING_ALPHA = 0.3;
+const zgRuntime = {
+  providerAddress: "",
+  model: "",
+  endpoint: "",
+};
+
+function parseChainUint(value: string | number | bigint): bigint {
+  const normalized = typeof value === "bigint" ? value.toString() : String(value);
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid numeric id: ${normalized}`);
+  }
+  return BigInt(normalized);
+}
 
 function updatePricingAfterOutcome(won: boolean) {
   totalBids++;
@@ -63,6 +88,17 @@ function updatePricingAfterOutcome(won: boolean) {
   bidMultiplier = bidMultiplier * (1 - PRICING_ALPHA) + (1 + (target - winRate)) * PRICING_ALPHA;
   bidMultiplier = Math.max(0.5, Math.min(2.0, bidMultiplier));
   log.info(`Dynamic pricing: winRate=${(winRate * 100).toFixed(0)}% multiplier=${bidMultiplier.toFixed(2)}`);
+}
+
+function normalizeZgFailureReasonCode(error: unknown): string {
+  if (error instanceof ZGClientError) return error.code;
+  const message = String(error ?? "").toLowerCase();
+  if (message.includes("timeout")) return "zg_timeout";
+  if (message.includes("metadata")) return "zg_provider_metadata_failed";
+  if (message.includes("header")) return "zg_request_headers_failed";
+  if (message.includes("ack")) return "zg_provider_ack_failed";
+  if (message.includes("ledger")) return "zg_ledger_unfunded";
+  return "zg_http_error";
 }
 
 // ---- Bidding Logic ----
@@ -122,6 +158,11 @@ export function generateMockFindings(contractType: ContractType, hasDepAnalysis:
     });
   }
 
+  // Preserve "skewed-high" behavior deterministically for pipeline tests.
+  if (findings.length > 0 && !findings.some((f) => f.severity === "critical" || f.severity === "high")) {
+    findings[0].severity = "high";
+  }
+
   return findings;
 }
 
@@ -155,45 +196,76 @@ export function resolveAuctionInviteContext(
 // ---- AI-Powered Audit via 0g ----
 
 function isZgEnabled(): boolean {
+  const cfg = (CONFIG as any).zgInference ?? {};
+  if (cfg.enabled === false) return false;
   if (process.env.ZG_ENABLED === "false") return false;
   const privateKey = process.env.ZG_PRIVATE_KEY ?? "";
-  const providerAddress = process.env.ZG_PROVIDER_ADDRESS ?? "";
+  const providerAddress = process.env.ZG_PROVIDER_ADDRESS ?? cfg.providerAddress ?? "";
   return privateKey.length > 0 && providerAddress.length > 0;
+}
+
+interface AnalyzeResult {
+  findings: Finding[];
+  usedFallback: boolean;
+  providerAddress?: string;
+  model?: string;
+  requestId?: string;
 }
 
 export async function analyzeWithAI(
   ctx: AuditContext
-): Promise<{ findings: Finding[]; usedFallback: boolean }> {
+): Promise<AnalyzeResult> {
   if (!isZgEnabled()) {
+    if (STRICT_LIVE_ZG_REQUIRED) {
+      throw new ZGClientError(
+        "zg_not_configured",
+        "0g inference is required in strict live mode but is not configured",
+        "analyze_config"
+      );
+    }
     log.info("[0g fallback] 0g inference disabled — using mock findings");
     return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
   }
 
   const cfg = (CONFIG as any).zgInference ?? {};
-  const model = cfg.model || process.env.ZG_MODEL || "qwen-2.5-7b-instruct";
+  const model = cfg.model || process.env.ZG_MODEL || zgRuntime.model || "qwen-2.5-7b-instruct";
   const messages = buildMessages(ctx);
   const maxAttempts = 2;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const raw = await callInference({
+      const inference = await infer({
         model,
         messages,
         temperature: 0.3,
         max_tokens: 4000,
       });
+      const raw = inference.content;
 
       const result = parseFindings(raw, AGENT_ID, ctx.contractType);
 
       if (result.parseError) {
         log.warn(`[0g] Parse error (attempt ${attempt}): ${result.parseError}`);
         if (attempt < maxAttempts) continue;
+        if (STRICT_LIVE_ZG_REQUIRED) {
+          throw new ZGClientError(
+            "zg_response_invalid",
+            `0g response parse failed after retries: ${result.parseError}`,
+            "analyze_parse"
+          );
+        }
         log.info("[0g fallback] All attempts failed to parse — using mock findings");
         return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
       }
 
       log.info(`[0g] AI analysis complete: ${result.findings.length} findings`);
-      return { findings: result.findings, usedFallback: false };
+      return {
+        findings: result.findings,
+        usedFallback: false,
+        providerAddress: inference.providerAddress,
+        model: inference.model,
+        requestId: inference.requestId,
+      };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       log.warn(`[0g] Inference error (attempt ${attempt}): ${errMsg}`);
@@ -201,9 +273,19 @@ export async function analyzeWithAI(
         await sleep(2000);
         continue;
       }
+      if (STRICT_LIVE_ZG_REQUIRED) {
+        throw err;
+      }
     }
   }
 
+  if (STRICT_LIVE_ZG_REQUIRED) {
+    throw new ZGClientError(
+      "zg_response_invalid",
+      "0g inference failed after all retry attempts",
+      "analyze_retry"
+    );
+  }
   log.info("[0g fallback] All retry attempts exhausted — using mock findings");
   return { findings: generateMockFindings(ctx.contractType, ctx.hasDepAnalysis), usedFallback: true };
 }
@@ -219,17 +301,91 @@ async function main() {
   const wallet = createAgentWallet("LLM");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
-
+  let minBidCollateralWei = ethers.parseUnits(
+    CONFIG.bidPolicy.minCollateralGuard.toFixed(2),
+    GUARD_DECIMALS
+  );
+  let minBidCollateralGuard = CONFIG.bidPolicy.minCollateralGuard;
+  const zgEnabled = isZgEnabled();
   log.info(`Wallet: ${wallet.evmAddress}`);
 
-  // Initialize 0g inference broker (deposit funds, acknowledge provider)
-  if (isZgEnabled()) {
+  if (!zgEnabled && STRICT_LIVE_ZG_REQUIRED) {
+    const reasonCode = "zg_not_configured";
+    const reason = "0g inference is required in strict live mode but ZG_* env is not configured";
+    await hcs.publishAuditLog({
+      type: "LLM_PROVIDER_UNHEALTHY",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        reasonCode,
+        reason,
+        strictLive: true,
+        providerAddress: (CONFIG as any).zgInference?.providerAddress ?? process.env.ZG_PROVIDER_ADDRESS ?? "",
+        model: (CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? "",
+      },
+    });
+    throw new Error(reason);
+  }
+
+  if (zgEnabled) {
     log.info("Initializing 0g Compute Network broker...");
-    await initZgClient();
-    log.info("0g broker ready");
+    try {
+      const readiness = await ensureZgReady();
+      zgRuntime.providerAddress = readiness.providerAddress;
+      zgRuntime.model = readiness.model;
+      zgRuntime.endpoint = readiness.endpoint;
+      await hcs.publishAuditLog({
+        type: "LLM_PROVIDER_READY",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {
+          providerAddress: readiness.providerAddress,
+          model: readiness.model,
+          endpoint: readiness.endpoint,
+          requestId: readiness.requestId ?? null,
+          strictLive: STRICT_LIVE_ZG_REQUIRED,
+        },
+      });
+      log.info(`0g broker ready (${readiness.providerAddress.slice(0, 10)}..., model=${readiness.model})`);
+    } catch (err) {
+      const reasonCode = normalizeZgFailureReasonCode(err);
+      const reason = err instanceof Error ? err.message : String(err);
+      await hcs.publishAuditLog({
+        type: "LLM_PROVIDER_UNHEALTHY",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {
+          reasonCode,
+          reason,
+          strictLive: STRICT_LIVE_ZG_REQUIRED,
+          providerAddress: (CONFIG as any).zgInference?.providerAddress ?? process.env.ZG_PROVIDER_ADDRESS ?? "",
+          model: (CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? "",
+        },
+      });
+      if (STRICT_LIVE_ZG_REQUIRED) {
+        throw new Error(`Strict live startup blocked: ${reasonCode}: ${reason}`);
+      }
+      log.warn(`0g startup not healthy; mock fallback remains enabled in non-strict mode: ${reason}`);
+    }
   } else {
     log.info("0g inference disabled — will use mock fallback");
   }
+
+  const readySnapshot = getReadinessSnapshot();
+  if (readySnapshot) {
+    zgRuntime.providerAddress = readySnapshot.providerAddress;
+    zgRuntime.model = readySnapshot.model;
+    zgRuntime.endpoint = readySnapshot.endpoint;
+  }
+
+  try {
+    minBidCollateralWei = await contracts.getMinBidCollateral();
+    minBidCollateralGuard = Number(ethers.formatUnits(minBidCollateralWei, GUARD_DECIMALS));
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    log.warn(`Failed to read MIN_BID_COLLATERAL from chain, using config default: ${error}`);
+  }
+  log.info(`Live bid policy: min collateral ${minBidCollateralGuard.toFixed(2)} GUARD`);
 
   // Register with the orchestrator so our bids are accepted
   await hcs.publishAuditLog({
@@ -244,6 +400,32 @@ async function main() {
     },
   });
   log.info("Published AGENT_REGISTERED to auditLog");
+
+  if (STRICT_LIVE && !DEMO_MODE) {
+    try {
+      const active = await contracts.isActiveAgent(wallet.evmAddress);
+      if (!active) {
+        log.warn("Startup preflight: wallet is not an active on-chain agent");
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup preflight: active-agent check failed: ${error}`);
+    }
+
+    try {
+      const approvalTx = await contracts.ensureGuardAllowance(
+        contracts.getAuctionAddress(),
+        minBidCollateralWei
+      );
+      if (approvalTx) {
+        await approvalTx.wait?.();
+        log.info("Startup preflight: approved GUARD allowance for AuditAuction");
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup preflight: GUARD allowance setup failed: ${error}`);
+    }
+  }
 
   // Queue discoveries until AUCTION_INVITE arrives with real jobId
   const discoveryQueue = new Map<string, {
@@ -274,7 +456,7 @@ async function main() {
     }
 
     if (msg.type === "AUCTION_INVITE") {
-      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount } = (msg as any).payload;
+      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount, budget } = (msg as any).payload;
       const queued = discoveryQueue.get(contractAddress);
       if (queued) discoveryQueue.delete(contractAddress);
 
@@ -287,7 +469,130 @@ async function main() {
       if (!shouldBid(resolved.loc, resolved.contractType, resolved.riskScore)) return;
       const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
 
-      log.info(`AUCTION_INVITE for job #${jobId} — premium bid ${bid.amount} GUARD`);
+      const computed = computeLiveBid(bid, budget, {
+        ...CONFIG.bidPolicy,
+        minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard),
+      });
+      if (computed.skip || !computed.bid) {
+        await hcs.publishAuditLog({
+          type: "BID_SKIPPED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {
+            jobId: String(jobId),
+            contractAddress,
+            reason: computed.skip?.reason ?? "Bid policy rejected invite",
+            reasonCode: computed.skip?.reasonCode ?? "bid_policy_rejected",
+            computedBid: bid.amount,
+            computedCollateral: bid.collateral,
+            budget: Number(budget ?? 0),
+            strictLive: STRICT_LIVE && !DEMO_MODE,
+            evmAddress: wallet.evmAddress,
+          },
+        });
+        return;
+      }
+      const finalBid = computed.bid;
+      log.info(
+        `AUCTION_INVITE for job #${jobId} — premium bid ${finalBid.amount} GUARD ` +
+        `(collateral ${finalBid.collateral} GUARD)`
+      );
+
+      if (STRICT_LIVE && !DEMO_MODE) {
+        let active = false;
+        try {
+          active = await contracts.isActiveAgent(wallet.evmAddress);
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: `Active-agent check failed: ${error}`,
+              reasonCode: "active_agent_check_failed",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+        if (!active) {
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: "Wallet is not an active on-chain agent",
+              reasonCode: "inactive_agent",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+
+        const balance = await contracts.getGuardBalance(wallet.evmAddress);
+        if (balance < finalBid.collateralWei) {
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: "Insufficient GUARD balance for bid collateral",
+              reasonCode: "insufficient_collateral_balance",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+
+        try {
+          const approvalTx = await contracts.ensureGuardAllowance(
+            contracts.getAuctionAddress(),
+            finalBid.collateralWei
+          );
+          if (approvalTx) {
+            await approvalTx.wait?.();
+            log.info(`Updated GUARD allowance for job #${jobId}`);
+          }
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: `Failed to update GUARD allowance: ${error}`,
+              reasonCode: "allowance_update_failed",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+      }
 
       try {
         // Add jitter to avoid race conditions (nonce/gas collisions) with other agents
@@ -297,14 +602,31 @@ async function main() {
 
         const tx = await contracts.submitBid(
           jobId,
-          ethers.parseUnits(bid.amount.toString(), 8),
-          ethers.parseUnits(bid.collateral.toString(), 8),
-          bid.estimatedTimeSec,
+          finalBid.amountWei,
+          finalBid.collateralWei,
+          finalBid.estimatedTimeSec,
           SPECIALIZATIONS[0]
         );
         log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
       } catch (err) {
-        log.warn(`On-chain bid failed (continuing via HCS): ${err}`);
+        const error = err instanceof Error ? err.message : String(err);
+        const reasonCode = normalizeBidFailureReasonCode(error);
+        log.warn(`On-chain bid failed: ${error}`);
+        if (STRICT_LIVE && !DEMO_MODE) {
+          await hcs.publishAuditLog({
+            type: "BID_SUBMISSION_FAILED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              strictLive: true,
+              error,
+              reasonCode,
+            },
+          });
+          return;
+        }
       }
 
       pendingJobs.set(String(jobId), {
@@ -321,9 +643,9 @@ async function main() {
         payload: {
           jobId,
           contractAddress,
-          bidAmount: bid.amount,
-          collateral: bid.collateral,
-          estimatedTimeSec: bid.estimatedTimeSec,
+          bidAmount: finalBid.amount,
+          collateral: finalBid.collateral,
+          estimatedTimeSec: finalBid.estimatedTimeSec,
           reputation: BASE_REPUTATION,
           tier: "PREMIUM",
           evmAddress: wallet.evmAddress,
@@ -421,8 +743,23 @@ async function simulateAuditCycle(
     );
 
     let subAuctionId = `sub-${Date.now()}-${randomInt(1000, 9999)}`;
-    const numericJobId = Number(jobId);
-    const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
+    let parentJobId: bigint;
+    try {
+      parentJobId = parseChainUint(jobId);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Invalid parent job id for sub-auction: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "SUB_AUCTION_CREATE_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { jobId, strictLive: true, error },
+        });
+        return;
+      }
+      parentJobId = BigInt(0);
+    }
 
     // Create sub-auction on-chain
     try {
@@ -449,7 +786,17 @@ async function simulateAuditCycle(
       }
       log.info("Sub-auction created on-chain");
     } catch (err) {
-      log.warn(`On-chain sub-auction failed (continuing via HCS): ${err}`);
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`On-chain sub-auction failed: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "SUB_AUCTION_CREATE_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { jobId, strictLive: true, error },
+        });
+        return;
+      }
     }
 
     // Broadcast sub-auction to agent network
@@ -487,11 +834,21 @@ async function simulateAuditCycle(
 
       // Accept result on-chain
       try {
-        const numericSubAuctionId = Number(subAuctionId);
-        await contracts.acceptResult(Number.isFinite(numericSubAuctionId) ? numericSubAuctionId : 0);
+        const chainSubAuctionId = parseChainUint(subAuctionId);
+        await contracts.acceptResult(chainSubAuctionId);
         log.info("Sub-result accepted on-chain");
       } catch (err) {
-        log.warn(`On-chain accept failed (continuing): ${err}`);
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`On-chain accept failed: ${error}`);
+        if (STRICT_LIVE && !DEMO_MODE) {
+          await hcs.publishAuditLog({
+            type: "SUB_RESULT_ACCEPT_FAILED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: { jobId, subAuctionId, strictLive: true, error },
+          });
+          return;
+        }
       }
 
       await hcs.publishAuditLog({
@@ -510,16 +867,100 @@ async function simulateAuditCycle(
   log.info(`Running deep semantic analysis... (${auditTime}s)`);
   await sleep(auditTime * 1000);
 
-  const { findings, usedFallback } = await analyzeWithAI({
-    contractAddress,
-    contractType,
-    estimatedLOC: loc,
-    riskScore: 0,
-    hasDepAnalysis,
+  const inferenceStartedAt = Date.now();
+  await hcs.publishAuditLog({
+    type: "LLM_INFERENCE_STARTED",
+    agentId: AGENT_ID,
+    timestamp: inferenceStartedAt,
+    payload: {
+      jobId,
+      contractAddress,
+      providerAddress: zgRuntime.providerAddress || (CONFIG as any).zgInference?.providerAddress || process.env.ZG_PROVIDER_ADDRESS || "",
+      model: zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || "",
+      strictLive: STRICT_LIVE_ZG_REQUIRED,
+    },
   });
+
+  let findings: Finding[] = [];
+  let usedFallback = false;
+  let inferenceProviderAddress = zgRuntime.providerAddress || (CONFIG as any).zgInference?.providerAddress || process.env.ZG_PROVIDER_ADDRESS || "";
+  let inferenceModel = zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || "";
+  let inferenceRequestId: string | undefined;
+
+  try {
+    const analysis = await analyzeWithAI({
+      contractAddress,
+      contractType,
+      estimatedLOC: loc,
+      riskScore: 0,
+      hasDepAnalysis,
+    });
+    findings = analysis.findings;
+    usedFallback = analysis.usedFallback;
+    inferenceProviderAddress = analysis.providerAddress || inferenceProviderAddress;
+    inferenceModel = analysis.model || inferenceModel;
+    inferenceRequestId = analysis.requestId;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const reasonCode = normalizeZgFailureReasonCode(err);
+    await hcs.publishAuditLog({
+      type: "LLM_INFERENCE_FAILED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        jobId,
+        contractAddress,
+        reasonCode,
+        reason,
+        providerAddress: inferenceProviderAddress,
+        model: inferenceModel,
+        strictLive: STRICT_LIVE_ZG_REQUIRED,
+      },
+    });
+    log.warn(`LLM inference failed for job #${jobId}: ${reasonCode} ${reason}`);
+    return;
+  }
+
+  if (STRICT_LIVE_ZG_REQUIRED && usedFallback) {
+    const reason = "Strict live mode disallows mock fallback for LLM findings";
+    await hcs.publishAuditLog({
+      type: "LLM_INFERENCE_FAILED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        jobId,
+        contractAddress,
+        reasonCode: "zg_response_invalid",
+        reason,
+        providerAddress: inferenceProviderAddress,
+        model: inferenceModel,
+        strictLive: true,
+      },
+    });
+    log.warn(reason);
+    return;
+  }
   if (usedFallback) {
     log.info("Used mock fallback for this audit cycle");
   }
+
+  await hcs.publishAuditLog({
+    type: "LLM_INFERENCE_SUCCEEDED",
+    agentId: AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      jobId,
+      contractAddress,
+      findingsCount: findings.length,
+      latencyMs: Date.now() - inferenceStartedAt,
+      usedFallback,
+      providerAddress: inferenceProviderAddress,
+      model: inferenceModel,
+      requestId: inferenceRequestId ?? null,
+      strictLive: STRICT_LIVE_ZG_REQUIRED,
+    },
+  });
+
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
 
   log.info(
@@ -542,6 +983,11 @@ async function simulateAuditCycle(
       mediumCount: findings.filter((f) => f.severity === "medium").length,
       lowCount: findings.filter((f) => f.severity === "low").length,
       evmAddress,
+      inferenceSource: usedFallback ? "mock" : "0g",
+      providerAddress: inferenceProviderAddress,
+      model: inferenceModel,
+      requestId: inferenceRequestId,
+      usedFallback,
     },
   });
 

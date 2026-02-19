@@ -35,6 +35,12 @@ const ABIS = {
   paymentSettlement: loadABI("PaymentSettlement"),
 };
 
+const ERC20_ABI: ethers.InterfaceAbi = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+
 // ─── Exported ABI loader for tests ─────────────────────────────────────────
 
 export { loadABI, ABIS, ABI_DIR };
@@ -56,6 +62,8 @@ export interface ListingDetails {
   dataHash: string;
   active: boolean;
 }
+
+type ChainUint = string | number | bigint;
 
 /**
  * PaymentItem struct to pass into settleJob.
@@ -92,6 +100,14 @@ export const ListingType = {
 // ─── Contract Client ───────────────────────────────────────────────────────
 
 const HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
+const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
+
+function assertAddress(value: string, label: string): string {
+  if (!ethers.isAddress(value)) {
+    throw new Error(`Invalid ${label} address: ${value}`);
+  }
+  return value;
+}
 
 export class ContractClient {
   public readonly auction: ethers.Contract;
@@ -100,6 +116,7 @@ export class ContractClient {
   public readonly paymentSettlement: ethers.Contract;
   public readonly agentRegistry: ethers.Contract;
   public readonly budgetVault: ethers.Contract;
+  public readonly guardToken: ethers.Contract;
   public readonly wallet: ethers.Wallet;
 
   /**
@@ -108,35 +125,47 @@ export class ContractClient {
    */
   constructor(wallet: ethers.Wallet) {
     this.wallet = wallet;
+    const auctionAddress = assertAddress(CONFIG.contracts.auction, "auction");
+    const subAuctionAddress = assertAddress(CONFIG.contracts.subAuction, "subAuction");
+    const dataMarketplaceAddress = assertAddress(CONFIG.contracts.dataMarketplace, "dataMarketplace");
+    const paymentSettlementAddress = assertAddress(CONFIG.contracts.paymentSettlement, "paymentSettlement");
+    const agentRegistryAddress = assertAddress(CONFIG.contracts.agentRegistry, "agentRegistry");
+    const budgetVaultAddress = assertAddress(CONFIG.contracts.budgetVault, "budgetVault");
+    const guardTokenAddress = assertAddress(CONFIG.guardToken.evmAddress, "guardToken");
 
     this.auction = new ethers.Contract(
-      CONFIG.contracts.auction,
+      auctionAddress,
       ABIS.auction,
       this.wallet
     );
     this.subAuction = new ethers.Contract(
-      CONFIG.contracts.subAuction,
+      subAuctionAddress,
       ABIS.subAuction,
       this.wallet
     );
     this.dataMarketplace = new ethers.Contract(
-      CONFIG.contracts.dataMarketplace,
+      dataMarketplaceAddress,
       ABIS.dataMarketplace,
       this.wallet
     );
     this.paymentSettlement = new ethers.Contract(
-      CONFIG.contracts.paymentSettlement,
+      paymentSettlementAddress,
       ABIS.paymentSettlement,
       this.wallet
     );
     this.agentRegistry = new ethers.Contract(
-      CONFIG.contracts.agentRegistry,
+      agentRegistryAddress,
       ABIS.agentRegistry,
       this.wallet
     );
     this.budgetVault = new ethers.Contract(
-      CONFIG.contracts.budgetVault,
+      budgetVaultAddress,
       ABIS.budgetVault,
+      this.wallet
+    );
+    this.guardToken = new ethers.Contract(
+      guardTokenAddress,
+      ERC20_ABI,
       this.wallet
     );
   }
@@ -145,7 +174,10 @@ export class ContractClient {
    * Create a ContractClient from a raw private key hex string.
    */
   static fromPrivateKey(privateKey: string): ContractClient {
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, undefined, { batchMaxCount: 1 });
+    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, HEDERA_NETWORK, {
+      batchMaxCount: 1,
+      staticNetwork: true,
+    });
     const key = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(key, provider);
     return new ContractClient(wallet);
@@ -162,7 +194,7 @@ export class ContractClient {
    *           uint256 estimatedCompletionTime, string specialization)
    */
   async submitBid(
-    jobId: number,
+    jobId: ChainUint,
     amount: bigint,
     collateral: bigint,
     estimatedTime: number,
@@ -171,8 +203,16 @@ export class ContractClient {
     return this.auction.submitBid(jobId, amount, collateral, estimatedTime, specialization);
   }
 
-  async getAuction(jobId: number): Promise<AuctionDetails> {
+  async getMinBidCollateral(): Promise<bigint> {
+    return this.auction.MIN_BID_COLLATERAL();
+  }
+
+  async getAuction(jobId: ChainUint): Promise<AuctionDetails> {
     return this.auction.getJob(jobId);
+  }
+
+  getAuctionAddress(): string {
+    return this.auction.target;
   }
 
   /**
@@ -203,7 +243,7 @@ export class ContractClient {
    *                  uint256 slaDurationSeconds, uint256 auctionDurationSeconds)
    */
   async createSubAuction(
-    parentJobId: number,
+    parentJobId: ChainUint,
     taskDescription: string,
     requiredSpecialization: string,
     paymentAmount: bigint,
@@ -224,7 +264,7 @@ export class ContractClient {
    * submitSubBid(uint256 subJobId, uint256 proposedPrice, uint256 estimatedTime, uint256 collateralAmount)
    */
   async submitSubBid(
-    subJobId: number,
+    subJobId: ChainUint,
     proposedPrice: bigint,
     estimatedTime: number = 300,
     collateralAmount: bigint = BigInt(0)
@@ -236,7 +276,7 @@ export class ContractClient {
    * deliverResult(uint256 subJobId, bytes32 resultHash)
    */
   async deliverResult(
-    subJobId: number,
+    subJobId: ChainUint,
     resultHash: string
   ): Promise<ethers.ContractTransactionResponse> {
     return this.subAuction.deliverResult(subJobId, resultHash);
@@ -246,7 +286,7 @@ export class ContractClient {
    * acceptResult(uint256 subJobId)
    */
   async acceptResult(
-    subJobId: number
+    subJobId: ChainUint
   ): Promise<ethers.ContractTransactionResponse> {
     return this.subAuction.acceptResult(subJobId);
   }
@@ -271,7 +311,7 @@ export class ContractClient {
    *               uint256 maxBuyers, uint256 durationSeconds)
    */
   async createListing(
-    parentJobId: number,
+    parentJobId: ChainUint,
     title: string,
     description: string,
     category: number,
@@ -300,12 +340,12 @@ export class ContractClient {
    * purchaseData(uint256 listingId)
    */
   async purchaseData(
-    listingId: number
+    listingId: ChainUint
   ): Promise<ethers.ContractTransactionResponse> {
     return this.dataMarketplace.purchaseData(listingId);
   }
 
-  async getListing(listingId: number): Promise<ListingDetails> {
+  async getListing(listingId: ChainUint): Promise<ListingDetails> {
     return this.dataMarketplace.getListing(listingId);
   }
 
@@ -341,7 +381,7 @@ export class ContractClient {
    * }
    */
   async settleJob(
-    jobId: number,
+    jobId: ChainUint,
     payments: PaymentItem[],
     reportAgent: string
   ): Promise<ethers.ContractTransactionResponse> {
@@ -386,6 +426,23 @@ export class ContractClient {
     return this.agentRegistry.isActiveAgent(agentAddress);
   }
 
+  async getGuardBalance(owner: string): Promise<bigint> {
+    return this.guardToken.balanceOf(owner);
+  }
+
+  async getGuardAllowance(owner: string, spender: string): Promise<bigint> {
+    return this.guardToken.allowance(owner, spender);
+  }
+
+  async ensureGuardAllowance(
+    spender: string,
+    minRequired: bigint
+  ): Promise<ethers.ContractTransactionResponse | null> {
+    const allowance = await this.getGuardAllowance(this.wallet.address, spender);
+    if (allowance >= minRequired) return null;
+    return this.guardToken.approve(spender, ethers.MaxUint256);
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────
 
   removeAllListeners(): void {
@@ -395,5 +452,6 @@ export class ContractClient {
     this.paymentSettlement.removeAllListeners();
     this.agentRegistry.removeAllListeners();
     this.budgetVault.removeAllListeners();
+    this.guardToken.removeAllListeners();
   }
 }

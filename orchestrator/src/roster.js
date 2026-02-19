@@ -37,15 +37,48 @@ export class Roster {
     }
   }
 
-  eligibleFor(contractType) {
-    this.pruneStale();
-    return [...this.agents.values()].filter((a) => {
-      if ((a.stake ?? 0) < CONFIG.stakes.minStake) return false;
-      if ((a.reputation ?? 0) < CONFIG.reputation.minReputation) return false;
-      if (a.specializations && a.specializations.length && contractType) {
-        return a.specializations.includes(contractType) || a.specializations.includes("any");
+  evaluateEligibility(contractType) {
+    const cutoff = now() - CONFIG.timeouts.livenessExpiryMs;
+    const eligible = [];
+    const excluded = [];
+    const staleAgentIds = [];
+
+    for (const [agentId, agent] of this.agents.entries()) {
+      const reasons = [];
+      if ((agent.lastSeen ?? 0) < cutoff) reasons.push("stale");
+      if ((agent.stake ?? 0) < CONFIG.stakes.minStake) reasons.push("low_stake");
+      if ((agent.reputation ?? 0) < CONFIG.reputation.minReputation) reasons.push("low_reputation");
+      if (agent.specializations && agent.specializations.length && contractType) {
+        const matches =
+          agent.specializations.includes(contractType) ||
+          agent.specializations.includes("any");
+        if (!matches) reasons.push("specialization_mismatch");
       }
-      return true;
-    });
+
+      if (reasons.length === 0) {
+        eligible.push(agent);
+      } else {
+        excluded.push({
+          agentId,
+          evmAddress: agent.evmAddress,
+          reasons,
+        });
+      }
+
+      if (reasons.includes("stale")) staleAgentIds.push(agentId);
+    }
+
+    for (const staleId of staleAgentIds) {
+      if (this.agents.has(staleId)) {
+        this.log.info(`Marking agent ${staleId} as stale`);
+        this.agents.delete(staleId);
+      }
+    }
+
+    return { eligible, excluded };
+  }
+
+  eligibleFor(contractType) {
+    return this.evaluateEligibility(contractType).eligible;
   }
 }

@@ -40,11 +40,19 @@ function loadSdkConfig(): SdkConfig | null {
 }
 
 const sdk = loadSdkConfig();
+const demoMode = process.env.DEMO_MODE === "true";
+const strictLiveDefault = demoMode ? false : true;
 
 // ─── Build CONFIG — SDK values override hardcoded defaults ─────────────────
 
 export const CONFIG = {
   network: "testnet" as const,
+  strictLive: (process.env.STRICT_LIVE ?? String(strictLiveDefault)) === "true",
+  bidPolicy: {
+    minCollateralGuard: Number(process.env.BID_MIN_COLLATERAL_GUARD ?? "50"),
+    collateralBufferGuard: Number(process.env.BID_COLLATERAL_BUFFER_GUARD ?? "0"),
+    enforceBudgetCap: (process.env.BID_ENFORCE_BUDGET_CAP ?? "true") !== "false",
+  },
 
   guardToken: {
     id: sdk?.guardTokenId ?? "0.0.7936262",
@@ -95,7 +103,14 @@ export const CONFIG = {
     providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
     model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
     timeoutMs: Number(process.env.ZG_TIMEOUT_MS ?? "30000"),
+    requestTimeoutMs: Number(process.env.ZG_REQUEST_TIMEOUT_MS ?? process.env.ZG_TIMEOUT_MS ?? "30000"),
+    healthcheckTimeoutMs: Number(process.env.ZG_HEALTHCHECK_TIMEOUT_MS ?? "15000"),
     depositAmount: Number(process.env.ZG_DEPOSIT_AMOUNT ?? "5"),
+    minLedgerCredits: Number(process.env.ZG_MIN_LEDGER_CREDITS ?? "1"),
+    maxInitRetries: Number(process.env.ZG_MAX_INIT_RETRIES ?? "2"),
+    probeAtStartup: (process.env.ZG_PROBE_AT_STARTUP ?? "true") !== "false",
+    requiredInLive: (process.env.ZG_REQUIRED_IN_LIVE ?? "true") !== "false",
+    providerMode: (process.env.ZG_PROVIDER_MODE ?? "pinned") as "pinned" | "auto" | "hybrid",
     enabled: process.env.ZG_ENABLED !== "false",
   },
 } as const;

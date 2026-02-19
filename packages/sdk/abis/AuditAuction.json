@@ -100,6 +100,19 @@
       "inputs": [
         {
           "indexed": true,
+          "internalType": "address",
+          "name": "auditScheduler",
+          "type": "address"
+        }
+      ],
+      "name": "AuditSchedulerSet",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
           "internalType": "uint256",
           "name": "jobId",
           "type": "uint256"
@@ -426,6 +439,19 @@
       "name": "associateGuardToken",
       "outputs": [],
       "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "auditScheduler",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
       "type": "function"
     },
     {
@@ -1123,6 +1149,19 @@
         }
       ],
       "name": "setAgentRegistry",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "_auditScheduler",
+          "type": "address"
+        }
+      ],
+      "name": "setAuditScheduler",
       "outputs": [],
       "stateMutability": "nonpayable",
       "type": "function"

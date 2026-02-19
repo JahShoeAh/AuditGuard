@@ -13,6 +13,32 @@ vi.mock("@0glabs/0g-serving-broker", () => ({
 }));
 
 describe("Agent AUCTION_INVITE handling", () => {
+  it("shared bid policy enforces collateral floor and budget cap", async () => {
+    const { computeLiveBid } = await import("../shared/bid-policy.js");
+    const result = computeLiveBid(
+      { amount: 120, collateral: 12, estimatedTimeSec: 60 },
+      80,
+      { minCollateralGuard: 50, collateralBufferGuard: 0, enforceBudgetCap: true }
+    );
+
+    expect(result.skip).toBeUndefined();
+    expect(result.bid).toBeDefined();
+    expect(result.bid?.amount).toBe(80);
+    expect(result.bid?.collateral).toBe(50);
+  });
+
+  it("shared bid policy skips when invite budget is not positive", async () => {
+    const { computeLiveBid } = await import("../shared/bid-policy.js");
+    const result = computeLiveBid(
+      { amount: 10, collateral: 5, estimatedTimeSec: 60 },
+      0,
+      { minCollateralGuard: 50, collateralBufferGuard: 0, enforceBudgetCap: true }
+    );
+
+    expect(result.bid).toBeUndefined();
+    expect(result.skip?.reasonCode).toBe("invalid_budget");
+  });
+
   it("static-analysis resolves invite payload without discovery queue", async () => {
     const { resolveAuctionInviteContext, calculateBid } = await import("../static-analysis/index.js");
     const resolved = resolveAuctionInviteContext({

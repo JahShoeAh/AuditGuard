@@ -24,6 +24,8 @@ function loadSdkConfig() {
 }
 
 const sdk = loadSdkConfig();
+const demoMode = process.env.DEMO_MODE === "true";
+const strictLiveDefault = demoMode ? false : true;
 
 function getEnv(name) {
   const raw = process.env[name];
@@ -34,6 +36,7 @@ function getEnv(name) {
 
 export const CONFIG = {
   network: "testnet",
+  strictLive: (process.env.STRICT_LIVE ?? String(strictLiveDefault)) === "true",
   hcsTopics: {
     discovery: sdk?.hcsTopics?.discovery ?? "0.0.7940144",
     auditLog: sdk?.hcsTopics?.auditLog ?? "0.0.7940145",
@@ -89,7 +92,7 @@ export const CONFIG = {
     pingIntervalMs: 45_000,
     livenessExpiryMs: 120_000,
   },
-  demoMode: process.env.DEMO_MODE === "true",
+  demoMode,
 };
 
 export function getOperatorKeys() {

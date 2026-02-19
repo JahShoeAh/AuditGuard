@@ -256,41 +256,44 @@ async function main() {
       const provider = hre.ethers.provider;
       const seededSpecs = [
         {
-          key: "AUDITOR_AGENT_1",
+          key: "STATIC",
+          legacyKey: "AUDITOR_AGENT_1",
           label: "staticAnalysis47",
           agentId: "StaticAnalysis-47",
           specialization: ["static_analysis"],
           stake: 150,
           reputation: 9400,
-          endpoint: process.env.AUDITOR_AGENT_1_UCP_ENDPOINT || "openclaw://staticaudit-47",
+          endpoint: process.env.STATIC_UCP_ENDPOINT || process.env.AUDITOR_AGENT_1_UCP_ENDPOINT || "openclaw://staticaudit-47",
           promote: false,
         },
         {
-          key: "AUDITOR_AGENT_2",
+          key: "FUZZER",
+          legacyKey: "AUDITOR_AGENT_2",
           label: "fuzzer12",
           agentId: "Fuzzer-12",
           specialization: ["fuzzing"],
           stake: 300,
           reputation: 8700,
-          endpoint: process.env.AUDITOR_AGENT_2_UCP_ENDPOINT || "openclaw://fuzzer-12",
+          endpoint: process.env.FUZZER_UCP_ENDPOINT || process.env.AUDITOR_AGENT_2_UCP_ENDPOINT || "openclaw://fuzzer-12",
           promote: true,
         },
         {
-          key: "AUDITOR_AGENT_3",
+          key: "LLM",
+          legacyKey: "AUDITOR_AGENT_3",
           label: "llmContextual3",
           agentId: "LLMContextual-3",
           specialization: ["llm_contextual"],
           stake: 500,
           reputation: 8700,
-          endpoint: process.env.AUDITOR_AGENT_3_UCP_ENDPOINT || "openclaw://llmcontext-3",
+          endpoint: process.env.LLM_UCP_ENDPOINT || process.env.AUDITOR_AGENT_3_UCP_ENDPOINT || "openclaw://llmcontext-3",
           promote: true,
         },
       ];
 
       state.config.seededAgents = state.config.seededAgents || {};
       for (const spec of seededSpecs) {
-        const accountId = process.env[`${spec.key}_ACCOUNT_ID`];
-        const rawPk = process.env[`${spec.key}_PRIVATE_KEY`];
+        const accountId = process.env[`${spec.key}_ACCOUNT_ID`] || (spec.legacyKey ? process.env[`${spec.legacyKey}_ACCOUNT_ID`] : undefined);
+        const rawPk = process.env[`${spec.key}_PRIVATE_KEY`] || (spec.legacyKey ? process.env[`${spec.legacyKey}_PRIVATE_KEY`] : undefined);
         if (!accountId || !rawPk) {
           console.log(`⚠️  Skipping ${spec.label}: missing ${spec.key}_ACCOUNT_ID/PRIVATE_KEY`);
           continue;
@@ -406,4 +409,3 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

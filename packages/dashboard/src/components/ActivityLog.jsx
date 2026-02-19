@@ -11,6 +11,14 @@ const TYPE_COLORS = {
   JobPosted: 'var(--accent-cyan)',
   BID_SUBMITTED: 'var(--accent-amber)',
   BidSubmitted: 'var(--accent-amber)',
+  BID_SKIPPED: '#f59e0b',
+  BID_SUBMISSION_FAILED: '#ef4444',
+  AUCTION_INVITE_SUMMARY: 'var(--accent-cyan)',
+  LLM_PROVIDER_READY: 'var(--accent-green)',
+  LLM_PROVIDER_UNHEALTHY: 'var(--accent-red)',
+  LLM_INFERENCE_STARTED: 'var(--accent-cyan)',
+  LLM_INFERENCE_SUCCEEDED: 'var(--accent-green)',
+  LLM_INFERENCE_FAILED: 'var(--accent-red)',
   WINNERS_SELECTED: 'var(--accent-green)',
   WinnersSelected: 'var(--accent-green)',
   PAYMENT_SETTLED: 'var(--accent-gold)',
@@ -51,6 +59,30 @@ function describeEntry(entry) {
   }
   if (t === 'BidSubmitted' || t === 'BID_SUBMITTED') {
     return `${entry.agentName || '?'} bid on Job #${entry.jobId}  ${entry.bidFormatted || ''}`;
+  }
+  if (t === 'BID_SKIPPED') {
+    return `${entry.agentId || '?'} skipped bid for Job #${entry.jobId}  ${entry.reason || ''}`;
+  }
+  if (t === 'BID_SUBMISSION_FAILED') {
+    return `${entry.agentId || '?'} failed bid for Job #${entry.jobId}  ${entry.reason || ''}`;
+  }
+  if (t === 'AUCTION_INVITE_SUMMARY') {
+    return `Job #${entry.jobId || '?'} invite summary: ${entry.eligibleAgents?.length || 0} eligible`;
+  }
+  if (t === 'LLM_PROVIDER_READY') {
+    return `LLM provider ready: ${entry.providerAddress || '?'} (${entry.model || '?'})`;
+  }
+  if (t === 'LLM_PROVIDER_UNHEALTHY') {
+    return `LLM provider unhealthy: ${entry.reasonCode || '?'} ${entry.reason || ''}`;
+  }
+  if (t === 'LLM_INFERENCE_STARTED') {
+    return `LLM inference started for Job #${entry.jobId || '?'} (${entry.model || '?'})`;
+  }
+  if (t === 'LLM_INFERENCE_SUCCEEDED') {
+    return `LLM inference succeeded for Job #${entry.jobId || '?'} (${entry.findingsCount || 0} findings)`;
+  }
+  if (t === 'LLM_INFERENCE_FAILED') {
+    return `LLM inference failed for Job #${entry.jobId || '?'}: ${entry.reasonCode || ''} ${entry.reason || ''}`;
   }
   if (t === 'WinnersSelected' || t === 'WINNERS_SELECTED') {
     return `Job #${entry.jobId} winners selected (${entry.winnerCount || '?'} agents)`;

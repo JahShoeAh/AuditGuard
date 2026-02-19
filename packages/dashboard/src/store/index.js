@@ -35,6 +35,34 @@ const useStore = create((set) => ({
       bids: { ...s.bids, [jobId]: [...(s.bids[jobId] || []), bid] },
     })),
 
+  // ── Bid lifecycle visibility (from HCS audit log) ────────
+  jobBidStatus: {},
+  addJobBidStatus: (jobId, status) =>
+    set((s) => ({
+      jobBidStatus: {
+        ...s.jobBidStatus,
+        [jobId]: [status, ...(s.jobBidStatus[jobId] || [])].slice(0, 100),
+      },
+    })),
+
+  // ── LLM provider + inference lifecycle ───────────────────
+  llmProviderStatus: {},
+  setLlmProviderStatus: (agentId, status) =>
+    set((s) => ({
+      llmProviderStatus: {
+        ...s.llmProviderStatus,
+        [agentId]: [status, ...(s.llmProviderStatus[agentId] || [])].slice(0, 100),
+      },
+    })),
+  llmInferenceStatus: {},
+  addLlmInferenceStatus: (jobId, status) =>
+    set((s) => ({
+      llmInferenceStatus: {
+        ...s.llmInferenceStatus,
+        [jobId]: [status, ...(s.llmInferenceStatus[jobId] || [])].slice(0, 100),
+      },
+    })),
+
   // ── Agents (from AgentRegistry view functions) ───────────
   agents: {},
   setAgent: (addr, profile) =>
@@ -224,7 +252,7 @@ const useStore = create((set) => ({
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,
-    discoveries: [], activeJobs: {}, bids: {}, agents: {}, auditLog: [],
+    discoveries: [], activeJobs: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],

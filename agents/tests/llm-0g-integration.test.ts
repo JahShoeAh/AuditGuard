@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("../shared/index.js", () => ({
   CONFIG: {
     network: "testnet",
+    strictLive: process.env.STRICT_LIVE === "true",
     guardToken: { id: "0.0.1", evmAddress: "0x0" },
     hcsTopics: { discovery: "0.0.1", auditLog: "0.0.2", agentComms: "0.0.3" },
     contracts: {},
@@ -24,6 +25,7 @@ vi.mock("../shared/index.js", () => ({
       model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
       timeoutMs: 30000,
       depositAmount: 5,
+      requiredInLive: (process.env.ZG_REQUIRED_IN_LIVE ?? "true") !== "false",
       enabled: process.env.ZG_ENABLED !== "false",
     },
   },
@@ -60,6 +62,7 @@ vi.mock("../shared/index.js", () => ({
 vi.mock("../shared/config.js", () => ({
   CONFIG: {
     network: "testnet",
+    strictLive: process.env.STRICT_LIVE === "true",
     guardToken: { id: "0.0.1", evmAddress: "0x0" },
     hcsTopics: { discovery: "0.0.1", auditLog: "0.0.2", agentComms: "0.0.3" },
     contracts: {},
@@ -72,6 +75,7 @@ vi.mock("../shared/config.js", () => ({
       model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
       timeoutMs: 30000,
       depositAmount: 5,
+      requiredInLive: (process.env.ZG_REQUIRED_IN_LIVE ?? "true") !== "false",
       enabled: process.env.ZG_ENABLED !== "false",
     },
   },
@@ -92,8 +96,10 @@ const mockBroker = {
       "X-0G-Nonce": "12345",
     }),
     acknowledgeProviderSigner: vi.fn().mockResolvedValue(undefined),
+    processResponse: vi.fn().mockResolvedValue(true),
   },
   ledger: {
+    getLedger: vi.fn().mockResolvedValue({ availableBalance: 1000000000000000000n, totalBalance: 1000000000000000000n }),
     depositFund: vi.fn().mockResolvedValue(undefined),
   },
 };
@@ -123,11 +129,12 @@ describe("zg-client.ts", () => {
       "X-0G-Auth": "mock-signed-header",
       "X-0G-Nonce": "12345",
     });
+    mockBroker.inference.processResponse.mockResolvedValue(true);
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     delete process.env.ZG_PRIVATE_KEY;
     delete process.env.ZG_PROVIDER_ADDRESS;
     delete process.env.ZG_RPC_URL;
@@ -171,7 +178,7 @@ describe("zg-client.ts", () => {
       expect.unreachable("should have thrown");
     } catch (err: any) {
       expect(err).toBeInstanceOf(ZGClientError);
-      expect(err.code).toBe("HTTP_ERROR");
+      expect(err.code).toBe("zg_http_error");
     }
   });
 
@@ -187,7 +194,7 @@ describe("zg-client.ts", () => {
       await callInference(makeRequest());
       expect.unreachable("should have thrown");
     } catch (err: any) {
-      expect(err.code).toBe("EMPTY_RESPONSE");
+      expect(err.code).toBe("zg_response_invalid");
     }
   });
 
@@ -204,7 +211,7 @@ describe("zg-client.ts", () => {
       await callInference(makeRequest(), { timeoutMs: 100 });
       expect.unreachable("should have thrown");
     } catch (err: any) {
-      expect(err.code).toBe("TIMEOUT");
+      expect(err.code).toBe("zg_timeout");
     }
   });
 
@@ -263,17 +270,36 @@ describe("zg-client.ts", () => {
     expect(body.max_tokens).toBe(2000);
   });
 
-  it("throws NOT_INITIALIZED when ZG_PROVIDER_ADDRESS is missing", async () => {
+  it("throws zg_not_configured when provider address resolves empty", async () => {
     delete process.env.ZG_PROVIDER_ADDRESS;
 
     const { callInference, _resetBroker } = await import("../llm-contextual/zg-client.js");
     _resetBroker();
     try {
-      await callInference(makeRequest());
+      await callInference(makeRequest(), { providerAddress: "" });
       expect.unreachable("should have thrown");
     } catch (err: any) {
-      expect(err.code).toBe("NOT_INITIALIZED");
+      expect(err.code).toBe("zg_not_configured");
     }
+  });
+
+  it("throws zg_response_invalid when provider response verification fails", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"findings":[]}' } }],
+      }),
+      headers: {
+        get: vi.fn().mockReturnValue("req-verify-fail"),
+      },
+    });
+    mockBroker.inference.processResponse.mockResolvedValue(false);
+
+    const { callInference, _resetBroker } = await import("../llm-contextual/zg-client.js");
+    _resetBroker();
+    await expect(callInference(makeRequest())).rejects.toMatchObject({
+      code: "zg_response_invalid",
+    });
   });
 });
 
@@ -568,19 +594,30 @@ describe("analyzeWithAI()", () => {
     vi.resetModules();
     process.env.ZG_PRIVATE_KEY = "0x493a894523bd3af6ab9954f4c229686417c39a8599bc8f7c48fc2dffe3c3202b";
     process.env.ZG_PROVIDER_ADDRESS = "0xa48f01MockProvider";
+    delete process.env.STRICT_LIVE;
+    delete process.env.ZG_REQUIRED_IN_LIVE;
     delete process.env.ZG_ENABLED;
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     delete process.env.ZG_ENABLED;
+    delete process.env.STRICT_LIVE;
+    delete process.env.ZG_REQUIRED_IN_LIVE;
     delete process.env.ZG_PRIVATE_KEY;
     delete process.env.ZG_PROVIDER_ADDRESS;
   });
 
   it("returns usedFallback: false on successful 0g call", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: vi.fn().mockResolvedValue(goodLlmResponse),
+      infer: vi.fn().mockResolvedValue({
+        content: goodLlmResponse,
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-1",
+        verified: true,
+      }),
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -592,7 +629,14 @@ describe("analyzeWithAI()", () => {
 
   it("returns Finding[] matching ParseResult.findings on success", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: vi.fn().mockResolvedValue(goodLlmResponse),
+      infer: vi.fn().mockResolvedValue({
+        content: goodLlmResponse,
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-2",
+        verified: true,
+      }),
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -611,7 +655,7 @@ describe("analyzeWithAI()", () => {
         constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
       }
       return {
-        callInference: vi.fn().mockRejectedValue(new ZGClientError("TIMEOUT", "timed out")),
+        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_timeout", "timed out")),
         initZgClient: vi.fn().mockResolvedValue(undefined),
         ZGClientError,
       };
@@ -625,7 +669,14 @@ describe("analyzeWithAI()", () => {
 
   it("returns usedFallback: true when parseFindings returns parseError", async () => {
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: vi.fn().mockResolvedValue("This is not JSON at all"),
+      infer: vi.fn().mockResolvedValue({
+        content: "This is not JSON at all",
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-3",
+        verified: true,
+      }),
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -644,10 +695,17 @@ describe("analyzeWithAI()", () => {
         constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
       }
       return {
-        callInference: vi.fn().mockImplementation(async () => {
+        infer: vi.fn().mockImplementation(async () => {
           callCount++;
-          if (callCount === 1) throw new ZGClientError("TIMEOUT", "first attempt");
-          return goodLlmResponse;
+          if (callCount === 1) throw new ZGClientError("zg_timeout", "first attempt");
+          return {
+            content: goodLlmResponse,
+            providerAddress: "0xa48f01MockProvider",
+            endpoint: "https://mock-provider.0g.ai",
+            model: "qwen-2.5-7b-instruct",
+            requestId: "req-4",
+            verified: true,
+          };
         }),
         initZgClient: vi.fn().mockResolvedValue(undefined),
         ZGClientError,
@@ -668,7 +726,7 @@ describe("analyzeWithAI()", () => {
         constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
       }
       return {
-        callInference: vi.fn().mockRejectedValue(new ZGClientError("HTTP_ERROR", "always fail")),
+        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_http_error", "always fail")),
         initZgClient: vi.fn().mockResolvedValue(undefined),
         ZGClientError,
       };
@@ -687,7 +745,7 @@ describe("analyzeWithAI()", () => {
         constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
       }
       return {
-        callInference: vi.fn().mockRejectedValue(new ZGClientError("TIMEOUT", "fail")),
+        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_timeout", "fail")),
         initZgClient: vi.fn().mockResolvedValue(undefined),
         ZGClientError,
       };
@@ -706,9 +764,16 @@ describe("analyzeWithAI()", () => {
 
   it("does NOT call 0g when ZG_ENABLED=false", async () => {
     process.env.ZG_ENABLED = "false";
-    const inferSpy = vi.fn().mockResolvedValue(goodLlmResponse);
+    const inferSpy = vi.fn().mockResolvedValue({
+      content: goodLlmResponse,
+      providerAddress: "0xa48f01MockProvider",
+      endpoint: "https://mock-provider.0g.ai",
+      model: "qwen-2.5-7b-instruct",
+      requestId: "req-5",
+      verified: true,
+    });
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: inferSpy,
+      infer: inferSpy,
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -719,19 +784,26 @@ describe("analyzeWithAI()", () => {
     expect(result.usedFallback).toBe(true);
   });
 
-  it("does NOT call 0g when ZG_PROVIDER_ADDRESS is empty", async () => {
+  it("still calls 0g when env provider is empty but config provider is pinned", async () => {
     delete process.env.ZG_PROVIDER_ADDRESS;
-    const inferSpy = vi.fn().mockResolvedValue(goodLlmResponse);
+    const inferSpy = vi.fn().mockResolvedValue({
+      content: goodLlmResponse,
+      providerAddress: "0xa48f01MockProvider",
+      endpoint: "https://mock-provider.0g.ai",
+      model: "qwen-2.5-7b-instruct",
+      requestId: "req-6",
+      verified: true,
+    });
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: inferSpy,
+      infer: inferSpy,
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
 
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
     const result = await analyzeWithAI(baseCtx());
-    expect(inferSpy).not.toHaveBeenCalled();
-    expect(result.usedFallback).toBe(true);
+    expect(inferSpy).toHaveBeenCalledTimes(1);
+    expect(result.usedFallback).toBe(false);
   });
 
   it("passes AuditContext.contractType to prompt builder", async () => {
@@ -745,7 +817,14 @@ describe("analyzeWithAI()", () => {
       buildUserPrompt: vi.fn(),
     }));
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: vi.fn().mockResolvedValue(goodLlmResponse),
+      infer: vi.fn().mockResolvedValue({
+        content: goodLlmResponse,
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-7",
+        verified: true,
+      }),
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -770,7 +849,14 @@ describe("analyzeWithAI()", () => {
       buildUserPrompt: vi.fn(),
     }));
     vi.doMock("../llm-contextual/zg-client.js", () => ({
-      callInference: vi.fn().mockResolvedValue(goodLlmResponse),
+      infer: vi.fn().mockResolvedValue({
+        content: goodLlmResponse,
+        providerAddress: "0xa48f01MockProvider",
+        endpoint: "https://mock-provider.0g.ai",
+        model: "qwen-2.5-7b-instruct",
+        requestId: "req-8",
+        verified: true,
+      }),
       initZgClient: vi.fn().mockResolvedValue(undefined),
       ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
     }));
@@ -791,7 +877,7 @@ describe("analyzeWithAI()", () => {
         constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
       }
       return {
-        callInference: vi.fn().mockRejectedValue(new ZGClientError("TIMEOUT", "fail")),
+        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_timeout", "fail")),
         initZgClient: vi.fn().mockResolvedValue(undefined),
         ZGClientError,
       };
@@ -800,6 +886,41 @@ describe("analyzeWithAI()", () => {
     const { analyzeWithAI } = await import("../llm-contextual/index.js");
     const result = await analyzeWithAI(baseCtx());
     expect(result.usedFallback).toBe(true);
+  });
+
+  it("throws in strict live when 0g inference fails", async () => {
+    process.env.STRICT_LIVE = "true";
+    process.env.ZG_REQUIRED_IN_LIVE = "true";
+    vi.doMock("../llm-contextual/zg-client.js", () => {
+      class ZGClientError extends Error {
+        code: string;
+        constructor(c: string, m: string) { super(m); this.name = "ZGClientError"; this.code = c; }
+      }
+      return {
+        infer: vi.fn().mockRejectedValue(new ZGClientError("zg_timeout", "strict timeout")),
+        initZgClient: vi.fn().mockResolvedValue(undefined),
+        ZGClientError,
+      };
+    });
+
+    const { analyzeWithAI } = await import("../llm-contextual/index.js");
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/strict timeout|zg/i);
+  });
+
+  it("throws in strict live when 0g is disabled", async () => {
+    process.env.STRICT_LIVE = "true";
+    process.env.ZG_REQUIRED_IN_LIVE = "true";
+    process.env.ZG_ENABLED = "false";
+    const inferSpy = vi.fn();
+    vi.doMock("../llm-contextual/zg-client.js", () => ({
+      infer: inferSpy,
+      initZgClient: vi.fn().mockResolvedValue(undefined),
+      ZGClientError: class extends Error { code: string; constructor(c: string, m: string) { super(m); this.code = c; } },
+    }));
+
+    const { analyzeWithAI } = await import("../llm-contextual/index.js");
+    await expect(analyzeWithAI(baseCtx())).rejects.toThrow(/required in strict live mode/i);
+    expect(inferSpy).not.toHaveBeenCalled();
   });
 });
 

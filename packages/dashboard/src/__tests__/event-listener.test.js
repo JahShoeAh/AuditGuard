@@ -7,6 +7,9 @@ function makeStoreSpies() {
     addLogEntry: vi.fn(),
     setJob: vi.fn(),
     addBid: vi.fn(),
+    addJobBidStatus: vi.fn(),
+    setLlmProviderStatus: vi.fn(),
+    addLlmInferenceStatus: vi.fn(),
     setWinners: vi.fn(),
     setAgent: vi.fn(),
     incrementStat: vi.fn(),
@@ -87,6 +90,133 @@ describe("EventListenerService", () => {
 
     expect(store.addLogEntry).toHaveBeenCalledTimes(1);
     expect(store.incrementStat).toHaveBeenCalledWith("totalBids");
+    expect(store.addJobBidStatus).toHaveBeenCalledWith(
+      "123",
+      expect.objectContaining({ status: "submitted" })
+    );
+  });
+
+  it("routes BID_SKIPPED messages into job bid lifecycle", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "BID_SKIPPED",
+        agentId: "static-analysis-047",
+        payload: { jobId: "55", reason: "Wallet is not an active on-chain agent" },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 4,
+    });
+
+    expect(store.addJobBidStatus).toHaveBeenCalledWith(
+      "55",
+      expect.objectContaining({
+        status: "skipped",
+        agentId: "static-analysis-047",
+      })
+    );
+  });
+
+  it("routes AUCTION_INVITE_SUMMARY messages into invite lifecycle entries", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "AUCTION_INVITE_SUMMARY",
+        payload: {
+          jobId: "77",
+          eligibleAgents: [
+            { agentId: "static-analysis-047", evmAddress: "0x00000000000000000000000000000000000000aa" },
+            { agentId: "fuzzer-012", evmAddress: "0x00000000000000000000000000000000000000bb" },
+          ],
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 5,
+    });
+
+    expect(store.addJobBidStatus).toHaveBeenCalledTimes(2);
+    expect(store.addJobBidStatus).toHaveBeenNthCalledWith(
+      1,
+      "77",
+      expect.objectContaining({ status: "invite_sent", agentId: "static-analysis-047" })
+    );
+  });
+
+  it("routes AGENT_REGISTERED audit log messages into agent store", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "AGENT_REGISTERED",
+        agentId: "static-analysis-047",
+        payload: {
+          evmAddress: "0x00000000000000000000000000000000000000aa",
+          stake: 100,
+          reputation: 75,
+          specializations: ["lending", "vault"],
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 3,
+    });
+
+    expect(store.setAgent).toHaveBeenCalledTimes(1);
+    expect(store.setAgent).toHaveBeenCalledWith(
+      "0x00000000000000000000000000000000000000aa",
+      expect.objectContaining({
+        agentId: "static-analysis-047",
+        reputation: 75,
+        reputationScore: 7500,
+        status: "ACTIVE",
+        source: "hcs_auditlog",
+      })
+    );
+  });
+
+  it("routes LLM provider and inference lifecycle events into dedicated store slices", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "LLM_PROVIDER_READY",
+        agentId: "llm-contextual-003",
+        payload: {
+          providerAddress: "0xa48f01287233509FD694a22Bf840225062E67836",
+          model: "qwen-2.5-7b-instruct",
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 90,
+    });
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "LLM_INFERENCE_FAILED",
+        agentId: "llm-contextual-003",
+        payload: {
+          jobId: "88",
+          reasonCode: "zg_timeout",
+          reason: "inference request timeout",
+        },
+      },
+      timestamp: "1700000001.000000001",
+      sequenceNumber: 91,
+    });
+
+    expect(store.setLlmProviderStatus).toHaveBeenCalledWith(
+      "llm-contextual-003",
+      expect.objectContaining({ status: "ready" })
+    );
+    expect(store.addLlmInferenceStatus).toHaveBeenCalledWith(
+      "88",
+      expect.objectContaining({ status: "failed", reasonCode: "zg_timeout" })
+    );
   });
 
   it("ingests live JobPosted + BidSubmitted contract events", async () => {

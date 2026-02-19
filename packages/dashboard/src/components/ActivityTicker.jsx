@@ -21,6 +21,30 @@ function formatEntry(entry) {
     case 'BidSubmitted':
       detail = `${entry.agentName || '?'} bid ${entry.bidFormatted || ''}`;
       break;
+    case 'BID_SKIPPED':
+      detail = `${entry.agentId || '?'} skipped Job #${entry.jobId} — ${entry.reason || ''}`;
+      break;
+    case 'BID_SUBMISSION_FAILED':
+      detail = `${entry.agentId || '?'} failed Job #${entry.jobId} — ${entry.reason || ''}`;
+      break;
+    case 'AUCTION_INVITE_SUMMARY':
+      detail = `Job #${entry.jobId} — ${entry.eligibleAgents?.length || 0} invited`;
+      break;
+    case 'LLM_PROVIDER_READY':
+      detail = `LLM provider ready — ${entry.providerAddress || '?'} (${entry.model || '?'})`;
+      break;
+    case 'LLM_PROVIDER_UNHEALTHY':
+      detail = `LLM provider unhealthy — ${entry.reasonCode || '?'} ${entry.reason || ''}`;
+      break;
+    case 'LLM_INFERENCE_STARTED':
+      detail = `LLM inference started — Job #${entry.jobId || '?'} (${entry.model || '?'})`;
+      break;
+    case 'LLM_INFERENCE_SUCCEEDED':
+      detail = `LLM inference ok — Job #${entry.jobId || '?'} (${entry.findingsCount || 0} findings)`;
+      break;
+    case 'LLM_INFERENCE_FAILED':
+      detail = `LLM inference failed — Job #${entry.jobId || '?'} (${entry.reasonCode || '?'})`;
+      break;
     case 'WinnersSelected':
       detail = `Job #${entry.jobId} — ${entry.winnerCount || 0} winners`;
       break;

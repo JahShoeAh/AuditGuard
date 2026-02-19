@@ -117,7 +117,7 @@ describe("🔄 End-to-End: Full Audit Lifecycle", () => {
 
             expect(discovery.type).toBe("CONTRACT_DISCOVERED");
             expect(discovery.agentId).toBe("scanner-001");
-            expect(discovery.payload.contractAddress).toMatch(/^0x[0-9a-f]{40,}$/);
+            expect(discovery.payload.contractAddress).toMatch(/^0x[0-9a-f]{40}$/);
             expect(discovery.payload.chain).toBe("hedera-testnet");
             expect(discovery.payload.estimatedLOC).toBeGreaterThan(0);
             expect(discovery.payload.riskScore).toBeGreaterThanOrEqual(20);

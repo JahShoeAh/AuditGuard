@@ -54,7 +54,7 @@ export default function AgentLeaderboard() {
         <div className="flex-1 overflow-y-auto min-h-0">
           {agents.length === 0 ? (
             <div className="text-gray-600 text-xs font-mono p-3">
-              No agents registered yet — waiting for mock events...
+              No agents registered yet — waiting for live registration events...
             </div>
           ) : (
             <AnimatePresence>

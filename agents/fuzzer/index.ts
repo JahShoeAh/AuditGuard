@@ -1,6 +1,9 @@
 import {
   HCSClient,
   ContractClient,
+  CONFIG,
+  computeLiveBid,
+  normalizeBidFailureReasonCode,
   createAgentLogger,
   createAgentWallet,
   randomInt,
@@ -21,10 +24,12 @@ import { ethers } from "ethers";
 // ---- Config ----
 const AGENT_ID = "fuzzer-012";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const STRICT_LIVE = CONFIG.strictLive;
 const SPECIALIZATIONS: ContractType[] = ["dex", "bridge"];
 const BASE_REPUTATION = 82;
 const MAX_DATA_PURCHASE_PRICE = 1.0; // GUARD
 const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;
+const GUARD_DECIMALS = 8;
 
 const log = createAgentLogger(AGENT_ID, "fuzzer");
 
@@ -41,6 +46,14 @@ let bidMultiplier = 1.0;
 let totalBids = 0;
 let totalWins = 0;
 const PRICING_ALPHA = 0.3;
+
+function parseChainUint(value: string | number | bigint): bigint {
+  const normalized = typeof value === "bigint" ? value.toString() : String(value);
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid numeric id: ${normalized}`);
+  }
+  return BigInt(normalized);
+}
 
 function updatePricingAfterOutcome(won: boolean) {
   totalBids++;
@@ -143,8 +156,22 @@ async function main() {
   const wallet = createAgentWallet("FUZZER");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
+  let minBidCollateralWei = ethers.parseUnits(
+    CONFIG.bidPolicy.minCollateralGuard.toFixed(2),
+    GUARD_DECIMALS
+  );
+  let minBidCollateralGuard = CONFIG.bidPolicy.minCollateralGuard;
 
   log.info(`Wallet: ${wallet.evmAddress}`);
+
+  try {
+    minBidCollateralWei = await contracts.getMinBidCollateral();
+    minBidCollateralGuard = Number(ethers.formatUnits(minBidCollateralWei, GUARD_DECIMALS));
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    log.warn(`Failed to read MIN_BID_COLLATERAL from chain, using config default: ${error}`);
+  }
+  log.info(`Live bid policy: min collateral ${minBidCollateralGuard.toFixed(2)} GUARD`);
 
   // Register with the orchestrator so our bids are accepted
   await hcs.publishAuditLog({
@@ -159,6 +186,32 @@ async function main() {
     },
   });
   log.info("Published AGENT_REGISTERED to auditLog");
+
+  if (STRICT_LIVE && !DEMO_MODE) {
+    try {
+      const active = await contracts.isActiveAgent(wallet.evmAddress);
+      if (!active) {
+        log.warn("Startup preflight: wallet is not an active on-chain agent");
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup preflight: active-agent check failed: ${error}`);
+    }
+
+    try {
+      const approvalTx = await contracts.ensureGuardAllowance(
+        contracts.getAuctionAddress(),
+        minBidCollateralWei
+      );
+      if (approvalTx) {
+        await approvalTx.wait?.();
+        log.info("Startup preflight: approved GUARD allowance for AuditAuction");
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup preflight: GUARD allowance setup failed: ${error}`);
+    }
+  }
 
   // Queue discoveries until AUCTION_INVITE arrives with real jobId
   const discoveryQueue = new Map<string, {
@@ -180,15 +233,15 @@ async function main() {
 
     if (msg.type === "DATA_LISTING_CREATED" && msg.agentId !== AGENT_ID) {
       const { listingId, price, description, jobId, category } = msg.payload as any;
-      const numericListingId = Number(listingId);
+      const listingIdKey = String(listingId ?? "");
       if (
         category === "SCAN_REPORT" &&
         price <= MAX_DATA_PURCHASE_PRICE &&
-        Number.isFinite(numericListingId)
+        /^\d+$/.test(listingIdKey)
       ) {
         log.info(`Scan report available from ${msg.agentId}: ${price} GUARD`);
         availableReports.set(String(jobId), {
-          listingId: String(listingId),
+          listingId: listingIdKey,
           price,
           seller: msg.agentId,
           jobId: String(jobId),
@@ -197,7 +250,7 @@ async function main() {
     }
 
     if (msg.type === "AUCTION_INVITE") {
-      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount } = (msg as any).payload;
+      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount, budget } = (msg as any).payload;
       const queued = discoveryQueue.get(contractAddress);
       if (queued) discoveryQueue.delete(contractAddress);
 
@@ -208,7 +261,130 @@ async function main() {
       const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
       if (!bid) return;
 
-      log.info(`AUCTION_INVITE for job #${jobId} — bidding ${bid.amount} GUARD`);
+      const computed = computeLiveBid(bid, budget, {
+        ...CONFIG.bidPolicy,
+        minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard),
+      });
+      if (computed.skip || !computed.bid) {
+        await hcs.publishAuditLog({
+          type: "BID_SKIPPED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {
+            jobId: String(jobId),
+            contractAddress,
+            reason: computed.skip?.reason ?? "Bid policy rejected invite",
+            reasonCode: computed.skip?.reasonCode ?? "bid_policy_rejected",
+            computedBid: bid.amount,
+            computedCollateral: bid.collateral,
+            budget: Number(budget ?? 0),
+            strictLive: STRICT_LIVE && !DEMO_MODE,
+            evmAddress: wallet.evmAddress,
+          },
+        });
+        return;
+      }
+      const finalBid = computed.bid;
+      log.info(
+        `AUCTION_INVITE for job #${jobId} — bidding ${finalBid.amount} GUARD ` +
+        `(collateral ${finalBid.collateral} GUARD)`
+      );
+
+      if (STRICT_LIVE && !DEMO_MODE) {
+        let active = false;
+        try {
+          active = await contracts.isActiveAgent(wallet.evmAddress);
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: `Active-agent check failed: ${error}`,
+              reasonCode: "active_agent_check_failed",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+        if (!active) {
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: "Wallet is not an active on-chain agent",
+              reasonCode: "inactive_agent",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+
+        const balance = await contracts.getGuardBalance(wallet.evmAddress);
+        if (balance < finalBid.collateralWei) {
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: "Insufficient GUARD balance for bid collateral",
+              reasonCode: "insufficient_collateral_balance",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+
+        try {
+          const approvalTx = await contracts.ensureGuardAllowance(
+            contracts.getAuctionAddress(),
+            finalBid.collateralWei
+          );
+          if (approvalTx) {
+            await approvalTx.wait?.();
+            log.info(`Updated GUARD allowance for job #${jobId}`);
+          }
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          await hcs.publishAuditLog({
+            type: "BID_SKIPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              reason: `Failed to update GUARD allowance: ${error}`,
+              reasonCode: "allowance_update_failed",
+              computedBid: finalBid.amount,
+              computedCollateral: finalBid.collateral,
+              budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+              strictLive: true,
+              evmAddress: wallet.evmAddress,
+            },
+          });
+          return;
+        }
+      }
 
       try {
         // Add jitter to avoid race conditions (nonce/gas collisions) with other agents
@@ -218,14 +394,31 @@ async function main() {
 
         const tx = await contracts.submitBid(
           jobId,
-          ethers.parseUnits(bid.amount.toString(), 8),
-          ethers.parseUnits(bid.collateral.toString(), 8),
-          bid.estimatedTimeSec,
+          finalBid.amountWei,
+          finalBid.collateralWei,
+          finalBid.estimatedTimeSec,
           SPECIALIZATIONS[0]
         );
         log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
       } catch (err) {
-        log.warn(`On-chain bid failed (continuing via HCS): ${err}`);
+        const error = err instanceof Error ? err.message : String(err);
+        const reasonCode = normalizeBidFailureReasonCode(error);
+        log.warn(`On-chain bid failed: ${error}`);
+        if (STRICT_LIVE && !DEMO_MODE) {
+          await hcs.publishAuditLog({
+            type: "BID_SUBMISSION_FAILED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: String(jobId),
+              contractAddress,
+              strictLive: true,
+              error,
+              reasonCode,
+            },
+          });
+          return;
+        }
       }
 
       pendingJobs.set(String(jobId), {
@@ -242,9 +435,9 @@ async function main() {
         payload: {
           jobId,
           contractAddress,
-          bidAmount: bid.amount,
-          collateral: bid.collateral,
-          estimatedTimeSec: bid.estimatedTimeSec,
+          bidAmount: finalBid.amount,
+          collateral: finalBid.collateral,
+          estimatedTimeSec: finalBid.estimatedTimeSec,
           reputation: BASE_REPUTATION,
           evmAddress: wallet.evmAddress,
         },
@@ -334,8 +527,25 @@ async function simulateAuditCycle(
   // ── Day 2: Try to buy scan report from DataMarketplace ──
   const affordableReport = availableReports.get(jobId);
   if (affordableReport) {
-    const listingId = Number(affordableReport.listingId);
-    if (Number.isFinite(listingId)) {
+    let listingId: bigint;
+    try {
+      listingId = parseChainUint(affordableReport.listingId);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Invalid listingId: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "DATA_PURCHASE_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { jobId, listingId: affordableReport.listingId, strictLive: true, error },
+        });
+        return;
+      }
+      listingId = BigInt(0);
+    }
+
+    if (listingId >= BigInt(0)) {
       log.info(
         `Purchasing scan from ${affordableReport.seller}: ` +
         `${affordableReport.price} GUARD (listing ${affordableReport.listingId})`
@@ -357,7 +567,17 @@ async function simulateAuditCycle(
           },
         });
       } catch (err) {
-        log.warn(`Purchase failed (continuing without data): ${err}`);
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`Purchase failed: ${error}`);
+        if (STRICT_LIVE && !DEMO_MODE) {
+          await hcs.publishAuditLog({
+            type: "DATA_PURCHASE_FAILED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: { jobId, listingId: affordableReport.listingId, strictLive: true, error },
+          });
+          return;
+        }
       }
     }
 

@@ -22,6 +22,34 @@ const TYPE_COLORS = {
   yield_aggregator: 'var(--accent-green)',
 };
 
+const BID_LIFECYCLE_STYLE = {
+  invite_sent: 'text-cyan-300 border-cyan-400/30 bg-cyan-500/10',
+  submitted: 'text-emerald-300 border-emerald-400/30 bg-emerald-500/10',
+  skipped: 'text-amber-300 border-amber-400/30 bg-amber-500/10',
+  failed: 'text-red-300 border-red-400/30 bg-red-500/10',
+};
+
+const LLM_INFERENCE_STYLE = {
+  started: 'text-cyan-300 border-cyan-400/30 bg-cyan-500/10',
+  succeeded: 'text-emerald-300 border-emerald-400/30 bg-emerald-500/10',
+  failed: 'text-red-300 border-red-400/30 bg-red-500/10',
+};
+
+function bidLifecycleLabel(status) {
+  if (status === 'invite_sent') return 'Invite Sent';
+  if (status === 'submitted') return 'Bid Submitted';
+  if (status === 'skipped') return 'Bid Skipped';
+  if (status === 'failed') return 'Bid Failed';
+  return status || 'Unknown';
+}
+
+function llmInferenceLabel(status) {
+  if (status === 'started') return 'LLM Inference Started';
+  if (status === 'succeeded') return 'LLM Inference OK';
+  if (status === 'failed') return 'LLM Inference Failed';
+  return status || 'Unknown';
+}
+
 // ── Risk mini-bar (compact for card header) ────────────────
 
 function RiskMini({ score }) {
@@ -65,7 +93,14 @@ function resolveState(job, winnerData) {
 
 // ── Main AuctionCard ───────────────────────────────────────
 
-export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps }) {
+export default function AuctionCard({
+  job,
+  bids,
+  bidLifecycle = [],
+  llmInference = [],
+  winnerData,
+  recentBidTimestamps,
+}) {
   const state = resolveState(job, winnerData);
   const accentColor = TYPE_COLORS[job.contractType] || 'var(--accent-cyan)';
   const typeLabel = TYPE_LABELS[job.contractType] || job.contractType?.toUpperCase() || 'UNKNOWN';
@@ -88,6 +123,29 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
 
   const budgetDisplay = job.budgetFormatted
     || (job.budgetAvailable ? parseGuardAmount(job.budgetAvailable) : '? GUARD');
+  const lifecyclePreview = useMemo(() => {
+    const latestByAgent = new Map();
+    for (const item of bidLifecycle) {
+      const key = item.evmAddress || item.agentId || `unknown-${item.timestamp || 0}`;
+      const prev = latestByAgent.get(key);
+      if (!prev || Number(item.timestamp || 0) >= Number(prev.timestamp || 0)) {
+        latestByAgent.set(key, item);
+      }
+    }
+    return Array.from(latestByAgent.values()).slice(0, 6);
+  }, [bidLifecycle]);
+  const llmPreview = useMemo(() => {
+    const latestByAgent = new Map();
+    for (const item of llmInference) {
+      const key = item.agentId || item.providerAddress || `llm-${item.timestamp || 0}`;
+      const prev = latestByAgent.get(key);
+      if (!prev || Number(item.timestamp || 0) >= Number(prev.timestamp || 0)) {
+        latestByAgent.set(key, item);
+      }
+    }
+    return Array.from(latestByAgent.values()).slice(0, 4);
+  }, [llmInference]);
+  const strictWarning = llmPreview.find((item) => item.status === 'succeeded' && item.usedFallback);
 
   // STATE C — Completed: collapsed summary line
   if (state === STATE_COMPLETED && !winnerData) {
@@ -210,6 +268,52 @@ export default function AuctionCard({ job, bids, winnerData, recentBidTimestamps
             Bids ({sortedBids.length})
           </span>
         </div>
+
+        {lifecyclePreview.length > 0 && (
+          <div className="mb-2 px-1 space-y-1">
+            {lifecyclePreview.map((item, idx) => {
+              const status = item.status || 'unknown';
+              const style = BID_LIFECYCLE_STYLE[status] || 'text-gray-300 border-gray-700 bg-gray-800/40';
+              return (
+                <div key={`${item.agentId || item.evmAddress || 'agent'}-${idx}`} className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="text-gray-400 font-mono truncate">{item.agentId || shortenAddress(item.evmAddress) || 'unknown-agent'}</span>
+                  <span className={`px-1.5 py-0.5 rounded border font-semibold font-mono ${style}`}>
+                    {bidLifecycleLabel(status)}
+                  </span>
+                  <span className="text-gray-500 font-mono truncate text-right max-w-[45%]">
+                    {item.reason || '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {llmPreview.length > 0 && (
+          <div className="mb-2 px-1 space-y-1">
+            {llmPreview.map((item, idx) => {
+              const style = LLM_INFERENCE_STYLE[item.status] || 'text-gray-300 border-gray-700 bg-gray-800/40';
+              return (
+                <div key={`${item.agentId || item.providerAddress || 'llm'}-${idx}`} className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="text-gray-400 font-mono truncate">
+                    {item.agentId || 'llm-contextual-003'}
+                  </span>
+                  <span className={`px-1.5 py-0.5 rounded border font-semibold font-mono ${style}`}>
+                    {llmInferenceLabel(item.status)}
+                  </span>
+                  <span className="text-gray-500 font-mono truncate text-right max-w-[45%]">
+                    {item.reason || item.reasonCode || item.model || '—'}
+                  </span>
+                </div>
+              );
+            })}
+            {strictWarning && (
+              <div className="text-[10px] font-mono text-amber-300 border border-amber-500/30 bg-amber-500/10 rounded px-2 py-1">
+                Strict live warning: LLM reported fallback output for this job.
+              </div>
+            )}
+          </div>
+        )}
 
         {sortedBids.length === 0 ? (
           <div className="text-center py-4">

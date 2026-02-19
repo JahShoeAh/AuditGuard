@@ -7,6 +7,16 @@ export {
     ListingType,
 } from "./contract-client.js";
 export type { PaymentItem, ListingDetails, AuctionDetails } from "./contract-client.js";
+export {
+  computeLiveBid,
+  normalizeBidFailureReasonCode,
+} from "./bid-policy.js";
+export type {
+  StrategyBid,
+  BidPolicy,
+  ComputedLiveBid,
+  BidSkipDecision,
+} from "./bid-policy.js";
 export { createAgentWallet } from "./wallet.js";
 export { createAgentLogger } from "./logger.js";
 export { AgentMetrics } from "./metrics.js";

@@ -39,10 +39,19 @@ describe("Scanner Agent", () => {
             const { generateDiscovery } = await import("../scanner/index.js");
             const event = generateDiscovery();
             const p = event.payload;
-            expect(p.contractAddress).toMatch(/^0x[0-9a-f]{40,}$/);
+            expect(p.contractAddress).toMatch(/^0x[0-9a-f]{40}$/);
             expect(p.chain).toBe("hedera-testnet");
-            expect(p.deployerAddress).toMatch(/^0x[0-9a-f]{40,}$/);
+            expect(p.deployerAddress).toMatch(/^0x[0-9a-f]{40}$/);
             expect(p.txHash).toMatch(/^0x[0-9a-f]{64,}$/);
+        });
+
+        it("includes non-zero budget in discovery payload", async () => {
+            const { generateDiscovery } = await import("../scanner/index.js");
+            for (let i = 0; i < 20; i++) {
+                const event = generateDiscovery();
+                expect(typeof event.payload.budget).toBe("number");
+                expect(event.payload.budget).toBeGreaterThan(0);
+            }
         });
 
         it("generates LOC within bounds (500–10000)", async () => {

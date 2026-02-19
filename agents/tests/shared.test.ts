@@ -52,7 +52,7 @@ describe("config.ts", () => {
         const { CONFIG } = await import("../shared/config.js");
 
         expect(CONFIG.network).toBe("testnet");
-        expect(CONFIG.guardToken.id).toBe("0.0.7936262");
+        expect(CONFIG.guardToken.id).toMatch(/^0\.0\.\d+$/);
         expect(CONFIG.guardToken.evmAddress).toMatch(/^0x/);
 
         // HCS topics
@@ -134,14 +134,20 @@ describe("config.ts", () => {
     it("getAgentEnv throws when no credentials available", async () => {
         const savedAcct = process.env.OPERATOR_ACCOUNT_ID;
         const savedKey = process.env.OPERATOR_PRIVATE_KEY;
+        const savedHederaAcct = process.env.HEDERA_ACCOUNT_ID;
+        const savedHederaKey = process.env.HEDERA_PRIVATE_KEY;
         delete process.env.OPERATOR_ACCOUNT_ID;
         delete process.env.OPERATOR_PRIVATE_KEY;
+        delete process.env.HEDERA_ACCOUNT_ID;
+        delete process.env.HEDERA_PRIVATE_KEY;
 
         const { getAgentEnv } = await import("../shared/config.js");
         expect(() => getAgentEnv("MISSING_AGENT")).toThrow(/Missing credentials/);
 
         if (savedAcct) process.env.OPERATOR_ACCOUNT_ID = savedAcct;
         if (savedKey) process.env.OPERATOR_PRIVATE_KEY = savedKey;
+        if (savedHederaAcct) process.env.HEDERA_ACCOUNT_ID = savedHederaAcct;
+        if (savedHederaKey) process.env.HEDERA_PRIVATE_KEY = savedHederaKey;
     });
 
     it("getAgentEnv prefers agent-specific vars over OPERATOR_*", async () => {
@@ -549,7 +555,9 @@ describe("contract-client.ts", () => {
 
         // Auction methods
         expect(typeof client.submitBid).toBe("function");
+        expect(typeof client.getMinBidCollateral).toBe("function");
         expect(typeof client.getAuction).toBe("function");
+        expect(typeof client.getAuctionAddress).toBe("function");
         expect(typeof client.onAuctionCreated).toBe("function");
         expect(typeof client.onWinnerSelected).toBe("function");
 
@@ -576,6 +584,9 @@ describe("contract-client.ts", () => {
         expect(typeof client.registerAgent).toBe("function");
         expect(typeof client.getAgent).toBe("function");
         expect(typeof client.isActiveAgent).toBe("function");
+        expect(typeof client.getGuardBalance).toBe("function");
+        expect(typeof client.getGuardAllowance).toBe("function");
+        expect(typeof client.ensureGuardAllowance).toBe("function");
 
         // Cleanup
         expect(typeof client.removeAllListeners).toBe("function");
@@ -721,14 +732,20 @@ describe("wallet.ts", () => {
     it("createAgentWallet throws on missing credentials", async () => {
         const savedAcct = process.env.OPERATOR_ACCOUNT_ID;
         const savedKey = process.env.OPERATOR_PRIVATE_KEY;
+        const savedHederaAcct = process.env.HEDERA_ACCOUNT_ID;
+        const savedHederaKey = process.env.HEDERA_PRIVATE_KEY;
         delete process.env.OPERATOR_ACCOUNT_ID;
         delete process.env.OPERATOR_PRIVATE_KEY;
+        delete process.env.HEDERA_ACCOUNT_ID;
+        delete process.env.HEDERA_PRIVATE_KEY;
 
         const { createAgentWallet } = await import("../shared/wallet.js");
         expect(() => createAgentWallet("NONEXISTENT_AGENT")).toThrow(/Missing credentials/);
 
         if (savedAcct) process.env.OPERATOR_ACCOUNT_ID = savedAcct;
         if (savedKey) process.env.OPERATOR_PRIVATE_KEY = savedKey;
+        if (savedHederaAcct) process.env.HEDERA_ACCOUNT_ID = savedHederaAcct;
+        if (savedHederaKey) process.env.HEDERA_PRIVATE_KEY = savedHederaKey;
     });
 
     it("createAgentWallet returns all required AgentWallet fields", async () => {

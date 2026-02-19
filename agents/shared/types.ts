@@ -22,6 +22,7 @@ export interface ContractDiscoveryEvent extends HCSMessage {
     estimatedLOC: number;
     contractType: ContractType;
     riskScore: number;
+    budget: number;
     txHash: string;
   };
 }
@@ -68,6 +69,11 @@ export interface FindingsSubmittedEvent extends HCSMessage {
     highCount: number;
     mediumCount: number;
     lowCount: number;
+    inferenceSource?: "0g" | "mock";
+    providerAddress?: string;
+    model?: string;
+    requestId?: string;
+    usedFallback?: boolean;
   };
 }
 
@@ -87,6 +93,14 @@ export interface SubResultDeliveredEvent extends HCSMessage {
 export type AuditLogType =
   | "AUCTION_CREATED"
   | "BID_SUBMITTED"
+  | "BID_SKIPPED"
+  | "BID_SUBMISSION_FAILED"
+  | "AUCTION_INVITE_SUMMARY"
+  | "LLM_PROVIDER_READY"
+  | "LLM_PROVIDER_UNHEALTHY"
+  | "LLM_INFERENCE_STARTED"
+  | "LLM_INFERENCE_SUCCEEDED"
+  | "LLM_INFERENCE_FAILED"
   | "WINNER_SELECTED"
   | "SUB_AUCTION_CREATED"
   | "SUB_BID_SUBMITTED"

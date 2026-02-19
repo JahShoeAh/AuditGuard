@@ -228,6 +228,53 @@ export class EventListenerService {
           bidFormatted: parseGuardAmount(bidAmount),
           jobId: String(payload.jobId ?? sequenceNumber),
         };
+      } else if (parsedData.type === 'BID_SKIPPED') {
+        displayEntry = {
+          ...entry,
+          type: 'BID_SKIPPED',
+          jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
+          reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
+        };
+      } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+        displayEntry = {
+          ...entry,
+          type: 'BID_SUBMISSION_FAILED',
+          jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
+          reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        };
+      } else if (parsedData.type === 'LLM_PROVIDER_READY') {
+        displayEntry = {
+          ...entry,
+          type: 'LLM_PROVIDER_READY',
+          reason: `Provider ${payload.providerAddress ?? 'unknown'} ready`,
+        };
+      } else if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
+        displayEntry = {
+          ...entry,
+          type: 'LLM_PROVIDER_UNHEALTHY',
+          reason: payload.reason ?? payload.reasonCode ?? 'Provider unhealthy',
+        };
+      } else if (parsedData.type === 'LLM_INFERENCE_STARTED') {
+        displayEntry = {
+          ...entry,
+          type: 'LLM_INFERENCE_STARTED',
+          jobId: String(payload.jobId ?? sequenceNumber),
+          reason: `Inference started (${payload.model ?? 'unknown model'})`,
+        };
+      } else if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
+        displayEntry = {
+          ...entry,
+          type: 'LLM_INFERENCE_SUCCEEDED',
+          jobId: String(payload.jobId ?? sequenceNumber),
+          reason: `Inference ok (${payload.findingsCount ?? 0} findings)`,
+        };
+      } else if (parsedData.type === 'LLM_INFERENCE_FAILED') {
+        displayEntry = {
+          ...entry,
+          type: 'LLM_INFERENCE_FAILED',
+          jobId: String(payload.jobId ?? sequenceNumber),
+          reason: payload.reason ?? payload.reasonCode ?? 'Inference failed',
+        };
       }
       this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
       // Also update specific slices based on type
@@ -258,7 +305,131 @@ export class EventListenerService {
           estimatedCompletionTime: Number(payload.estimatedTimeSec ?? 0),
           timestamp: parsedData.timestamp ?? Date.now(),
         });
+        this.store.addJobBidStatus?.(jobId, {
+          status: 'submitted',
+          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+          reason: null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
         this.store.incrementStat('totalBids');
+      } else if (parsedData.type === 'BID_SKIPPED') {
+        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+        this.store.addJobBidStatus?.(jobId, {
+          status: 'skipped',
+          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+          reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+        this.store.addJobBidStatus?.(jobId, {
+          status: 'failed',
+          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+          reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'AUCTION_INVITE_SUMMARY') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        const invites = Array.isArray(payload.eligibleAgents) ? payload.eligibleAgents : [];
+        for (const invite of invites) {
+          this.store.addJobBidStatus?.(jobId, {
+            status: 'invite_sent',
+            agentId: invite?.agentId ?? 'unknown',
+            evmAddress: invite?.evmAddress ?? null,
+            reason: null,
+            timestamp: parsedData.timestamp ?? Date.now(),
+          });
+        }
+      } else if (parsedData.type === 'AGENT_REGISTERED') {
+        const addr = payload.evmAddress ?? payload.agentAddress ?? parsedData.address;
+        if (!addr) return;
+
+        const rep = Number(payload.reputation ?? payload.reputationScore ?? 0);
+        const reputationScore = rep <= 100 ? Math.round(rep * 100) : Math.round(rep);
+        const stakedAmountRaw =
+          payload.stakedAmount != null
+            ? BigInt(payload.stakedAmount)
+            : BigInt(Math.max(0, Math.floor(Number(payload.stake ?? 0) * 1e8)));
+
+        this.store.setAgent(addr, {
+          ...(this.store.agents?.[addr] || {}),
+          address: addr,
+          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown-agent',
+          specializations: payload.specializations ?? [],
+          ucpEndpoint: payload.ucpEndpoint ?? payload.endpoint ?? '',
+          stakedAmount: stakedAmountRaw,
+          stakedFormatted: parseGuardAmount(stakedAmountRaw),
+          reputation: rep,
+          reputationScore,
+          status: 'ACTIVE',
+          source: 'hcs_auditlog',
+          lastSeenAt: Date.now(),
+        });
+      } else if (parsedData.type === 'LLM_PROVIDER_READY') {
+        this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
+          status: 'ready',
+          providerAddress: payload.providerAddress ?? null,
+          model: payload.model ?? null,
+          endpoint: payload.endpoint ?? null,
+          reason: null,
+          reasonCode: null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
+        this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
+          status: 'unhealthy',
+          providerAddress: payload.providerAddress ?? null,
+          model: payload.model ?? null,
+          endpoint: payload.endpoint ?? null,
+          reason: payload.reason ?? null,
+          reasonCode: payload.reasonCode ?? null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'LLM_INFERENCE_STARTED') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.addLlmInferenceStatus?.(jobId, {
+          status: 'started',
+          agentId: parsedData.agentId ?? 'llm-contextual-003',
+          providerAddress: payload.providerAddress ?? null,
+          model: payload.model ?? null,
+          reason: null,
+          reasonCode: null,
+          findingsCount: null,
+          usedFallback: null,
+          requestId: payload.requestId ?? null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.addLlmInferenceStatus?.(jobId, {
+          status: 'succeeded',
+          agentId: parsedData.agentId ?? 'llm-contextual-003',
+          providerAddress: payload.providerAddress ?? null,
+          model: payload.model ?? null,
+          reason: null,
+          reasonCode: null,
+          findingsCount: Number(payload.findingsCount ?? 0),
+          usedFallback: Boolean(payload.usedFallback),
+          requestId: payload.requestId ?? null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
+      } else if (parsedData.type === 'LLM_INFERENCE_FAILED') {
+        const jobId = String(payload.jobId ?? sequenceNumber);
+        this.store.addLlmInferenceStatus?.(jobId, {
+          status: 'failed',
+          agentId: parsedData.agentId ?? 'llm-contextual-003',
+          providerAddress: payload.providerAddress ?? null,
+          model: payload.model ?? null,
+          reason: payload.reason ?? null,
+          reasonCode: payload.reasonCode ?? null,
+          findingsCount: null,
+          usedFallback: null,
+          requestId: payload.requestId ?? null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+        });
       }
     } else if (topicKey === 'agentComms') {
       this.store.addLogEntry({ ...entry, source: 'agentComms' });

@@ -9,6 +9,12 @@ const TYPE_CONFIG = {
   // Auction
   JobPosted:          { color: 'var(--accent-amber)',  label: 'JOB'    },
   BidSubmitted:       { color: 'var(--accent-cyan)',   label: 'BID'    },
+  BID_SKIPPED:        { color: '#f59e0b',              label: 'SKIP'   },
+  BID_SUBMISSION_FAILED: { color: '#ef4444',           label: 'BFAIL'  },
+  AUCTION_INVITE_SUMMARY: { color: 'var(--accent-cyan)', label: 'INV'  },
+  LLM_INFERENCE_STARTED: { color: 'var(--accent-cyan)', label: 'LSTM'  },
+  LLM_INFERENCE_SUCCEEDED: { color: 'var(--accent-green)', label: 'LOK'  },
+  LLM_INFERENCE_FAILED: { color: '#ef4444', label: 'LFAIL'  },
   WinnersSelected:    { color: 'var(--accent-green)',  label: 'WIN'    },
   BidRefunded:        { color: '#f59e0b',              label: 'REFUND' },
   // Sub-contract
@@ -28,6 +34,8 @@ const TYPE_CONFIG = {
   AgentRegistered:    { color: 'var(--accent-green)',  label: 'REG'    },
   ReputationUpdated:  { color: '#22c55e',              label: 'REP'    },
   AgentPromoted:      { color: '#16a34a',              label: 'PROMO'  },
+  LLM_PROVIDER_READY: { color: '#22c55e',              label: 'LREADY' },
+  LLM_PROVIDER_UNHEALTHY: { color: '#ef4444',          label: 'LUNHL'  },
 };
 
 const DEFAULT_CFG = { color: '#6b7280', label: '---' };
@@ -40,6 +48,22 @@ function describe(e) {
       return `Job #${e.jobId} posted — ${e.contractAddress?.slice(0,10) || '?'} — ${e.budgetFormatted || '?'}`;
     case 'BidSubmitted':
       return `${e.agentName || '?'} bid ${e.bidFormatted || '?'} on Job #${e.jobId}`;
+    case 'BID_SKIPPED':
+      return `${e.agentId || '?'} skipped bid on Job #${e.jobId}: ${e.reason || 'n/a'}`;
+    case 'BID_SUBMISSION_FAILED':
+      return `${e.agentId || '?'} bid failed on Job #${e.jobId}: ${e.reason || 'n/a'}`;
+    case 'AUCTION_INVITE_SUMMARY':
+      return `Job #${e.jobId}: ${e.eligibleAgents?.length || 0} invite-eligible agents`;
+    case 'LLM_PROVIDER_READY':
+      return `LLM provider ready: ${e.providerAddress || '?'} (${e.model || '?'})`;
+    case 'LLM_PROVIDER_UNHEALTHY':
+      return `LLM provider unhealthy: ${e.reasonCode || '?'} ${e.reason || ''}`;
+    case 'LLM_INFERENCE_STARTED':
+      return `LLM started Job #${e.jobId} (${e.model || '?'})`;
+    case 'LLM_INFERENCE_SUCCEEDED':
+      return `LLM succeeded Job #${e.jobId} (${e.findingsCount || 0} findings)`;
+    case 'LLM_INFERENCE_FAILED':
+      return `LLM failed Job #${e.jobId}: ${e.reasonCode || '?'} ${e.reason || ''}`;
     case 'WinnersSelected':
       return `Winners selected for Job #${e.jobId}`;
     case 'BidRefunded':

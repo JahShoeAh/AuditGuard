@@ -20,3 +20,9 @@
 | `concurrently` | ^8.2.0 | Parallel script runner (dev) | scripts (dev) |
 
 **Node.js version requirement:** `>=18.0.0` (required by `@hashgraph/sdk` v2)
+
+### Workspace Install Policy
+
+- Root npm workspaces include `agents`, `orchestrator`, and `packages/*`.
+- Default bootstrap path is now one command at repo root: `npm install`.
+- Avoid committing nested `package-lock.json` files from workspace subdirectories; use the root lockfile as source of truth.

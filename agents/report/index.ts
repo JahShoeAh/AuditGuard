@@ -1,6 +1,7 @@
 import {
   HCSClient,
   ContractClient,
+  CONFIG,
   createAgentLogger,
   createAgentWallet,
   randomFloat,
@@ -13,6 +14,7 @@ import { ethers } from "ethers";
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const STRICT_LIVE = CONFIG.strictLive;
 const DIRECT_SETTLEMENT = process.env.REPORT_AGENT_DIRECT_SETTLEMENT === "true";
 const AGGREGATION_WINDOW_MS = DEMO_MODE ? 20 * 1000 : 120 * 1000;
 const REPORT_FEE = 0.1;               // GUARD base fee per submitting agent
@@ -198,7 +200,17 @@ async function aggregateAndPublish(
       await contracts.settleJob(0, payments, myAddress);
       log.info("Direct settlement executed by report agent");
     } catch (err) {
-      log.warn(`Direct settlement failed (continuing): ${err}`);
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Direct settlement failed: ${error}`);
+      if (STRICT_LIVE && !DEMO_MODE) {
+        await hcs.publishAuditLog({
+          type: "REPORT_SETTLEMENT_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { jobId, strictLive: true, error },
+        });
+        return;
+      }
     }
   } else {
     log.info("Settlement execution delegated to orchestrator");
