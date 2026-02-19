@@ -156,6 +156,16 @@ async function main() {
 
   // Listen for AUCTION_INVITE from orchestrator (carries real jobId)
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+    if (msg.type === "PING") {
+      await hcs.publishAgentComms({
+        type: "PONG",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {},
+      });
+      return;
+    }
+
     if (msg.type !== "AUCTION_INVITE") return;
     const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount } = (msg as any).payload;
     const queued = discoveryQueue.get(contractAddress);

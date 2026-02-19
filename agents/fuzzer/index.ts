@@ -169,6 +169,16 @@ async function main() {
 
   // Listen for data listings + AUCTION_INVITE from other agents / orchestrator
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+    if (msg.type === "PING") {
+      await hcs.publishAgentComms({
+        type: "PONG",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {},
+      });
+      return;
+    }
+
     if (msg.type === "DATA_LISTING_CREATED" && msg.agentId !== AGENT_ID) {
       const { listingId, price, description, jobId, category } = msg.payload as any;
       if (category === "SCAN_REPORT" && price <= MAX_DATA_PURCHASE_PRICE) {

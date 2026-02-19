@@ -71,6 +71,16 @@ async function main() {
 
   // Listen for sub-auction postings
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+    if (msg.type === "PING") {
+      await hcs.publishAgentComms({
+        type: "PONG",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {},
+      });
+      return;
+    }
+
     if (msg.type !== "SUB_AUCTION_POSTED") return;
 
     const subAuction = msg as SubAuctionPostedEvent;
