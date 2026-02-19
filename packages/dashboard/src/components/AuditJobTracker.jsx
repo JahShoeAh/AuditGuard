@@ -5,7 +5,7 @@ export default function AuditJobTracker() {
   const { jobs } = useAuditJobs();
 
   return (
-    <div className="border-t border-gray-800 bg-gray-950 flex flex-col min-h-0" style={{ height: '260px' }}>
+    <div className="border-t border-gray-900 bg-black flex flex-col min-h-0" style={{ height: '260px' }}>
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0 border-b border-gray-800">
         <span className="text-amber-400">📋</span>

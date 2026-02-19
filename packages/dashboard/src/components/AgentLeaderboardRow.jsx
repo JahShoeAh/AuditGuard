@@ -105,7 +105,7 @@ export default function AgentLeaderboardRow({ rank, profile, isSelected, onSelec
       layout
       className={[
         'cursor-pointer rounded border transition-all p-3 mb-1',
-        isSelected ? 'border-cyan-400 bg-gray-800' : 'border-gray-700 bg-gray-900 hover:border-gray-500',
+        isSelected ? 'border-guard-amber bg-gray-900/80' : 'border-gray-900 bg-gray-900/80 hover:border-gray-700',
         flash ? FLASH_STYLES[flash] || '' : '',
       ].join(' ')}
       onClick={() => onSelect(profile.address)}

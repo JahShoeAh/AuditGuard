@@ -58,7 +58,7 @@ function TabBar({ activeTab, onSelect }) {
             className={[
               'flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold font-mono uppercase tracking-wider transition-all border-b-2',
               isActive
-                ? 'text-gray-100 border-cyan-400'
+                ? 'text-gray-100 border-guard-amber'
                 : 'text-gray-500 border-transparent hover:text-gray-300 hover:border-gray-600',
             ].join(' ')}
           >
@@ -230,7 +230,7 @@ export default function Dashboard() {
   const [storyMode, setStoryMode] = useState(false);
 
   return (
-    <div className="h-screen flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+    <div className="h-screen flex flex-col bg-black text-gray-100 overflow-hidden">
       <Header />
 
       <StoryMode
@@ -241,7 +241,7 @@ export default function Dashboard() {
 
       <ErrorBanner message={connectionError} />
 
-      <div className="flex-shrink-0 flex items-center border-b border-gray-800 bg-gray-950">
+      <div className="flex-shrink-0 flex items-center border-b border-gray-900 bg-black">
         <TabBar activeTab={activeTab} onSelect={setActiveTab} />
         <div className="ml-auto pr-3">
           <button

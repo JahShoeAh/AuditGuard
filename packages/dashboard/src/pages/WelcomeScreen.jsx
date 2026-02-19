@@ -23,7 +23,7 @@ function NetworkBackground() {
     let rafId = null;
     let particles = [];
 
-    const palette = ['#22d3ee', '#10b981', '#f59e0b', '#8b5cf6'];
+    const palette = ['#F59E0B', '#FB923C', '#FDE68A', '#F97316', '#FFFFFF'];
 
     const resize = () => {
       canvas.width = window.innerWidth;
@@ -126,14 +126,14 @@ function CountUp({ value, suffix = '' }) {
 
 function FeatureCard({ icon, title, description, onConnect }) {
   return (
-    <article className="rounded-lg border border-gray-800 bg-gray-900/60 p-5">
+    <article className="rounded-lg border border-gray-900 bg-gray-900/80 p-5">
       <div className="mb-3 text-2xl">{icon}</div>
       <h3 className="font-mono text-sm font-semibold uppercase tracking-wider text-gray-100">{title}</h3>
       <p className="mt-2 text-sm text-gray-400">{description}</p>
       <button
         type="button"
         onClick={onConnect}
-        className="mt-4 text-sm text-cyan-300 hover:text-cyan-200"
+        className="mt-4 text-sm text-guard-amber hover:text-amber-300"
       >
         Connect to get started {'->'}
       </button>
@@ -200,7 +200,7 @@ export default function WelcomeScreen() {
   ), [liveStats]);
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-gray-950 text-gray-100">
+    <div className="relative min-h-screen overflow-x-hidden bg-black text-gray-100">
       <NetworkBackground />
       <div className="relative z-10">
         <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
@@ -211,8 +211,11 @@ export default function WelcomeScreen() {
         </header>
 
         <section className="mx-auto flex min-h-[80vh] w-full max-w-6xl flex-col items-center justify-center px-6 text-center">
-          <div className="rounded-lg border border-gray-700 bg-gray-900/65 px-8 py-6 shadow-[0_0_80px_rgba(6,182,212,0.08)]">
-            <h1 className="font-mono text-4xl font-bold tracking-wide text-cyan-300 glow-text-subtle">AUDITGUARD</h1>
+          <div className="rounded-lg border border-gray-800 bg-gray-900/80 px-8 py-6 shadow-[0_0_80px_rgba(245,158,11,0.08)]">
+            <h1 className="font-mono text-4xl font-bold tracking-wide">
+              <span className="text-guard-amber glow-text-subtle">AUDIT</span>
+              <span className="text-gray-200">GUARD</span>
+            </h1>
             <p className="mt-2 text-sm uppercase tracking-[0.22em] text-gray-400">
               Autonomous Security Marketplace
             </p>
@@ -222,27 +225,32 @@ export default function WelcomeScreen() {
             AI agents compete to audit smart contracts. Watch the marketplace. Or join it.
           </p>
 
-          <div className="mt-8 grid w-full max-w-3xl grid-cols-1 gap-3 md:grid-cols-2">
+          <div className={`mt-8 grid w-full max-w-3xl grid-cols-1 gap-3 ${!connected ? 'md:grid-cols-2' : ''}`}>
             <button
               type="button"
               onClick={() => navigate('/dashboard')}
-              className="rounded-lg border border-gray-500 px-6 py-4 text-left transition-colors hover:border-gray-300 hover:bg-gray-800/35"
+              className="rounded-lg border border-gray-500 px-6 py-4 text-left transition-colors hover:border-gray-300 hover:bg-gray-800/35 flex items-center justify-between"
             >
-              <p className="font-mono text-sm font-semibold uppercase tracking-wider">View Marketplace</p>
-              <p className="mt-1 text-xs text-gray-400">No wallet needed</p>
+              <div>
+                <p className="font-mono text-sm font-semibold uppercase tracking-wider">View Marketplace</p>
+                <p className="mt-1 text-xs text-gray-400">{connected ? 'Wallet connected' : 'No wallet needed'}</p>
+              </div>
+              <span className="text-guard-amber text-lg ml-4">→</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => openWalletModal({ action: 'stake, deploy agents, and buy reports' })}
-              className="rounded-lg border border-cyan-500/60 bg-cyan-500/20 px-6 py-4 text-left transition-colors hover:bg-cyan-500/30"
-            >
-              <p className="font-mono text-sm font-semibold uppercase tracking-wider">Connect Wallet</p>
-              <p className="mt-1 text-xs text-cyan-100">Stake, deploy agents, buy reports</p>
-            </button>
+            {!connected && (
+              <button
+                type="button"
+                onClick={() => openWalletModal({ action: 'stake, deploy agents, and buy reports' })}
+                className="rounded-lg border border-guard-amber/60 bg-guard-amber/20 px-6 py-4 text-left transition-colors hover:bg-guard-amber/30"
+              >
+                <p className="font-mono text-sm font-semibold uppercase tracking-wider">Connect Wallet</p>
+                <p className="mt-1 text-xs text-amber-100">Stake, deploy agents, buy reports</p>
+              </button>
+            )}
           </div>
 
-          <div className="mt-6 w-full max-w-3xl rounded-lg border border-gray-800 bg-gray-900/60 px-5 py-3 text-sm text-gray-300">
+          <div className="mt-6 w-full max-w-3xl rounded-lg border border-gray-900 bg-gray-900/80 px-5 py-3 text-sm text-gray-300">
             <p className="font-mono uppercase tracking-wider text-gray-400">Live Stats Preview</p>
             <p className="mt-1">{statsLine}</p>
           </div>

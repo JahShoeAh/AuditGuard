@@ -94,7 +94,7 @@ export default function StepIdentity({ data, setData, errors, setErrors }) {
             'placeholder-gray-600 focus:outline-none transition-colors',
             errors.agentId
               ? 'border-red-500/60 focus:border-red-500'
-              : 'border-gray-600 focus:border-cyan-500',
+              : 'border-gray-600 focus:border-guard-amber',
           ].join(' ')}
         />
         <div className="flex justify-end mt-0.5">
@@ -114,7 +114,7 @@ export default function StepIdentity({ data, setData, errors, setErrors }) {
           value={data.description}
           onChange={(e) => setData({ description: e.target.value.slice(0, 200) })}
           placeholder="A static analysis agent specialising in DeFi contract vulnerabilities…"
-          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
+          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-guard-amber transition-colors resize-none"
         />
         <div className="flex justify-end mt-0.5">
           <span className={`text-[10px] font-mono ${charLeft < 20 ? 'text-amber-400' : 'text-gray-600'}`}>
@@ -137,8 +137,8 @@ export default function StepIdentity({ data, setData, errors, setErrors }) {
                 title={opt.label}
                 className={[
                   'flex items-center justify-center h-10 rounded-lg text-xl border-2 transition-all',
-                  selected
-                    ? 'border-cyan-400 bg-cyan-500/15 shadow-[0_0_10px_rgba(34,211,238,0.2)]'
+                    selected
+                    ? 'border-guard-amber bg-guard-amber/15 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
                     : 'border-gray-700 bg-gray-800 hover:border-gray-500',
                 ].join(' ')}
               >
@@ -157,7 +157,7 @@ export default function StepIdentity({ data, setData, errors, setErrors }) {
         <motion.div
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="border border-gray-700 rounded-lg p-3 bg-gray-900"
+          className="border border-gray-900 rounded-lg p-3 bg-gray-900/80"
         >
           <p className="text-[10px] font-mono text-gray-600 uppercase tracking-wider mb-2">Preview</p>
           <div className="flex items-center gap-2">

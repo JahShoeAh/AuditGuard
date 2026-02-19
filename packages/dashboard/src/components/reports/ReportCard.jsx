@@ -72,7 +72,7 @@ function BuyerBar({ buyerCount, maxBuyers }) {
     <span className="flex items-center gap-1.5">
       <div className="w-16 h-1.5 bg-gray-700 rounded overflow-hidden">
         <div
-          className={`h-full rounded ${pct >= 100 ? 'bg-red-500' : pct >= 75 ? 'bg-amber-400' : 'bg-cyan-500'}`}
+          className={`h-full rounded ${pct >= 100 ? 'bg-red-500' : pct >= 75 ? 'bg-amber-400' : 'bg-guard-amber'}`}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -127,12 +127,12 @@ export default function ReportCard({ listing, hasAccess, rating, onPurchase, onV
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       className={[
-        'rounded-xl border bg-gray-900 p-4 flex flex-col gap-3 transition-all',
+        'rounded-xl border bg-gray-900/80 p-4 flex flex-col gap-3 transition-all',
         hasAccess
           ? 'border-green-500/30'
           : isActive
-          ? 'border-gray-700 hover:border-gray-600'
-          : 'border-gray-800 opacity-60',
+          ? 'border-gray-900 hover:border-gray-700'
+          : 'border-gray-900 opacity-60',
       ].join(' ')}
     >
       {/* ── Title + badge row ── */}
@@ -159,7 +159,7 @@ export default function ReportCard({ listing, hasAccess, rating, onPurchase, onV
           {listing.sellerName || fmt.address(listing.seller)}
         </span>
         {repNum !== '—' && (
-          <span className="text-[11px] font-mono text-cyan-400">★{repNum}</span>
+          <span className="text-[11px] font-mono text-guard-amber">★{repNum}</span>
         )}
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${tierBadge}`}>
           {tierLabel}
@@ -184,7 +184,7 @@ export default function ReportCard({ listing, hasAccess, rating, onPurchase, onV
       {job && (
         <div className="text-[11px] font-mono text-gray-500 border-t border-gray-800 pt-2">
           <span className="text-gray-600">For: </span>
-          <span className="text-cyan-500">{fmt.address(job.contractAddress || '')}</span>
+          <span className="text-guard-amber">{fmt.address(job.contractAddress || '')}</span>
           {job.contractType && (
             <span className="ml-1 text-gray-600 uppercase">({job.contractType.replace(/_/g,' ')})</span>
           )}

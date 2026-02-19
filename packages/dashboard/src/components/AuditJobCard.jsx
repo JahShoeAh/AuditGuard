@@ -145,7 +145,7 @@ export default function AuditJobCard({ job }) {
   const typeColor = TYPE_COLORS[job.contractType] || '#6b7280';
 
   return (
-    <div className="border border-gray-700 rounded bg-gray-900 font-mono text-xs overflow-hidden min-w-[300px] max-w-[360px] flex-shrink-0">
+    <div className="border border-gray-900 rounded bg-gray-900/80 font-mono text-xs overflow-hidden min-w-[300px] max-w-[360px] flex-shrink-0">
       {/* ── Card header ── */}
       <div
         className="px-3 py-2 border-b flex items-start justify-between gap-2"

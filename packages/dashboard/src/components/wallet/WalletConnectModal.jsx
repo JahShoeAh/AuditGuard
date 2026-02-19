@@ -14,7 +14,7 @@ function WalletOption({ title, subtitle, icon, onClick, disabled = false, accent
         disabled
           ? 'border-gray-800 bg-gray-900/70 text-gray-500 cursor-not-allowed'
           : accent
-          ? 'border-cyan-500/50 bg-cyan-500/10 hover:bg-cyan-500/20'
+          ? 'border-guard-amber/50 bg-guard-amber/10 hover:bg-guard-amber/20'
           : 'border-gray-700 bg-gray-900 hover:border-gray-500',
       ].join(' ')}
     >
@@ -128,7 +128,7 @@ export default function WalletConnectModal() {
 
           <button
             type="button"
-            className="text-sm text-cyan-300 hover:text-cyan-200"
+            className="text-sm text-guard-amber hover:text-amber-300"
             onClick={handleContinueWithoutWallet}
           >
             Continue without wallet {'->'}
