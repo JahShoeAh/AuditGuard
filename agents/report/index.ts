@@ -44,6 +44,16 @@ async function main() {
 
   // Listen for findings from auditor agents
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+    if (msg.type === "PING") {
+      await hcs.publishAgentComms({
+        type: "PONG",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: {},
+      });
+      return;
+    }
+
     if (msg.type !== "FINDINGS_SUBMITTED") return;
 
     const submission = msg as FindingsSubmittedEvent;
