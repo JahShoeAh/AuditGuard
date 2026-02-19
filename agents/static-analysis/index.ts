@@ -98,6 +98,29 @@ export function generateFindings(contractType: ContractType, loc: number): Findi
   return findings;
 }
 
+export interface InviteResolutionInput {
+  queued?: {
+    contractType: ContractType;
+    loc: number;
+  };
+  invite: {
+    contractType?: unknown;
+    riskScore?: unknown;
+    estimatedLOC?: unknown;
+    estimatedLineCount?: unknown;
+  };
+}
+
+export function resolveAuctionInviteContext(
+  input: InviteResolutionInput
+): { contractType: ContractType; loc: number; riskScore: number } {
+  const { queued, invite } = input;
+  const contractType = (queued?.contractType ?? invite.contractType ?? "lending") as ContractType;
+  const loc = Number(queued?.loc ?? invite.estimatedLOC ?? invite.estimatedLineCount ?? 1200);
+  const riskScore = Number(invite.riskScore ?? 50);
+  return { contractType, loc, riskScore };
+}
+
 // ---- Main ----
 
 async function main() {
@@ -134,13 +157,15 @@ async function main() {
   // Listen for AUCTION_INVITE from orchestrator (carries real jobId)
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type !== "AUCTION_INVITE") return;
-    const { jobId, contractAddress, contractType, budget } = (msg as any).payload;
+    const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount } = (msg as any).payload;
     const queued = discoveryQueue.get(contractAddress);
-    if (!queued) return; // we didn't evaluate this one
-    discoveryQueue.delete(contractAddress);
+    if (queued) discoveryQueue.delete(contractAddress);
 
-    const loc = queued.loc;
-    const bid = calculateBid(loc, queued.contractType, 50);
+    const resolved = resolveAuctionInviteContext({
+      queued,
+      invite: { contractType, riskScore, estimatedLOC, estimatedLineCount },
+    });
+    const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
     if (!bid) return;
 
     log.info(`AUCTION_INVITE for job #${jobId} — bidding ${bid.amount} GUARD`);
@@ -162,8 +187,8 @@ async function main() {
     // Track for winner selection
     pendingJobs.set(String(jobId), {
       contractAddress,
-      contractType: queued.contractType,
-      loc,
+      contractType: resolved.contractType,
+      loc: resolved.loc,
     });
 
     await hcs.publishAuditLog({
@@ -187,7 +212,14 @@ async function main() {
         log.info(`No WinnersSelected after ${WINNER_WAIT_MS / 1000}s — auto-simulating`);
         updatePricingAfterOutcome(true);
         pendingJobs.delete(String(jobId));
-        await simulateAuditCycle(contractAddress, queued.contractType, loc, hcs, contracts, wallet.evmAddress);
+        await simulateAuditCycle(
+          contractAddress,
+          resolved.contractType,
+          resolved.loc,
+          hcs,
+          contracts,
+          wallet.evmAddress
+        );
       }
     }, WINNER_WAIT_MS);
   });

@@ -127,6 +127,30 @@ export function generateMockFindings(contractType: ContractType, hasDepAnalysis:
 /** Backward-compatible alias so existing tests and callers keep working. */
 export const generateFindings = generateMockFindings;
 
+export interface InviteResolutionInput {
+  queued?: {
+    contractType: ContractType;
+    loc: number;
+    riskScore: number;
+  };
+  invite: {
+    contractType?: unknown;
+    riskScore?: unknown;
+    estimatedLOC?: unknown;
+    estimatedLineCount?: unknown;
+  };
+}
+
+export function resolveAuctionInviteContext(
+  input: InviteResolutionInput
+): { contractType: ContractType; loc: number; riskScore: number } {
+  const { queued, invite } = input;
+  const contractType = (queued?.contractType ?? invite.contractType ?? "lending") as ContractType;
+  const loc = Number(queued?.loc ?? invite.estimatedLOC ?? invite.estimatedLineCount ?? 1200);
+  const riskScore = Number(queued?.riskScore ?? invite.riskScore ?? 50);
+  return { contractType, loc, riskScore };
+}
+
 // ---- AI-Powered Audit via 0g ----
 
 function isZgEnabled(): boolean {
@@ -239,12 +263,18 @@ async function main() {
     }
 
     if (msg.type === "AUCTION_INVITE") {
-      const { jobId, contractAddress, contractType } = (msg as any).payload;
+      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount } = (msg as any).payload;
       const queued = discoveryQueue.get(contractAddress);
-      if (!queued) return;
-      discoveryQueue.delete(contractAddress);
+      if (queued) discoveryQueue.delete(contractAddress);
 
-      const bid = calculateBid(queued.loc, queued.contractType, queued.riskScore);
+      const resolved = resolveAuctionInviteContext({
+        queued,
+        invite: { contractType, riskScore, estimatedLOC, estimatedLineCount },
+      });
+
+      // Keep premium gating behavior even when using invite fallback context.
+      if (!shouldBid(resolved.loc, resolved.contractType, resolved.riskScore)) return;
+      const bid = calculateBid(resolved.loc, resolved.contractType, resolved.riskScore);
 
       log.info(`AUCTION_INVITE for job #${jobId} — premium bid ${bid.amount} GUARD`);
 
@@ -263,8 +293,8 @@ async function main() {
 
       pendingJobs.set(String(jobId), {
         contractAddress,
-        contractType: queued.contractType,
-        loc: queued.loc,
+        contractType: resolved.contractType,
+        loc: resolved.loc,
       });
 
       await hcs.publishAuditLog({
@@ -288,7 +318,14 @@ async function main() {
           log.info(`No WinnersSelected after ${WINNER_WAIT_MS / 1000}s — auto-simulating`);
           updatePricingAfterOutcome(true);
           pendingJobs.delete(String(jobId));
-          await simulateAuditCycle(contractAddress, queued.contractType, queued.loc, hcs, contracts, wallet.evmAddress);
+          await simulateAuditCycle(
+            contractAddress,
+            resolved.contractType,
+            resolved.loc,
+            hcs,
+            contracts,
+            wallet.evmAddress
+          );
         }
       }, WINNER_WAIT_MS);
     }

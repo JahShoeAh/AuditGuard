@@ -14,7 +14,8 @@
     "all:demo": "DEMO_MODE=true tsx run-all.ts",
     "all:legacy": "concurrently \"npm run scanner\" \"npm run static\" \"npm run fuzzer\" \"npm run llm\" \"npm run dependency\" \"npm run report\" \"npm run alert\"",
     "fund": "tsx scripts/fund-agents.ts",
-    "test": "vitest run --reporter=verbose"
+    "test": "vitest run --reporter=verbose",
+    "test:invite": "vitest run tests/auction-invite.test.ts --reporter=verbose"
   },
   "dependencies": {
     "@0glabs/0g-serving-broker": "^0.7.1",

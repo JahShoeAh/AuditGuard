@@ -193,23 +193,31 @@ export class OrchestratorAgent {
     }
 
     // Publish a normalized auction-opened signal for dashboard/live listeners.
-    await this.hcs.publishAuditLog({
-      type: "JOB_CREATED",
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: {
-        jobId,
-        contractAddress,
-        contractType: contractType ?? "unknown",
-        budget: budget ?? 0,
-        riskScore: riskScore ?? 0,
-        estimatedLOC: estimatedLOC ?? 0,
-        onChain: auctionOpenedOnChain,
-      },
-    });
+    try {
+      await this.hcs.publishAuditLog({
+        type: "JOB_CREATED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId,
+          contractAddress,
+          contractType: contractType ?? "unknown",
+          budget: budget ?? 0,
+          riskScore: riskScore ?? 0,
+          estimatedLOC: estimatedLOC ?? 0,
+          onChain: auctionOpenedOnChain,
+        },
+      });
+    } catch (err) {
+      this.log.warn(`Failed to publish JOB_CREATED for ${contractAddress?.slice(0, 12)}: ${err}`);
+    }
 
     const eligible = this.roster.eligibleFor(contractType);
-    await this.inviteAgents(jobId, eligible, msg.payload);
+    try {
+      await this.inviteAgents(jobId, eligible, msg.payload);
+    } catch (err) {
+      this.log.warn(`Failed to publish AUCTION_INVITE messages for job ${jobId}: ${err}`);
+    }
 
     // ── Redeploy detection: notify AuditScheduler if contract is in REDEPLOY mode ──
     if (this.contracts.auditScheduler?.getSchedule) {
@@ -539,6 +547,9 @@ export class OrchestratorAgent {
           contractAddress: payload.contractAddress,
           contractType: payload.contractType,
           budget: payload.budget ?? 0,
+          riskScore: payload.riskScore ?? 0,
+          estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
+          estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
         },
       });
     }
