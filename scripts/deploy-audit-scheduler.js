@@ -24,11 +24,11 @@ async function main() {
     config = JSON.parse(fs.readFileSync(SDK_CONFIG_PATH, "utf8"));
   }
 
-  const guardToken = config?.contracts?.guardToken?.evmAddress;
+  const guardToken = config?.guardTokenEvmAddress ?? config?.contracts?.guardToken?.evmAddress;
   const auctionAddress = config?.contracts?.auctionContract?.evmAddress;
   const budgetVaultAddress = config?.contracts?.budgetVault?.evmAddress;
 
-  if (!guardToken)    throw new Error("guardToken not found in config.json — deploy it first");
+  if (!guardToken)    throw new Error("guardTokenEvmAddress not found in config.json — deploy it first");
   if (!auctionAddress) throw new Error("auctionContract not found in config.json — deploy it first");
 
   console.log("guardToken:     ", guardToken);

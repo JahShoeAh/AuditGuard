@@ -30,7 +30,7 @@ AuditGuard is an autonomous multi-agent smart contract auditing platform built o
 | Treasury | _(see sdk/config.json)_ | — |
 | DelegatedStaking | _(see sdk/config.json)_ | — |
 | TimeLockVault | _(see sdk/config.json → timelockVault)_ | — |
-| **AuditScheduler** | **NOT YET DEPLOYED** | — |
+| **AuditScheduler** | `0.0.39abe1...cba5f6` | `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6` |
 
 > Full addresses live in `packages/sdk/config.json`.
 
@@ -69,7 +69,7 @@ AuditGuard is an autonomous multi-agent smart contract auditing platform built o
 |---|---|---|
 | `HederaResponseCodes.sol` | Vendored Hedera response code constants | ✅ Compiled |
 | `HederaScheduleService.sol` | Vendored HSS base contract (wraps precompile at `0x16b`) | ✅ Compiled |
-| `AuditScheduler.sol` | Contract-native recurring audit scheduling via HSS | ✅ Compiled, **not yet deployed** |
+| `AuditScheduler.sol` | Contract-native recurring audit scheduling via HSS | ✅ **Deployed** `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6` |
 | `interfaces/IAuditScheduler.sol` | Interface consumed by ContractClient | ✅ Done |
 | `test/MockHSS.sol` | Test helper — mocks HSS precompile for Hardhat tests | ✅ Done |
 
@@ -226,11 +226,11 @@ Run: `npm --prefix agents test`
 
 ## Pending / Next Steps
 
-- [ ] **Deploy AuditScheduler** to testnet: `npm run deploy:audit-scheduler`
+- [ ] **Call `setAuditScheduler` on AuditAuction** — deployer account (`0x49b1...8B9b`) is not the AuditAuction owner; the AuditAuction owner must call `setAuditScheduler(0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6)`
 - [ ] **Set orchestrator on AuditScheduler**: `scheduler.setOrchestrator(ORCHESTRATOR_ADDRESS)`
-- [ ] **Export AuditScheduler ABI** to `packages/sdk/abis/AuditScheduler.json` (run after compile)
+- [ ] **Export AuditScheduler ABI** to `packages/sdk/abis/AuditScheduler.json`
 - [ ] **Test HSS on testnet**: call `scheduleAudit()` and observe `AuditTriggered` on HashScan
-- [ ] **Fill `ESCROW_CONTRACT_ID`** in `.env` (it is the same as `AuditAuction` — already equal; just a legacy label)
+- [x] ~~**Deploy AuditScheduler** to testnet~~ ✅ `0x39ABE1e38DBD77a89E445Ab9957C3c9B27CBA5f6`
 - [ ] Wire `addHssEvent` calls in the dashboard's event-listener service to feed the Schedules tab live data
 - [ ] Consider deploying to Hedera Mainnet for production
 
