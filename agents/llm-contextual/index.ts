@@ -5,6 +5,7 @@ import {
   createAgentWallet,
   CONFIG,
   computeLiveBid,
+  ensureBidCollateralBalance,
   isRetriableBidFailure,
   normalizeBidFailureReasonCode,
   randomInt,
@@ -592,8 +593,13 @@ async function main() {
             return;
           }
 
-          const balance = await contracts.getGuardBalance(wallet.evmAddress);
-          if (balance < finalBid.collateralWei) {
+          const collateralReady = await ensureBidCollateralBalance({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: finalBid.collateralWei,
+            logger: log,
+          });
+          if (!collateralReady.ok) {
             await hcs.publishAuditLog({
               type: "BID_SKIPPED",
               agentId: AGENT_ID,
@@ -601,16 +607,25 @@ async function main() {
               payload: {
                 jobId: String(jobId),
                 contractAddress,
-                reason: "Insufficient GUARD balance for bid collateral",
-                reasonCode: "insufficient_collateral_balance",
+                reason: collateralReady.reason ?? "Insufficient GUARD balance for bid collateral",
+                reasonCode: collateralReady.attemptedTopUp
+                  ? "insufficient_collateral_balance_after_topup"
+                  : "insufficient_collateral_balance",
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
                 strictLive: true,
                 evmAddress: wallet.evmAddress,
+                availableCollateral: Number(ethers.formatUnits(collateralReady.balanceWei, GUARD_DECIMALS)),
+                autoTopUpAttempted: collateralReady.attemptedTopUp,
               },
             });
             return;
+          }
+          if (collateralReady.toppedUpWei > 0n) {
+            log.info(
+              `Auto top-up applied before bid: +${ethers.formatUnits(collateralReady.toppedUpWei, GUARD_DECIMALS)} GUARD`
+            );
           }
 
           try {

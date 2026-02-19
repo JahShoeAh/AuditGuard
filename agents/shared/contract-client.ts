@@ -39,6 +39,7 @@ const ERC20_ABI: ethers.InterfaceAbi = [
   "function balanceOf(address owner) view returns (uint256)",
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
+  "function transfer(address to, uint256 amount) returns (bool)",
 ];
 
 // ─── Exported ABI loader for tests ─────────────────────────────────────────
@@ -457,6 +458,14 @@ export class ContractClient {
     const capped = desired > INT64_MAX ? INT64_MAX : desired;
 
     return this.guardToken.approve(spender, capped);
+  }
+
+  async transferGuard(
+    to: string,
+    amount: bigint
+  ): Promise<ethers.ContractTransactionResponse> {
+    const recipient = assertAddress(to, "GUARD transfer recipient");
+    return this.guardToken.transfer(recipient, amount);
   }
 
   // ─── Cleanup ───────────────────────────────────────────────────────────
