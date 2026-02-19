@@ -60,6 +60,7 @@ class StorageAdapter {
     this._zgAvailable = false;
     this._zgInitialized = false;
     this._zgDisabledManually = false;
+    this._isWriting = false; // Mutex flag for serialization
 
     // 0g SDK objects (initialized lazily)
     this._indexer = null;
@@ -344,7 +345,15 @@ class StorageAdapter {
 
   // ─── 0g KV Operations ─────────────────────────────────────────────────────
 
+  // Mutex to prevent "replacement transaction underpriced" errors from concurrent writes
   async _zgKvSet(key, value) {
+    // Wait for the previous write to complete
+    while (this._isWriting) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    this._isWriting = true;
+
     try {
       const [nodes, nodesErr] = await this._indexer.selectNodes(1);
       if (nodesErr) throw new Error(`Node selection failed: ${nodesErr}`);
@@ -357,8 +366,13 @@ class StorageAdapter {
       batcher.streamDataBuilder.set(AUDITGUARD_STREAM_ID, keyBytes, valBytes);
       const [tx, err] = await batcher.exec();
       if (err) throw err;
+      
+      // Small cooling period after write to let nonce propagate
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (err) {
       throw err;
+    } finally {
+      this._isWriting = false;
     }
   }
 
