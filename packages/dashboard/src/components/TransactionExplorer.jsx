@@ -8,35 +8,48 @@ import { useAutoScroll } from '../hooks/useAutoScroll';
 // ── Filter tab config ─────────────────────────────────────
 
 const TABS = [
-  { key: 'ALL',      label: 'ALL',      types: null },
-  { key: 'AUCTIONS', label: 'AUCTIONS', types: new Set(['JobPosted','BidSubmitted','WinnersSelected','BidRefunded']) },
-  { key: 'SUB',      label: 'SUB-CTR',  types: new Set(['SUB_AUCTION_CREATED','SUB_BID','SUB_SELECTED','RESULT_DELIVERED','RESULT_ACCEPTED','SUB_JOB_SETTLED']) },
-  { key: 'DATA',     label: 'DATA',     types: new Set(['DATA_LISTED','DATA_PURCHASED','DATA_RATED']) },
-  { key: 'SETTLE',   label: 'SETTLE',   types: new Set(['JOB_SETTLED','SUB_JOB_SETTLED']) },
-  { key: 'AGENTS',   label: 'AGENTS',   types: new Set(['AgentRegistered','ReputationUpdated','AgentPromoted']) },
+  { key: 'ALL', label: 'ALL', types: null },
+  { key: 'AUCTIONS', label: 'AUCTIONS', types: new Set(['CONTRACT_DISCOVERED', 'JobPosted', 'BidSubmitted', 'WinnersSelected', 'BidRefunded']) },
+  { key: 'SUB', label: 'SUB-CTR', types: new Set(['SUB_AUCTION_CREATED', 'SUB_BID', 'SUB_SELECTED', 'RESULT_DELIVERED', 'RESULT_ACCEPTED', 'SUB_JOB_SETTLED']) },
+  { key: 'DATA', label: 'DATA', types: new Set(['DATA_LISTED', 'DATA_PURCHASED', 'DATA_RATED']) },
+  { key: 'SETTLE', label: 'SETTLE', types: new Set(['JOB_SETTLED', 'SUB_JOB_SETTLED']) },
+  { key: 'AGENTS', label: 'AGENTS', types: new Set(['AgentRegistered', 'ReputationUpdated', 'AgentPromoted']) },
 ];
 
 const TAB_COLOR = {
-  ALL:      '#9ca3af',
+  ALL: '#9ca3af',
   AUCTIONS: 'var(--accent-amber)',
-  SUB:      '#a855f7',
-  DATA:     '#14b8a6',
-  SETTLE:   'var(--accent-gold)',
-  AGENTS:   'var(--accent-green)',
+  SUB: '#a855f7',
+  DATA: '#14b8a6',
+  SETTLE: 'var(--accent-gold)',
+  AGENTS: 'var(--accent-green)',
 };
 
 // ── Main TransactionExplorer ──────────────────────────────
 
 export default function TransactionExplorer() {
-  const [activeTab, setActiveTab]   = useState('ALL');
-  const [settleId,  setSettleId]    = useState(null);
+  const [activeTab, setActiveTab] = useState('ALL');
+  const [settleId, setSettleId] = useState(null);
 
   const auditLog = useStore((s) => s.auditLog);
 
   const filteredEntries = (() => {
     const tab = TABS.find((t) => t.key === activeTab);
-    if (!tab || !tab.types) return auditLog.slice(0, 200);
-    return auditLog.filter((e) => tab.types.has(e.type)).slice(0, 200);
+
+    // 1. Filter
+    let entries = auditLog;
+    if (tab && tab.types) {
+      entries = auditLog.filter((e) => tab.types.has(e.type));
+    }
+
+    // 2. Sort (Newest first)
+    // Create a shallow copy to sort safely
+    const sorted = [...entries].sort((a, b) => {
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+
+    // 3. Slice
+    return sorted.slice(0, 200);
   })();
 
   // Tab counts
@@ -82,8 +95,8 @@ export default function TransactionExplorer() {
                   className="flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-mono whitespace-nowrap transition-all"
                   style={{
                     background: isActive ? `${color}18` : 'rgba(255,255,255,0.02)',
-                    color:      isActive ? color : '#6b7280',
-                    border:     isActive ? `1px solid ${color}35` : '1px solid transparent',
+                    color: isActive ? color : '#6b7280',
+                    border: isActive ? `1px solid ${color}35` : '1px solid transparent',
                   }}
                 >
                   {tab.label}

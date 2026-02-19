@@ -157,7 +157,7 @@ export default function StepIdentity({ data, setData, errors, setErrors }) {
         <motion.div
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="border border-gray-900 rounded-lg p-3 bg-gray-900/80"
+          className="border border-gray-900 rounded-lg p-3 bg-gray-900/60"
         >
           <p className="text-[10px] font-mono text-gray-600 uppercase tracking-wider mb-2">Preview</p>
           <div className="flex items-center gap-2">

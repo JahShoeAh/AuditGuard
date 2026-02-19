@@ -71,7 +71,7 @@ function NotConnectedGate() {
   const openWallet = useWalletStore((s) => s.openWalletModal);
   return (
     <div className="flex-1 flex items-center justify-center px-6">
-      <div className="max-w-sm w-full text-center border border-gray-900 rounded-xl p-8 bg-gray-900/80">
+      <div className="max-w-sm w-full text-center border border-gray-900 rounded-xl p-8 bg-gray-900/60">
         <div className="text-4xl mb-4">🔒</div>
         <h2 className="text-sm font-bold font-mono uppercase tracking-wider text-gray-200 mb-2">
           Wallet Required
@@ -213,7 +213,7 @@ export default function AgentRegistration() {
             </div>
 
             {/* Step content */}
-            <div className="border border-gray-900 rounded-xl bg-gray-900/80 p-6 min-h-[420px]">
+            <div className="border border-gray-900 rounded-xl bg-gray-900/60 p-6 min-h-[420px]">
               <AnimatePresence mode="wait">
                 {step === 1 && (
                   <motion.div

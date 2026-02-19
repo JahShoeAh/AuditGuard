@@ -50,7 +50,7 @@ export default function ContractHealthCard({ health, isSelected, onSelect }) {
       layout
       className={[
         'cursor-pointer rounded border p-3 transition-all text-xs font-mono',
-        isSelected ? 'border-guard-amber bg-gray-900/80' : 'border-gray-900 bg-gray-900/80 hover:border-gray-700',
+        isSelected ? 'border-guard-amber bg-gray-900/60' : 'border-gray-900 bg-gray-900/60 hover:border-gray-700',
         reauditDue ? 'ring-1 ring-amber-500/40' : '',
       ].join(' ')}
       onClick={() => onSelect(contractAddress)}
