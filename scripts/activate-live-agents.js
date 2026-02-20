@@ -1049,6 +1049,70 @@ async function main() {
   }
   console.log(`associateGuardToken calldata template: ${associateCalldata}`);
   const guardToken = new ethers.Contract(guardTokenEvm, GUARD_ABI, operatorEvmWallet);
+
+  // ── Fast-path: skip full activation if all required agents are already active ──
+  // Checks all required agents in parallel.  If every one is active on-chain AND
+  // holds at least its configured stake amount in GUARD, there is nothing to do.
+  const requiredSpecsWithCreds = AGENTS
+    .filter((spec) => spec.required)
+    .map((spec) => ({ spec, creds: getAgentCredentials(spec) }))
+    .filter(({ creds }) => creds !== null);
+
+  if (requiredSpecsWithCreds.length > 0) {
+    try {
+      console.log("\nFast-path: checking if all required agents are already active...");
+      const checks = await Promise.all(
+        requiredSpecsWithCreds.map(async ({ spec, creds }) => {
+          const evmAddress = deriveAddressFromPrivateKey(creds.privateKey);
+          const stakeWei = toTokenUnits(spec.stakeGuard);
+          const [active, balance] = await Promise.all([
+            withTimeout(
+              registryRead.isActiveAgent(evmAddress),
+              RPC_TIMEOUT_MS,
+              `isActiveAgent(${spec.agentId})`
+            ),
+            withTimeout(
+              guardToken.balanceOf(evmAddress),
+              RPC_TIMEOUT_MS,
+              `balanceOf(${spec.agentId})`
+            ),
+          ]);
+          return { spec, evmAddress, active: Boolean(active), balance, stakeWei };
+        })
+      );
+
+      const allActive   = checks.every((c) => c.active);
+      const allFunded   = checks.every((c) => c.balance >= c.stakeWei);
+
+      if (allActive && allFunded) {
+        console.log("✓ All required agents are already active and funded — skipping activation\n");
+        for (const c of checks) {
+          console.log(
+            `  OK  ${c.spec.agentId.padEnd(28)} active=true guard=${fromTokenUnits(c.balance).toFixed(4)}`
+          );
+        }
+        hederaClient.close();
+        console.log("\nactivate-live-agents completed (fast-path)");
+        return;
+      }
+
+      // At least one agent needs work — show which ones and fall through to full loop.
+      const inactive   = checks.filter((c) => !c.active).map((c) => c.spec.agentId);
+      const underfunded = checks.filter((c) => c.balance < c.stakeWei).map((c) => c.spec.agentId);
+      if (inactive.length)    console.log(`  Agents need activation:  ${inactive.join(", ")}`);
+      if (underfunded.length) console.log(`  Agents need funding:      ${underfunded.join(", ")}`);
+      console.log("  Proceeding with full activation...\n");
+    } catch (err) {
+      // Non-fatal: if the parallel check itself errors (RPC blip, etc.) just
+      // fall through to the full activation loop which has its own retry logic.
+      console.log(
+        `⚠ Fast-path check failed (${err instanceof Error ? err.message : String(err)}) — ` +
+        "proceeding with full activation\n"
+      );
+    }
+  }
+  // ── End fast-path ──────────────────────────────────────────────────────────
+
   const tokenId = TokenId.fromString(guardTokenId);
   const registryIdCandidates = resolveRegistryIdCandidates(sdkRegistryId, agentRegistryAddress);
   const mirrorRegistryId = await resolveRegistryIdViaMirror(agentRegistryAddress);
