@@ -138,6 +138,8 @@ export class EventListenerService {
     this.lastProcessedBlock = null;
     this.decodeFailures = 0;
     this.pendingSettlementBreakdowns = 0;
+    this.hcsEventsSeen = 0;
+    this.contractEventsSeen = 0;
 
     this._intervals = [];
     this._running = false;
@@ -335,6 +337,7 @@ export class EventListenerService {
         this.hcsHistorySkipped[topicKey] = shouldSkipHistory;
         this.store.setIngestionHealth?.({
           lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+          lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
         });
         if (shouldSkipHistory) return;
       }
@@ -355,8 +358,15 @@ export class EventListenerService {
         this.lastSeq[topicKey] = msg.sequenceNumber;
         this._routeHCSMessage(topicKey, msg);
       }
+      this.hcsEventsSeen += messages.length;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
       this.store.setIngestionHealth?.({
         lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+        lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+        hcsEventsSeen: this.hcsEventsSeen,
+        activeAuctionsCount,
       });
     } catch (err) {
       console.warn(`[EventListener] HCS poll error (${topicKey}):`, err.message);
@@ -902,6 +912,20 @@ export class EventListenerService {
         q(treasuryContract, 'FeeReceived'),
         q(treasuryContract, 'FeeDistributed'),
       ]);
+
+      const polledEventCount = [
+        jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
+        agentRegistered, reputationUpdated, agentPromoted,
+        subAuctionCreated, subBidSubmitted, subContractorSelected,
+        resultDelivered, resultAccepted,
+        dataListed, dataPurchased, dataRated,
+        jobSettled, subJobSettled,
+        vaultCreated, autoAuditTriggered,
+        staked, stakeLocked, stakeUnlocked,
+        slashInitiated, appealFiled, appealApproved, appealDenied,
+        feeReceived, feeDistributed,
+      ].reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0);
+      this.contractEventsSeen += polledEventCount;
 
       // ── Process AuditAuction events ──
 
@@ -1713,7 +1737,14 @@ export class EventListenerService {
       }
 
       this.lastProcessedBlock = to;
-      this.store.setIngestionHealth?.({ lastContractBlock: Number(to) });
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        lastContractBlock: Number(to),
+        contractEventsSeen: this.contractEventsSeen,
+        activeAuctionsCount,
+      });
     } catch (err) {
       console.warn('[EventListener] Contract poll error:', err.message);
     }

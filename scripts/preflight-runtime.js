@@ -2,6 +2,7 @@ const path = require("path");
 const { createRequire } = require("module");
 const { ethers } = require("ethers");
 const { loadRuntimeEnv, summarizeCredentialConflict } = require("./env-policy.js");
+const { verifyAccountKeyPair, normalizeAccountId } = require("./account-identity.js");
 
 const runtimeEnv = loadRuntimeEnv({
   allowAgentCredentialOverrides:
@@ -36,6 +37,50 @@ function warn(message) {
 function resolveAgentsRequire() {
   const agentsPkg = path.join(__dirname, "..", "agents", "package.json");
   return createRequire(agentsPkg);
+}
+
+function checkScannerOptionalDependencies() {
+  const classifierMode = boolFromEnv("SCANNER_CLASSIFIER_PIPELINE", false);
+  const deps = [
+    {
+      pkg: "evmdecoder",
+      purpose: "scanner classifier contract decoding",
+    },
+    {
+      pkg: "@anthropic-ai/sdk",
+      purpose: "scanner classifier risk inference fallback",
+    },
+  ];
+
+  const agentsRequire = resolveAgentsRequire();
+  const missing = [];
+
+  for (const dep of deps) {
+    try {
+      const resolved = agentsRequire.resolve(dep.pkg);
+      info(`scanner optional dependency resolved (${dep.pkg}): ${resolved}`);
+    } catch {
+      missing.push(dep);
+    }
+  }
+
+  if (missing.length === 0) return;
+
+  const details = missing.map((entry) => `${entry.pkg} (${entry.purpose})`);
+  if (classifierMode) {
+    fail(
+      `scanner classifier pipeline enabled but optional dependency missing: ${details.join(", ")}`,
+      [
+        "Install missing dependencies in agents workspace",
+        "npm --prefix agents install",
+        "Or set SCANNER_CLASSIFIER_PIPELINE=false for baseline scanner mode",
+      ]
+    );
+  }
+
+  warn(
+    `scanner classifier optional dependencies missing (baseline mode continues): ${details.join(", ")}`
+  );
 }
 
 function checkBrokerDependency() {
@@ -142,10 +187,6 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
-function normalizeAccountId(raw) {
-  return String(raw || "").trim().replace(/^['"]|['"]$/g, "");
-}
-
 function checkCredentialEnvConsistency() {
   const allowDrift = boolFromEnv("ALLOW_ENV_CREDENTIAL_DRIFT", false);
   const conflicts = runtimeEnv.credentialConflicts;
@@ -213,6 +254,82 @@ function checkScannerEcdsaCredential() {
     fail(
       `scanner private key failed ECDSA wallet derivation: ${err instanceof Error ? err.message : String(err)}`,
       ["Set a valid ECDSA private key for scanner in root .env"]
+    );
+  }
+}
+
+async function checkAccountKeyPairIntegrity() {
+  const allowMismatch = boolFromEnv("ALLOW_ACCOUNT_KEY_MISMATCH", false);
+  const mirrorBaseUrl = process.env.HEDERA_MIRROR_URL || "https://testnet.mirrornode.hedera.com";
+  const timeoutMs = Number(process.env.LIVE_PREFLIGHT_MIRROR_TIMEOUT_MS || "8000");
+
+  const pairs = [
+    {
+      label: "scanner",
+      accountId:
+        normalizeAccountId(process.env.SCANNER_ACCOUNT_ID) ||
+        normalizeAccountId(process.env.SCANNER_AGENT_ACCOUNT_ID),
+      privateKey: process.env.SCANNER_PRIVATE_KEY || process.env.SCANNER_AGENT_PRIVATE_KEY || "",
+      required: true,
+    },
+    {
+      label: "orchestrator",
+      accountId:
+        normalizeAccountId(process.env.ORCHESTRATOR_ACCOUNT_ID) ||
+        normalizeAccountId(process.env.OPERATOR_ACCOUNT_ID) ||
+        normalizeAccountId(process.env.HEDERA_ACCOUNT_ID),
+      privateKey:
+        process.env.ORCHESTRATOR_PRIVATE_KEY ||
+        process.env.OPERATOR_PRIVATE_KEY ||
+        process.env.HEDERA_PRIVATE_KEY ||
+        "",
+      required: false,
+    },
+  ];
+
+  for (const pair of pairs) {
+    if (!pair.accountId || !pair.privateKey) {
+      if (pair.required) {
+        fail(`missing credentials for ${pair.label} identity check`, [
+          `Set ${pair.label.toUpperCase()}_ACCOUNT_ID and ${pair.label.toUpperCase()}_PRIVATE_KEY in root .env`,
+        ]);
+      }
+      continue;
+    }
+
+    const result = await verifyAccountKeyPair({
+      accountId: pair.accountId,
+      privateKey: pair.privateKey,
+      mirrorBaseUrl,
+      timeoutMs,
+    });
+
+    if (result.ok) {
+      info(
+        `${pair.label} account/key pair check passed ` +
+        `(account=${result.accountId}, evm=${result.derivedAddress})`
+      );
+      continue;
+    }
+
+    if (result.reasonCode === "account_key_pair_mismatch") {
+      const message =
+        `account_key_pair_mismatch: ${pair.label} account ${result.accountId} does not match configured private key ` +
+        `(derived=${result.derivedAddress}, mirror=${result.mirrorAddress})`;
+      if (allowMismatch) {
+        warn(`${message} (continuing because ALLOW_ACCOUNT_KEY_MISMATCH=true)`);
+      } else {
+        fail(message, [
+          `Update ${pair.label.toUpperCase()}_ACCOUNT_ID or ${pair.label.toUpperCase()}_PRIVATE_KEY to a matching pair`,
+          "Or set ALLOW_ACCOUNT_KEY_MISMATCH=true for temporary bypass",
+        ]);
+      }
+      continue;
+    }
+
+    warn(
+      `${pair.label} account/key pair could not be fully verified ` +
+      `(reasonCode=${result.reasonCode}, detail=${result.detail})`
     );
   }
 }
@@ -368,6 +485,8 @@ async function main() {
   console.log("Running runtime preflight checks...\n");
   checkCredentialEnvConsistency();
   checkScannerEcdsaCredential();
+  await checkAccountKeyPairIntegrity();
+  checkScannerOptionalDependencies();
   await checkBrokerRuntimeLoadability();
   const { strictLiveZgRequired } = checkZgRequiredEnv();
   await checkZgModelConsistency(strictLiveZgRequired);

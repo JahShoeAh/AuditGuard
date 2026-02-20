@@ -26,6 +26,7 @@ function makeStoreSpies() {
     addSlashEvent: vi.fn(),
     addTreasuryRevenue: vi.fn(),
     addTreasuryDistribution: vi.fn(),
+    setIngestionHealth: vi.fn(),
     agents: {},
     subJobs: {},
   };
@@ -621,6 +622,72 @@ describe("EventListenerService", () => {
         type: "PLATFORM_FEE",
         amount: 50000000n,
         to: "0x0000000000000000000000000000000000000fee",
+      })
+    );
+  });
+
+  it("updates ingestion health counters for HCS + contract ingestion", async () => {
+    const store = makeStoreSpies();
+    store.activeJobs = {
+      "7": { jobId: "7", auctionDeadline: 1700000100 },
+    };
+    const provider = {
+      getBlockNumber: vi.fn(async () => 220),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const auctionContract = makeContractMock({
+      JobPosted: [
+        {
+          args: {
+            jobId: 7n,
+            contractAddress: "0x0000000000000000000000000000000000000aaa",
+            contractChain: "hedera",
+            contractType: "lending",
+            budgetAvailable: 5000000000n,
+            auctionDeadline: 1700000100n,
+            initialRiskScore: 75n,
+            lineCount: 1400n,
+          },
+          blockNumber: 219,
+          transactionHash: "0xjobtx",
+        },
+      ],
+    });
+
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 218;
+    await svc._pollContractEvents();
+
+    expect(store.setIngestionHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contractEventsSeen: expect.any(Number),
+        activeAuctionsCount: expect.any(Number),
+      })
+    );
+
+    const fetchSpy = vi.spyOn(svc, "fetchHCSMessages")
+      .mockResolvedValueOnce([{ sequenceNumber: 60, timestamp: "1700000000.1", parsedData: { type: "PING" } }])
+      .mockResolvedValueOnce([{ sequenceNumber: 61, timestamp: "1700000001.1", parsedData: { type: "PONG" } }]);
+    await svc._pollHCSTopic("0.0.2", "auditLog");
+    await svc._pollHCSTopic("0.0.2", "auditLog");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(store.setIngestionHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hcsEventsSeen: expect.any(Number),
+        lastTopicSeq: expect.objectContaining({ auditLog: 61 }),
       })
     );
   });

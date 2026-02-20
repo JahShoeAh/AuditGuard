@@ -14,18 +14,6 @@ import {
 } from "../shared/index.js";
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
-import { classifyContract } from "./contract-classifier.js";
-import type { DefiCategory, ClassificationResult } from "./contract-classifier.js";
-import { retrieveContractSource } from "./source-retriever.js";
-import {
-  assessRisk,
-  startZgHealthCheckLoop,
-  getCurrentInferenceSource,
-  getZgModel,
-  getZgProviderAddress,
-} from "./risk-inference.js";
-import { blendRiskScore } from "./risk-blender.js";
-import type { RiskPromptContext, LLMRiskResponse } from "./risk-prompt.js";
 
 // ---- Config ----
 const AGENT_ID = "scanner-001";
@@ -63,8 +51,85 @@ const SCANNER_REGISTRATION_SPECIALIZATIONS = parseCsvList(
   process.env.SCANNER_REGISTRATION_SPECIALIZATIONS,
   DEFAULT_SCANNER_SPECIALIZATIONS
 );
+const SCANNER_CLASSIFIER_PIPELINE =
+  String(process.env.SCANNER_CLASSIFIER_PIPELINE ?? "false").toLowerCase() === "true";
 
 const log = createAgentLogger(AGENT_ID, "scanner");
+
+type DefiCategory = Exclude<ContractType, "unknown">;
+
+type ClassificationResult = {
+  evmType: string;
+  defiCategory: DefiCategory;
+  standards: string[];
+  isContract: boolean;
+  contractName: string | null;
+  proxyTarget: string | null;
+};
+
+type SourceRetrievalResult = {
+  hasSource: boolean;
+  sourceCode: string | null;
+  sourceOrigin: "sourcify_full" | "sourcify_partial" | "bytecode_only";
+  bytecode: string;
+};
+
+type LLMRiskResponse = {
+  overallRisk: number;
+  dimensions: Record<string, number>;
+  rationale: string;
+  topRiskFactors: string[];
+};
+
+type RiskPromptContext = {
+  contractAddress: string;
+  defiCategory: DefiCategory;
+  evmType: string;
+  standards: string[];
+  estimatedLOC: number;
+  hasSource: boolean;
+  sourceCode: string | null;
+  bytecode: string;
+  proxyTarget: string | null;
+};
+
+type ClassifierModules = {
+  classifyContract: (contractAddress: string) => Promise<ClassificationResult>;
+  retrieveContractSource: (
+    contractAddress: string,
+    rpcUrl: string
+  ) => Promise<SourceRetrievalResult>;
+  assessRisk: (
+    ctx: RiskPromptContext,
+    logger: { info: (msg: string) => void; warn: (msg: string) => void }
+  ) => Promise<{
+    risk: LLMRiskResponse;
+    source: "0g" | "claude";
+    model: string;
+    latencyMs: number;
+  }>;
+  startZgHealthCheckLoop: (logger: { info: (msg: string) => void; warn: (msg: string) => void }) => void;
+  getCurrentInferenceSource: () => "0g" | "claude";
+  getZgModel: () => string;
+  getZgProviderAddress: () => string;
+  blendRiskScore: (input: {
+    llmRisk: LLMRiskResponse | null;
+    defiCategory: DefiCategory;
+    bytecodeHex: string;
+    estimatedLOC: number;
+    isProxy: boolean;
+    standards: string[];
+  }) => {
+    finalScore: number;
+    dimensions: Record<string, number> | null;
+    rationale: string;
+    topRiskFactors: string[];
+    components: Record<string, number | null>;
+  };
+};
+
+let classifierModulesLoadError: string | null = null;
+let classifierModulesPromise: Promise<ClassifierModules> | null = null;
 
 // ── Helper Functions ──
 
@@ -200,30 +265,79 @@ function estimateLoc(c: MirrorContract): number {
   return 1200;
 }
 
-// ── New Classification + Risk Functions ──
+function inferContractType(c: MirrorContract): ContractType {
+  // Baseline path remains intentionally conservative; downstream agents refine type.
+  void c;
+  return "unknown";
+}
 
-async function classifyAndAssessRisk(contractAddress: string): Promise<{
-  defiCategory: DefiCategory;
-  riskScore: number;
-  classification: ClassificationResult;
-  riskDetails: {
-    source: '0g' | 'claude' | 'heuristic';
-    model: string;
-    latencyMs: number;
-    dimensions: Record<string, number> | null;
-    rationale: string;
-    topRiskFactors: string[];
-    components: Record<string, number | null>;
+function deriveRiskScore(contractAddress: string): number {
+  const digest = ethers.keccak256(ethers.toUtf8Bytes(contractAddress.toLowerCase()));
+  const seed = Number.parseInt(digest.slice(2, 4), 16);
+  return 20 + (seed % 76); // 20..95
+}
+
+function baselineClassification(contractAddress: string, contract: MirrorContract) {
+  const contractType = inferContractType(contract);
+  return {
+    contractType,
+    riskScore: deriveRiskScore(contractAddress),
+    enrichedPayload: null as Record<string, unknown> | null,
   };
+}
+
+async function loadClassifierModules(): Promise<ClassifierModules> {
+  if (!classifierModulesPromise) {
+    classifierModulesPromise = (async () => {
+      const [
+        classifierModule,
+        sourceModule,
+        riskInferenceModule,
+        blenderModule,
+      ] = await Promise.all([
+        import("./contract-classifier.js"),
+        import("./source-retriever.js"),
+        import("./risk-inference.js"),
+        import("./risk-blender.js"),
+      ]);
+      return {
+        classifyContract: classifierModule.classifyContract as ClassifierModules["classifyContract"],
+        retrieveContractSource: sourceModule.retrieveContractSource as ClassifierModules["retrieveContractSource"],
+        assessRisk: riskInferenceModule.assessRisk as ClassifierModules["assessRisk"],
+        startZgHealthCheckLoop:
+          riskInferenceModule.startZgHealthCheckLoop as ClassifierModules["startZgHealthCheckLoop"],
+        getCurrentInferenceSource:
+          riskInferenceModule.getCurrentInferenceSource as ClassifierModules["getCurrentInferenceSource"],
+        getZgModel: riskInferenceModule.getZgModel as ClassifierModules["getZgModel"],
+        getZgProviderAddress:
+          riskInferenceModule.getZgProviderAddress as ClassifierModules["getZgProviderAddress"],
+        blendRiskScore: blenderModule.blendRiskScore as ClassifierModules["blendRiskScore"],
+      };
+    })().catch((err) => {
+      classifierModulesPromise = null;
+      throw err;
+    });
+  }
+  return classifierModulesPromise;
+}
+
+async function classifyAndAssessRisk(
+  contractAddress: string
+): Promise<{
+  contractType: ContractType;
+  riskScore: number;
+  enrichedPayload: Record<string, unknown> | null;
 }> {
+  const modules = await loadClassifierModules();
+
   let classification: ClassificationResult;
   try {
-    classification = await classifyContract(contractAddress);
+    classification = await modules.classifyContract(contractAddress);
   } catch (err) {
-    log.warn('evmdecoder classification failed for ' + contractAddress + ': ' + err);
+    log.warn(`classifier_pipeline_unavailable: evmdecoder classification failed for ${contractAddress}: ${err}`);
     classification = {
-      evmType: 'unknown',
-      defiCategory: 'lending',
+      evmType: "unknown",
+      defiCategory: "lending",
       standards: [],
       isContract: true,
       contractName: null,
@@ -234,23 +348,21 @@ async function classifyAndAssessRisk(contractAddress: string): Promise<{
   const rpcUrl =
     process.env.SCANNER_EVM_RPC_URL ||
     process.env.HEDERA_JSON_RPC_URL ||
-    'https://testnet.hashio.io/api';
+    "https://testnet.hashio.io/api";
 
-  let sourceResult;
+  let sourceResult: SourceRetrievalResult = {
+    hasSource: false,
+    sourceCode: null,
+    sourceOrigin: "bytecode_only",
+    bytecode: "0x",
+  };
   try {
-    sourceResult = await retrieveContractSource(contractAddress, rpcUrl);
+    sourceResult = await modules.retrieveContractSource(contractAddress, rpcUrl);
   } catch (err) {
-    log.warn('Source retrieval failed for ' + contractAddress + ': ' + err);
-    sourceResult = {
-      hasSource: false,
-      sourceCode: null,
-      sourceOrigin: 'bytecode_only' as const,
-      bytecode: '0x',
-    };
+    log.warn(`classifier_pipeline_unavailable: source retrieval failed for ${contractAddress}: ${err}`);
   }
 
   const estimatedLOC = estimateLoc({ bytecode: sourceResult.bytecode } as MirrorContract);
-
   const riskCtx: RiskPromptContext = {
     contractAddress,
     defiCategory: classification.defiCategory,
@@ -264,24 +376,20 @@ async function classifyAndAssessRisk(contractAddress: string): Promise<{
   };
 
   let llmRisk: LLMRiskResponse | null = null;
-  let inferenceSource: '0g' | 'claude' | 'heuristic' = 'heuristic';
-  let inferenceModel = 'none';
+  let inferenceSource: "0g" | "claude" | "heuristic" = "heuristic";
+  let inferenceModel = "none";
   let inferenceLatency = 0;
-
   try {
-    const result = await assessRisk(riskCtx, log);
+    const result = await modules.assessRisk(riskCtx, log);
     llmRisk = result.risk;
     inferenceSource = result.source;
     inferenceModel = result.model;
     inferenceLatency = result.latencyMs;
   } catch (err) {
-    log.warn(
-      'All inference providers failed for ' + contractAddress + ': ' + err + '. ' +
-      'Using heuristic-only risk scoring.'
-    );
+    log.warn(`classifier_pipeline_unavailable: inference failed for ${contractAddress}: ${err}`);
   }
 
-  const blended = blendRiskScore({
+  const blended = modules.blendRiskScore({
     llmRisk,
     defiCategory: classification.defiCategory,
     bytecodeHex: sourceResult.bytecode,
@@ -291,19 +399,40 @@ async function classifyAndAssessRisk(contractAddress: string): Promise<{
   });
 
   return {
-    defiCategory: classification.defiCategory,
+    contractType: classification.defiCategory,
     riskScore: blended.finalScore,
-    classification,
-    riskDetails: {
-      source: inferenceSource,
-      model: inferenceModel,
-      latencyMs: inferenceLatency,
-      dimensions: blended.dimensions,
-      rationale: blended.rationale,
+    enrichedPayload: {
+      evmType: classification.evmType,
+      standards: classification.standards,
+      contractName: classification.contractName,
+      isProxy: classification.proxyTarget !== null,
+      proxyTarget: classification.proxyTarget,
+      riskSource: inferenceSource,
+      riskModel: inferenceModel,
+      riskDimensions: blended.dimensions,
+      riskRationale: blended.rationale,
       topRiskFactors: blended.topRiskFactors,
-      components: blended.components,
+      riskLatencyMs: inferenceLatency,
+      riskComponents: blended.components,
+      sourceOrigin: sourceResult.sourceOrigin,
     },
   };
+}
+
+async function resolveDiscoveryClassification(contractAddress: string, contract: MirrorContract) {
+  if (!SCANNER_CLASSIFIER_PIPELINE) {
+    return baselineClassification(contractAddress, contract);
+  }
+  try {
+    return await classifyAndAssessRisk(contractAddress);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (classifierModulesLoadError !== message) {
+      classifierModulesLoadError = message;
+      log.warn(`classifier_pipeline_unavailable: ${message}. Falling back to baseline scanner classification.`);
+    }
+    return baselineClassification(contractAddress, contract);
+  }
 }
 
 async function createDiscoveryFromMirror(contract: MirrorContract) {
@@ -315,18 +444,11 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
     source: 'hedera-mirror',
   });
 
-  const {
-    defiCategory,
-    riskScore,
-    classification,
-    riskDetails,
-  } = await classifyAndAssessRisk(contractAddress);
-
+  const classification = await resolveDiscoveryClassification(contractAddress, contract);
   log.info(
-    'Classified ' + contractAddress.slice(0, 12) + '.. ' +
-    'evm=' + classification.evmType + ' defi=' + defiCategory + ' ' +
-    'risk=' + riskScore + ' via=' + riskDetails.source + ' ' +
-    '(' + riskDetails.latencyMs + 'ms)'
+    `Classified ${contractAddress.slice(0, 12)}.. type=${classification.contractType} ` +
+    `risk=${classification.riskScore}` +
+    (SCANNER_CLASSIFIER_PIPELINE ? " (classifier pipeline)" : " (baseline)")
   );
 
   return {
@@ -338,20 +460,11 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
       chain: 'hedera-testnet',
       deployerAddress: ZERO_ADDRESS,
       estimatedLOC: estimateLoc(contract),
-      contractType: defiCategory,
-      riskScore,
+      contractType: classification.contractType,
+      riskScore: classification.riskScore,
       budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
       txHash,
-      evmType: classification.evmType,
-      standards: classification.standards,
-      contractName: classification.contractName,
-      isProxy: classification.proxyTarget !== null,
-      proxyTarget: classification.proxyTarget,
-      riskSource: riskDetails.source,
-      riskModel: riskDetails.model,
-      riskDimensions: riskDetails.dimensions,
-      riskRationale: riskDetails.rationale,
-      topRiskFactors: riskDetails.topRiskFactors,
+      ...(classification.enrichedPayload || {}),
     },
   };
 }
@@ -435,10 +548,21 @@ async function main() {
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
 
-  // Start 0g health check loop (runs every 30s when 0g is unhealthy)
-  startZgHealthCheckLoop(log);
-  log.info(`Inference source: ${getCurrentInferenceSource()}`);
-  log.info(`0g Model: ${getZgModel()} (.Provider: ${getZgProviderAddress().substring(0, 12)}...)`);
+  if (SCANNER_CLASSIFIER_PIPELINE) {
+    try {
+      const modules = await loadClassifierModules();
+      modules.startZgHealthCheckLoop(log);
+      const providerAddress = modules.getZgProviderAddress();
+      const providerHint = providerAddress ? `${providerAddress.substring(0, 12)}...` : "unset";
+      log.info(`Inference source: ${modules.getCurrentInferenceSource()}`);
+      log.info(`0g Model: ${modules.getZgModel()} (Provider: ${providerHint})`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn(`classifier_pipeline_unavailable: ${message}. Baseline scanner mode will continue.`);
+    }
+  } else {
+    log.info("classifier_pipeline_disabled: using baseline scanner discovery path");
+  }
 
   let hotLeadListingEnabled = true;
   let payerBalanceExhausted = false;

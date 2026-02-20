@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { loadRuntimeEnv, summarizeCredentialConflict } = require("./env-policy.js");
+const { verifyAccountKeyPair } = require("./account-identity.js");
 const runtimeEnv = loadRuntimeEnv({
   allowAgentCredentialOverrides:
     String(process.env.ALLOW_AGENT_ENV_CREDENTIAL_OVERRIDE || "").toLowerCase() === "true",
@@ -217,6 +218,42 @@ function getAgentKeyTypeHint(spec) {
     process.env.AGENT_PRIVATE_KEY_TYPE ||
     process.env.HEDERA_PRIVATE_KEY_TYPE
   );
+}
+
+async function checkAgentIdentityPair(spec, creds) {
+  const allowMismatch = String(process.env.ALLOW_ACCOUNT_KEY_MISMATCH || "").toLowerCase() === "true";
+  const result = await verifyAccountKeyPair({
+    accountId: creds.accountId,
+    privateKey: creds.privateKey,
+    mirrorBaseUrl: process.env.HEDERA_MIRROR_URL || DEFAULT_MIRROR_BASE_URL,
+    timeoutMs: MIRROR_TIMEOUT_MS,
+  });
+
+  const mirrorDisplay = result.mirrorAddress || "unavailable";
+  const derivedDisplay = result.derivedAddress || "unavailable";
+  if (result.ok) {
+    console.log(
+      `    • ${spec.agentId}: identity verified account=${result.accountId} ` +
+      `derived=${derivedDisplay} mirror=${mirrorDisplay}`
+    );
+    return { ok: true, reasonCode: "account_key_pair_ok", detail: result.detail };
+  }
+
+  if (result.reasonCode === "account_key_pair_mismatch") {
+    const message =
+      `account_key_pair_mismatch: account=${result.accountId} derived=${derivedDisplay} mirror=${mirrorDisplay}`;
+    if (allowMismatch) {
+      console.log(`    ⚠ ${spec.agentId}: ${message} (ALLOW_ACCOUNT_KEY_MISMATCH=true)`);
+      return { ok: true, reasonCode: "account_key_pair_mismatch_bypassed", detail: message };
+    }
+    return { ok: false, reasonCode: "account_key_pair_mismatch", detail: message };
+  }
+
+  console.log(
+    `    ⚠ ${spec.agentId}: identity unverified (${result.reasonCode}) ` +
+    `account=${result.accountId} derived=${derivedDisplay} detail=${result.detail}`
+  );
+  return { ok: true, reasonCode: result.reasonCode, detail: result.detail };
 }
 
 function loadSdkConfig() {
@@ -1301,6 +1338,10 @@ async function main() {
         const endpoint = process.env[spec.endpointEnv] || spec.defaultEndpoint;
 
         console.log(`• ${spec.agentId} (${agentEvmWallet.address})`);
+        const identityCheck = await checkAgentIdentityPair(spec, creds);
+        if (!identityCheck.ok) {
+          throw new Error(`${identityCheck.reasonCode}:${identityCheck.detail}`);
+        }
 
         const finalHbar = await ensureAgentHbarMinimum(
           hederaClient,
@@ -1327,6 +1368,13 @@ async function main() {
               `${fromTokenUnits(minTotalWei).toFixed(4)} GUARD), but account equals operator so top-up is skipped`
             );
           } else {
+            const operatorGuardBalanceWei = await guardToken.balanceOf(operatorEvmWallet.address);
+            if (operatorGuardBalanceWei < topup) {
+              throw new Error(
+                `operator_guard_insufficient: need=${fromTokenUnits(topup).toFixed(4)} ` +
+                `have=${fromTokenUnits(operatorGuardBalanceWei).toFixed(4)}`
+              );
+            }
             await transferGuardResilient({
               guardTokenContract: guardToken,
               targetEvmAddress: agentEvmWallet.address,
@@ -1419,7 +1467,14 @@ async function main() {
 
         if (spec.required) hasFailure = true;
         if (spec.required) {
-          const category = transient ? "network_or_dns_failure" : "activation_error";
+          const lowerReason = reason.toLowerCase();
+          const category = transient
+            ? "network_or_dns_failure"
+            : lowerReason.includes("account_key_pair_mismatch")
+              ? "account_key_pair_mismatch"
+              : lowerReason.includes("operator_guard_insufficient")
+                ? "operator_guard_insufficient"
+                : "activation_error";
           requiredFailures.push(`${spec.agentId}:${category}:${reason}`);
         }
         console.log(`ERR  ${spec.agentId.padEnd(28)} ${reason}`);

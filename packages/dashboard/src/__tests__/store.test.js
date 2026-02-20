@@ -285,3 +285,33 @@ describe('Store — Event dedupe', () => {
     expect(useStore.getState().ingestionHealth.duplicatesDropped).toBe(1);
   });
 });
+
+describe('Store — Ingestion health', () => {
+  it('tracks required ingestion health counters and topic cursors', () => {
+    const health = useStore.getState().ingestionHealth;
+    expect(health.lastTopicSeq).toEqual({ discovery: 0, auditLog: 0, agentComms: 0 });
+    expect(health.duplicateDrops).toBe(0);
+    expect(health.contractEventsSeen).toBe(0);
+    expect(health.hcsEventsSeen).toBe(0);
+    expect(health.activeAuctionsCount).toBe(0);
+  });
+
+  it('merges lastHcsSeq and lastTopicSeq patches without dropping existing keys', () => {
+    useStore.getState().setIngestionHealth({
+      lastHcsSeq: { discovery: 9 },
+      lastTopicSeq: { discovery: 9 },
+      hcsEventsSeen: 10,
+    });
+    useStore.getState().setIngestionHealth({
+      lastHcsSeq: { auditLog: 12 },
+      lastTopicSeq: { auditLog: 12 },
+      contractEventsSeen: 5,
+    });
+
+    const health = useStore.getState().ingestionHealth;
+    expect(health.lastHcsSeq).toEqual({ discovery: 9, auditLog: 12, agentComms: 0 });
+    expect(health.lastTopicSeq).toEqual({ discovery: 9, auditLog: 12, agentComms: 0 });
+    expect(health.hcsEventsSeen).toBe(10);
+    expect(health.contractEventsSeen).toBe(5);
+  });
+});

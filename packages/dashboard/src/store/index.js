@@ -118,6 +118,7 @@ const useStore = create((set) => ({
           ingestionHealth: {
             ...s.ingestionHealth,
             duplicatesDropped: (s.ingestionHealth?.duplicatesDropped || 0) + 1,
+            duplicateDrops: (s.ingestionHealth?.duplicateDrops || 0) + 1,
           },
         };
       }
@@ -229,6 +230,7 @@ const useStore = create((set) => ({
           ingestionHealth: {
             ...s.ingestionHealth,
             duplicatesDropped: (s.ingestionHealth?.duplicatesDropped || 0) + 1,
+            duplicateDrops: (s.ingestionHealth?.duplicateDrops || 0) + 1,
           },
         };
       }
@@ -248,8 +250,13 @@ const useStore = create((set) => ({
     sourceMode: 'onchain_strict',
     replayMode: 'from_now',
     lastHcsSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
+    lastTopicSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
     lastContractBlock: 0,
     duplicatesDropped: 0,
+    duplicateDrops: 0,
+    contractEventsSeen: 0,
+    hcsEventsSeen: 0,
+    activeAuctionsCount: 0,
     decodeFailures: 0,
     pendingSettlementBreakdowns: 0,
     agentHydrationStatus: 'degraded',
@@ -264,6 +271,10 @@ const useStore = create((set) => ({
         lastHcsSeq: {
           ...(s.ingestionHealth?.lastHcsSeq || {}),
           ...(patch?.lastHcsSeq || {}),
+        },
+        lastTopicSeq: {
+          ...(s.ingestionHealth?.lastTopicSeq || {}),
+          ...(patch?.lastTopicSeq || {}),
         },
       },
     })),
@@ -391,8 +402,13 @@ const useStore = create((set) => ({
       sourceMode: 'onchain_strict',
       replayMode: 'from_now',
       lastHcsSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
+      lastTopicSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
       lastContractBlock: 0,
       duplicatesDropped: 0,
+      duplicateDrops: 0,
+      contractEventsSeen: 0,
+      hcsEventsSeen: 0,
+      activeAuctionsCount: 0,
       decodeFailures: 0,
       pendingSettlementBreakdowns: 0,
       agentHydrationStatus: 'degraded',
