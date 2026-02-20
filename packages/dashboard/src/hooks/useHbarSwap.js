@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { useWalletStore } from '../store/wallet';
 import config from '@sdk/config.json';
@@ -36,6 +36,11 @@ function toFourDecimals(value) {
   return n.toFixed(4);
 }
 
+// Helper to add delay between transactions to avoid Hedera rate limiting
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 export function useHbarSwap() {
   const { signer, provider, address } = useWalletStore();
 
@@ -46,19 +51,59 @@ export function useHbarSwap() {
   const exchangeAddress = config?.contracts?.guardExchange?.evmAddress;
   const guardTokenAddress = config?.guardTokenEvmAddress;
 
+  // Log config state on mount for debugging
+  useEffect(() => {
+    console.log('[useHbarSwap] Config loaded:', {
+      exchangeAddress,
+      guardTokenAddress,
+      hasProvider: !!provider,
+      hasSigner: !!signer,
+    });
+  }, [exchangeAddress, guardTokenAddress, provider, signer]);
+
   async function quoteHbarCost(guardAmount) {
     try {
       if (!guardAmount || Number(guardAmount) <= 0) return '0';
-      if (!exchangeAddress || !provider) return '0';
+      if (!exchangeAddress || !provider) {
+        console.warn('[useHbarSwap] Missing config:', { exchangeAddress, provider: !!provider });
+        return '0';
+      }
 
+      console.log('[useHbarSwap] Quoting HBAR cost for', guardAmount, 'GUARD');
       const exchange = new ethers.Contract(exchangeAddress, EXCHANGE_ABI, provider);
       const guardBaseUnits = ethers.parseUnits(String(guardAmount), 8);
       const hbarTinybars = await exchange.quoteHbarIn(guardBaseUnits);
       // Convert tinybars (8 decimals) to weibars (18 decimals) for ethers.js
       const hbarWei = hbarTinybars * (10n ** 10n);
       const bufferedHbarWei = (hbarWei * 101n) / 100n;
-      return toFourDecimals(ethers.formatEther(bufferedHbarWei));
-    } catch {
+      const result = toFourDecimals(ethers.formatEther(bufferedHbarWei));
+      console.log('[useHbarSwap] Quote result:', result, 'HBAR');
+      return result;
+    } catch (err) {
+      console.error('[useHbarSwap] Quote failed:', err.message || err);
+      return '0';
+    }
+  }
+
+  async function quoteGuardOut(hbarAmount) {
+    try {
+      if (!hbarAmount || Number(hbarAmount) <= 0) return '0';
+      if (!exchangeAddress || !provider) {
+        console.warn('[useHbarSwap] Missing config:', { exchangeAddress, provider: !!provider });
+        return '0';
+      }
+
+      console.log('[useHbarSwap] Quoting GUARD out for', hbarAmount, 'HBAR');
+      const exchange = new ethers.Contract(exchangeAddress, EXCHANGE_ABI, provider);
+      const hbarWei = ethers.parseEther(String(hbarAmount));
+      // Convert weibars (18 decimals) to tinybars (8 decimals) for contract call
+      const hbarTinybars = hbarWei / (10n ** 10n);
+      const guardBaseUnits = await exchange.quoteGuardOut(hbarTinybars);
+      const result = ethers.formatUnits(guardBaseUnits, 8);
+      console.log('[useHbarSwap] Quote result:', result, 'GUARD');
+      return result;
+    } catch (err) {
+      console.error('[useHbarSwap] Quote failed:', err.message || err);
       return '0';
     }
   }
@@ -93,6 +138,9 @@ export function useHbarSwap() {
       });
       await swapTx.wait();
 
+      // Wait to avoid Hedera rate limiting
+      await delay(2000);
+
       setSwapStep('approving');
       const targetAddress = getTargetAddress(targetContract);
       if (!targetAddress) {
@@ -103,12 +151,119 @@ export function useHbarSwap() {
       if (currentAllowance < guardBaseUnits) {
         const approveTx = await guardContract.approve(targetAddress, guardBaseUnits);
         await approveTx.wait();
+
+        // Wait to avoid Hedera rate limiting
+        await delay(2000);
       }
 
       setSwapStep('executing');
       const writableTarget = targetContract.connect(signer);
       const tx = await writableTarget[method](...(args || []));
       const receipt = await tx.wait();
+
+      setSwapStep('done');
+      setIsSwapping(false);
+      return receipt;
+    } catch (err) {
+      setSwapStep('error');
+      setSwapError(err?.message ?? String(err));
+      setIsSwapping(false);
+      throw err;
+    }
+  }
+
+  async function swapHbarAndExecute(hbarAmountHuman, targetContract, method, args) {
+    if (!signer || !provider || !address) {
+      throw new Error('Wallet not connected');
+    }
+    if (!exchangeAddress || !guardTokenAddress) {
+      throw new Error('GuardExchange or GUARD token config is missing');
+    }
+
+    setIsSwapping(true);
+    setSwapError(null);
+
+    try {
+      const guardContract = new ethers.Contract(guardTokenAddress, ERC20_ABI, signer);
+      const exchange = new ethers.Contract(exchangeAddress, EXCHANGE_ABI, provider);
+
+      setSwapStep('quoting');
+      const hbarWei = ethers.parseEther(String(hbarAmountHuman));
+      // Convert weibars (18 decimals) to tinybars (8 decimals) for contract call
+      const hbarTinybars = hbarWei / (10n ** 10n);
+      const guardBaseUnits = await exchange.quoteGuardOut(hbarTinybars);
+      const minGuardOut = (guardBaseUnits * 99n) / 100n; // 1% slippage
+
+      // Get balance before swap
+      const balanceBefore = await guardContract.balanceOf(address);
+
+      setSwapStep('swapping');
+      const writableExchange = exchange.connect(signer);
+      const swapTx = await writableExchange.buyGuard(minGuardOut, {
+        value: hbarWei,
+      });
+      await swapTx.wait();
+
+      // Wait to avoid Hedera rate limiting
+      await delay(2000);
+
+      // Get actual GUARD received from swap
+      const balanceAfter = await guardContract.balanceOf(address);
+      const guardReceived = balanceAfter - balanceBefore;
+
+      if (guardReceived <= 0n) {
+        throw new Error('No GUARD tokens received from swap');
+      }
+
+      setSwapStep('approving');
+      const targetAddress = getTargetAddress(targetContract);
+      if (!targetAddress) {
+        throw new Error('Target contract address not found');
+      }
+
+      console.log('[swapHbarAndExecute] Approving GUARD:', {
+        amount: guardReceived.toString(),
+        from: address,
+        to: targetAddress,
+      });
+
+      // Always approve max amount to avoid Hedera HTS approval issues
+      const MAX_UINT256 = ethers.MaxUint256;
+      const approveTx = await guardContract.approve(targetAddress, MAX_UINT256);
+      const approveReceipt = await approveTx.wait();
+
+      console.log('[swapHbarAndExecute] Approval confirmed:', approveReceipt.hash);
+
+      // Wait to avoid Hedera rate limiting
+      await delay(2000);
+
+      // Verify approval went through
+      const newAllowance = await guardContract.allowance(address, targetAddress);
+      console.log('[swapHbarAndExecute] New allowance:', newAllowance.toString());
+
+      if (newAllowance < guardReceived) {
+        throw new Error(`Approval failed: allowance ${newAllowance.toString()} < required ${guardReceived.toString()}`);
+      }
+
+      setSwapStep('executing');
+      // Update args to use actual amount received
+      const updatedArgs = [...(args || [])];
+      if (updatedArgs.length > 1) {
+        updatedArgs[1] = guardReceived; // Replace the amount with actual received
+      }
+
+      console.log('[swapHbarAndExecute] Executing delegation:', {
+        method,
+        args: updatedArgs.map(arg => arg.toString()),
+        contract: targetAddress,
+      });
+
+      const writableTarget = targetContract.connect(signer);
+      const tx = await writableTarget[method](...updatedArgs);
+      console.log('[swapHbarAndExecute] Transaction sent:', tx.hash);
+
+      const receipt = await tx.wait();
+      console.log('[swapHbarAndExecute] Transaction confirmed:', receipt.hash);
 
       setSwapStep('done');
       setIsSwapping(false);
@@ -235,7 +390,9 @@ export function useHbarSwap() {
 
   return {
     quoteHbarCost,
+    quoteGuardOut,
     swapAndExecute,
+    swapHbarAndExecute,
     claimAndConvert,
     getExchangeRate,
     isSwapping,
