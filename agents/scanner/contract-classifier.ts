@@ -1,5 +1,5 @@
 import { EvmDecoder } from "evmdecoder";
-import { resolveEvmAddress } from "./hedera-address.js";
+
 
 export interface ClassificationResult {
   evmType: string;
@@ -10,7 +10,7 @@ export interface ClassificationResult {
   proxyTarget: string | null;
 }
 
-export type DefiCategory = "lending" | "dex" | "staking" | "bridge" | "vault";
+export type DefiCategory = "lending" | "dex" | "staking" | "bridge" | "vault" | "nft";
 
 /**
  * Convert Hedera contract ID to EVM address.
@@ -136,7 +136,7 @@ export async function classifyContract(
   if (!info?.isContract) {
     return {
       evmType: "EOA",
-      defiCategory: "lending",
+      defiCategory: "vault",
       standards: [],
       isContract: false,
       contractName: null,
