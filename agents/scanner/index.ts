@@ -14,6 +14,18 @@ import {
 } from "../shared/index.js";
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
+import { classifyContract } from "./contract-classifier.js";
+import type { DefiCategory, ClassificationResult } from "./contract-classifier.js";
+import { retrieveContractSource } from "./source-retriever.js";
+import {
+  assessRisk,
+  startZgHealthCheckLoop,
+  getCurrentInferenceSource,
+  getZgModel,
+  getZgProviderAddress,
+} from "./risk-inference.js";
+import { blendRiskScore } from "./risk-blender.js";
+import type { RiskPromptContext, LLMRiskResponse } from "./risk-prompt.js";
 
 // ---- Config ----
 const AGENT_ID = "scanner-001";
@@ -53,6 +65,16 @@ const SCANNER_REGISTRATION_SPECIALIZATIONS = parseCsvList(
 );
 
 const log = createAgentLogger(AGENT_ID, "scanner");
+
+// ── Helper Functions ──
+
+function parseCsvList(raw: string | undefined, fallback: string[]): string[] {
+  const values = String(raw ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length > 0 ? values : fallback;
+}
 
 // ---- Mirror-node Discovery ----
 
@@ -168,12 +190,6 @@ function extractCreatedTimestamp(c: MirrorContract): string | null {
   return c.created_timestamp ?? c.timestamp?.from ?? null;
 }
 
-function inferContractType(c: MirrorContract): ContractType {
-  // Mirror-node metadata does not expose Solidity source, so keep type conservative.
-  // Downstream agents can refine this via static analysis after discovery.
-  void c;
-  return "unknown";
-}
 
 function estimateLoc(c: MirrorContract): number {
   const bytecode = typeof c.bytecode === "string" ? c.bytecode : "";
@@ -184,37 +200,162 @@ function estimateLoc(c: MirrorContract): number {
   return 1200;
 }
 
-function deriveRiskScore(contractAddress: string): number {
-  const digest = ethers.keccak256(ethers.toUtf8Bytes(contractAddress.toLowerCase()));
-  const seed = Number.parseInt(digest.slice(2, 4), 16);
-  return 20 + (seed % 76); // 20..95
+// ── New Classification + Risk Functions ──
+
+async function classifyAndAssessRisk(contractAddress: string): Promise<{
+  defiCategory: DefiCategory;
+  riskScore: number;
+  classification: ClassificationResult;
+  riskDetails: {
+    source: '0g' | 'claude' | 'heuristic';
+    model: string;
+    latencyMs: number;
+    dimensions: Record<string, number> | null;
+    rationale: string;
+    topRiskFactors: string[];
+    components: Record<string, number | null>;
+  };
+}> {
+  let classification: ClassificationResult;
+  try {
+    classification = await classifyContract(contractAddress);
+  } catch (err) {
+    log.warn('evmdecoder classification failed for ' + contractAddress + ': ' + err);
+    classification = {
+      evmType: 'unknown',
+      defiCategory: 'lending',
+      standards: [],
+      isContract: true,
+      contractName: null,
+      proxyTarget: null,
+    };
+  }
+
+  const rpcUrl =
+    process.env.SCANNER_EVM_RPC_URL ||
+    process.env.HEDERA_JSON_RPC_URL ||
+    'https://testnet.hashio.io/api';
+
+  let sourceResult;
+  try {
+    sourceResult = await retrieveContractSource(contractAddress, rpcUrl);
+  } catch (err) {
+    log.warn('Source retrieval failed for ' + contractAddress + ': ' + err);
+    sourceResult = {
+      hasSource: false,
+      sourceCode: null,
+      sourceOrigin: 'bytecode_only' as const,
+      bytecode: '0x',
+    };
+  }
+
+  const estimatedLOC = estimateLoc({ bytecode: sourceResult.bytecode } as MirrorContract);
+
+  const riskCtx: RiskPromptContext = {
+    contractAddress,
+    defiCategory: classification.defiCategory,
+    evmType: classification.evmType,
+    standards: classification.standards,
+    estimatedLOC,
+    hasSource: sourceResult.hasSource,
+    sourceCode: sourceResult.sourceCode,
+    bytecode: sourceResult.bytecode,
+    proxyTarget: classification.proxyTarget,
+  };
+
+  let llmRisk: LLMRiskResponse | null = null;
+  let inferenceSource: '0g' | 'claude' | 'heuristic' = 'heuristic';
+  let inferenceModel = 'none';
+  let inferenceLatency = 0;
+
+  try {
+    const result = await assessRisk(riskCtx, log);
+    llmRisk = result.risk;
+    inferenceSource = result.source;
+    inferenceModel = result.model;
+    inferenceLatency = result.latencyMs;
+  } catch (err) {
+    log.warn(
+      'All inference providers failed for ' + contractAddress + ': ' + err + '. ' +
+      'Using heuristic-only risk scoring.'
+    );
+  }
+
+  const blended = blendRiskScore({
+    llmRisk,
+    defiCategory: classification.defiCategory,
+    bytecodeHex: sourceResult.bytecode,
+    estimatedLOC,
+    isProxy: classification.proxyTarget !== null,
+    standards: classification.standards,
+  });
+
+  return {
+    defiCategory: classification.defiCategory,
+    riskScore: blended.finalScore,
+    classification,
+    riskDetails: {
+      source: inferenceSource,
+      model: inferenceModel,
+      latencyMs: inferenceLatency,
+      dimensions: blended.dimensions,
+      rationale: blended.rationale,
+      topRiskFactors: blended.topRiskFactors,
+      components: blended.components,
+    },
+  };
 }
 
-function createDiscoveryFromMirror(contract: MirrorContract) {
-  const contractAddress = (contract.evm_address || "").toLowerCase();
+async function createDiscoveryFromMirror(contract: MirrorContract) {
+  const contractAddress = (contract.evm_address || '').toLowerCase();
   const createdTs = extractCreatedTimestamp(contract) || String(Date.now());
   const txHash = contract.transaction_hash || hashOf({
     contractAddress,
     createdTs,
-    source: "hedera-mirror",
+    source: 'hedera-mirror',
   });
 
+  const {
+    defiCategory,
+    riskScore,
+    classification,
+    riskDetails,
+  } = await classifyAndAssessRisk(contractAddress);
+
+  log.info(
+    'Classified ' + contractAddress.slice(0, 12) + '.. ' +
+    'evm=' + classification.evmType + ' defi=' + defiCategory + ' ' +
+    'risk=' + riskScore + ' via=' + riskDetails.source + ' ' +
+    '(' + riskDetails.latencyMs + 'ms)'
+  );
+
   return {
-    type: "CONTRACT_DISCOVERED" as const,
+    type: 'CONTRACT_DISCOVERED' as const,
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
       contractAddress,
-      chain: "hedera-testnet",
-      deployerAddress: ZERO_ADDRESS, // mirror endpoint does not directly expose EVM deployer
+      chain: 'hedera-testnet',
+      deployerAddress: ZERO_ADDRESS,
       estimatedLOC: estimateLoc(contract),
-      contractType: inferContractType(contract),
-      riskScore: deriveRiskScore(contractAddress),
+      contractType: defiCategory,
+      riskScore,
       budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
       txHash,
+      evmType: classification.evmType,
+      standards: classification.standards,
+      contractName: classification.contractName,
+      isProxy: classification.proxyTarget !== null,
+      proxyTarget: classification.proxyTarget,
+      riskSource: riskDetails.source,
+      riskModel: riskDetails.model,
+      riskDimensions: riskDetails.dimensions,
+      riskRationale: riskDetails.rationale,
+      topRiskFactors: riskDetails.topRiskFactors,
     },
   };
 }
+
 
 async function fetchNewContractsSinceCursor() {
   const base = `${MIRROR_NODE}/api/v1/contracts?order=desc&limit=${CONTRACT_FETCH_LIMIT}`;
@@ -271,14 +412,6 @@ function validateDiscoveryPayload(payload: {
   }
 }
 
-function parseCsvList(raw: string | undefined, fallback: string[]): string[] {
-  const values = String(raw ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return values.length > 0 ? values : fallback;
-}
-
 function formatGuardUnits(amountWei: bigint): string {
   return Number(ethers.formatUnits(amountWei, GUARD_DECIMALS)).toFixed(2);
 }
@@ -301,6 +434,12 @@ async function main() {
   const wallet = createAgentWallet("SCANNER");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
+
+  // Start 0g health check loop (runs every 30s when 0g is unhealthy)
+  startZgHealthCheckLoop(log);
+  log.info(`Inference source: ${getCurrentInferenceSource()}`);
+  log.info(`0g Model: ${getZgModel()} (.Provider: ${getZgProviderAddress().substring(0, 12)}...)`);
+
   let hotLeadListingEnabled = true;
   let payerBalanceExhausted = false;
 
@@ -601,7 +740,7 @@ async function main() {
         );
         break;
       }
-      const discovery = createDiscoveryFromMirror(c);
+      const discovery = await createDiscoveryFromMirror(c);
       const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
 
       if (seenContracts.has(contractAddress)) continue;
