@@ -130,6 +130,7 @@ npm --prefix packages/dashboard run dev
 - D1-backed events API: `packages/cloudflare-api`
 - Dashboard event source env: `VITE_EVENTS_API_BASE_URL` (default `/api`)
 - End-to-end setup guide: `docs/CLOUDFLARE_INTEGRATION_PLAN.md`
+- Docker + EC2 + GHCR backend runbook (`dev:backend`): `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
 
 ## Current Integration Items (as of February 18, 2026)
 
