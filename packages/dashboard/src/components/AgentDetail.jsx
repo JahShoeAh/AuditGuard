@@ -267,10 +267,17 @@ export default function AgentDetail({ addr }) {
             <p className="text-[11px] font-mono text-gray-400">
               Anyone can delegate GUARD to support your agent. You currently share{' '}
               <span className="text-green-400 font-semibold">
-                {poolData?.rewardShareBps ? `${(Number(poolData.rewardShareBps) / 100).toFixed(1)}%` : '10%'}
+                {poolData && poolData.totalDelegated > 0n
+                  ? `${(Number(poolData.rewardShareBps) / 100).toFixed(1)}%`
+                  : '10%'}
               </span>
               {' '}of your earnings with delegators.
             </p>
+            {poolData && poolData.totalDelegated === 0n && (
+              <div className="mt-2 text-[10px] font-mono text-gray-500 border-t border-gray-800 pt-2">
+                ℹ No delegations yet. Pool will initialize with first delegation.
+              </div>
+            )}
           </div>
         </Section>
       )}
