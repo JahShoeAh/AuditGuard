@@ -59,6 +59,7 @@ export function useHbarSwap() {
       hasProvider: !!provider,
       hasSigner: !!signer,
     });
+    console.log('[useHbarSwap] Exchange address:', exchangeAddress);
   }, [exchangeAddress, guardTokenAddress, provider, signer]);
 
   async function quoteHbarCost(guardAmount) {

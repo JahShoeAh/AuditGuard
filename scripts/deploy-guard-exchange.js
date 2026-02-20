@@ -79,8 +79,8 @@ async function main() {
   console.log(`Approved GUARD allowance: ${approvalAmount.toString()}`);
 
   // Step 5: Seed liquidity pool
-  const hbarSeedInput = process.env.EXCHANGE_HBAR_SEED || "100";
-  const guardSeedInput = process.env.EXCHANGE_GUARD_SEED || "10000";
+  const hbarSeedInput = process.env.EXCHANGE_HBAR_SEED || "10";
+  const guardSeedInput = process.env.EXCHANGE_GUARD_SEED || "1000";
   const hbarSeedAmount = ethers.parseEther(hbarSeedInput);
   const guardSeedAmount = ethers.parseUnits(guardSeedInput, 8);
 

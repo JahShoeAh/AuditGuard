@@ -207,9 +207,26 @@ export class EventListenerService {
       } catch {
         parsedData = { raw: m.message };
       }
+      
+      const ts = m.consensus_timestamp;
+      const timestamp = (() => {
+        if (typeof ts === 'bigint') return ts;
+        if (typeof ts === 'number') return BigInt(Math.floor(ts * 1e9));
+        if (typeof ts === 'string') {
+          const parts = ts.split('.');
+          if (parts.length === 2) {
+            const sec = BigInt(parts[0]);
+            const nano = BigInt(parts[1].padEnd(9, '0').slice(0, 9));
+            return sec * 1_000_000_000n + nano;
+          }
+          return BigInt(Math.floor(parseFloat(ts) * 1e9));
+        }
+        return BigInt(0);
+      })();
+      
       return {
         sequenceNumber: m.sequence_number,
-        timestamp: m.consensus_timestamp,
+        timestamp,
         parsedData,
       };
     });

@@ -55,10 +55,10 @@
       "deployedAt": "2026-02-19T04:40:23.961Z"
     },
     "guardExchange": {
-      "evmAddress": "0xC93f9096FDa8996C988Ad1b32665BBFc8CA571fE",
-      "deployedAt": "2026-02-20T01:35:30.431Z",
-      "seedHbar": "100",
-      "seedGuard": "10000"
+      "evmAddress": "0xD6133Edab4D08D2a66f604217B36E342bc4338B7",
+      "deployedAt": "2026-02-20T05:07:17.459Z",
+      "seedHbar": "10",
+      "seedGuard": "1000"
     }
   },
   "testContracts": [
