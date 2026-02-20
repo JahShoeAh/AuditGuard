@@ -264,34 +264,37 @@ export class EventListenerService {
     this._setAgentHydrationHealth('degraded', null);
     console.log('[EventListener] Syncing historical agents...');
     try {
-      const eventCount = await this._syncAgentsFromRegistryEvents();
-      if (eventCount > 0) {
-        this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${eventCount} historical agents from events`);
-        return;
-      }
+      // Try view function first (fast, reliable, doesn't hit rate limits)
       const viewCount = await this._syncAgentsFromRegistryViews();
       if (viewCount > 0) {
         this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry view fallback`);
+        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry views (primary method)`);
         return;
       }
-      this._setAgentHydrationHealth('degraded', 'No agents returned from on-chain events or views');
+      // Fallback to events if views returned 0 agents
+      const eventCount = await this._syncAgentsFromRegistryEvents();
+      if (eventCount > 0) {
+        this._setAgentHydrationHealth('ok', null);
+        console.log(`[EventListener] Synced ${eventCount} agents from events (fallback method)`);
+        return;
+      }
+      this._setAgentHydrationHealth('degraded', 'No agents returned from views or events');
       console.warn('[EventListener] Agent hydration returned zero records');
     } catch (err) {
-      const eventErr = err instanceof Error ? err.message : String(err);
-      console.warn(`[EventListener] Agent event hydration failed: ${eventErr}`);
+      const primaryErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[EventListener] Agent view hydration failed: ${primaryErr}`);
       try {
-        const viewCount = await this._syncAgentsFromRegistryViews();
-        if (viewCount > 0) {
+        // If views failed, try events as recovery
+        const eventCount = await this._syncAgentsFromRegistryEvents();
+        if (eventCount > 0) {
           this._setAgentHydrationHealth('ok', null);
-          console.log(`[EventListener] Recovered agent hydration via views (${viewCount} agents)`);
+          console.log(`[EventListener] Recovered agent hydration via events (${eventCount} agents)`);
           return;
         }
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}`);
-      } catch (viewErr) {
-        const fallbackErr = viewErr instanceof Error ? viewErr.message : String(viewErr);
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}; view fallback failed: ${fallbackErr}`);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}`);
+      } catch (fallbackErr) {
+        const eventErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}; event fallback failed: ${eventErrMsg}`);
       }
       throw err;
     }
