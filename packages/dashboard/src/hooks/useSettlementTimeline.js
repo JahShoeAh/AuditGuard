@@ -6,6 +6,7 @@ import { fmt } from '../utils/format';
 export const PAYMENT_TYPE_CONFIG = {
   MAIN_AUDIT:            { label: 'Main Audit',      color: '#d97706' },
   SUB_CONTRACT:          { label: 'Sub-Contract',    color: '#a855f7' },
+  DATA_PURCHASE_NET:     { label: 'Data Purchase',   color: '#14b8a6' },
   DATA_PURCHASE:         { label: 'Data Purchase',   color: '#14b8a6' },
   BONUS_SPEED:           { label: 'Speed Bonus',     color: '#22c55e' },
   BONUS_UNIQUE_FINDING:  { label: 'Unique Bonus',    color: '#4ade80' },
@@ -19,6 +20,7 @@ export const PAYMENT_TYPE_ORDER = [
   'BONUS_UNIQUE_FINDING',
   'BONUS_SPEED',
   'SUB_CONTRACT',
+  'DATA_PURCHASE_NET',
   'DATA_PURCHASE',
   'REPORT_FEE',
   'PLATFORM_FEE',

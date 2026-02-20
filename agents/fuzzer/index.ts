@@ -3,6 +3,10 @@ import {
   ContractClient,
   CONFIG,
   computeLiveBid,
+  ensureBidCollateralBalance,
+  getBidCollateralTopUpConfig,
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
   isRetriableBidFailure,
   normalizeBidFailureReasonCode,
   createAgentLogger,
@@ -184,6 +188,30 @@ async function main() {
     log.warn(`Failed to read MIN_BID_COLLATERAL from chain, using config default: ${error}`);
   }
   log.info(`Live bid policy: min collateral ${minBidCollateralGuard.toFixed(2)} GUARD`);
+  if (!DEMO_MODE) {
+    const topUpConfig = getBidCollateralTopUpConfig();
+    log.info(
+      `Collateral auto-top-up: ${topUpConfig.enabled ? "enabled" : "disabled"} ` +
+      `(donors=${topUpConfig.donorsConfigured})`
+    );
+    if (topUpConfig.donorAddressesMasked.length > 0) {
+      log.info(`Collateral donors: ${topUpConfig.donorAddressesMasked.join(", ")}`);
+    }
+    if (topUpConfig.donorWarning) {
+      log.warn(`Collateral auto-top-up config: ${topUpConfig.donorWarning}`);
+    }
+    const hbarTopUpConfig = getHbarTopUpConfig();
+    log.info(
+      `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
+      `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR)`
+    );
+    if (hbarTopUpConfig.donorAddressesMasked.length > 0) {
+      log.info(`HBAR donors: ${hbarTopUpConfig.donorAddressesMasked.join(", ")}`);
+    }
+    if (hbarTopUpConfig.donorWarning) {
+      log.warn(`HBAR auto-top-up config: ${hbarTopUpConfig.donorWarning}`);
+    }
+  }
 
   // Register with the orchestrator so our bids are accepted
   await hcs.publishAuditLog({
@@ -201,7 +229,6 @@ async function main() {
 
   if (STRICT_LIVE && !DEMO_MODE) {
     let startupActive = false;
-    let startupAllowanceOk = true;
 
     try {
       startupActive = await contracts.isActiveAgent(wallet.evmAddress);
@@ -219,6 +246,54 @@ async function main() {
       }
     }
 
+    if (NO_FALLBACK_MODE && !startupActive) {
+      throw new Error(
+        "Startup preflight failed: wallet is not an active on-chain agent. " +
+        "Run 'npm run activate:live-agents' and retry."
+      );
+    }
+  }
+
+  if (!DEMO_MODE) {
+    let startupAllowanceOk = true;
+    let startupCollateralOk = true;
+    let startupHbarOk = true;
+    const hbarTopUpConfig = getHbarTopUpConfig();
+
+    const startupHbar = await ensureOperationalHbar({
+      contracts,
+      recipientAddress: wallet.evmAddress,
+      requiredWei: hbarTopUpConfig.minRequiredWei,
+      logger: log,
+    });
+    if (!startupHbar.ok) {
+      startupHbarOk = false;
+      log.warn(
+        `Startup preflight: ${startupHbar.reason ?? "Insufficient payer HBAR for transaction fees"}`
+      );
+    } else if (startupHbar.toppedUpWei > 0n) {
+      log.info(
+        `Startup preflight: topped up ${ethers.formatEther(startupHbar.toppedUpWei)} HBAR`
+      );
+    }
+
+    const startupCollateral = await ensureBidCollateralBalance({
+      contracts,
+      recipientAddress: wallet.evmAddress,
+      requiredWei: minBidCollateralWei,
+      logger: log,
+    });
+    if (!startupCollateral.ok) {
+      startupCollateralOk = false;
+      log.warn(
+        `Startup preflight: ${startupCollateral.reason ?? "Insufficient GUARD balance for bid collateral"}`
+      );
+    } else if (startupCollateral.toppedUpWei > 0n) {
+      log.info(
+        `Startup preflight: topped up ${ethers.formatUnits(startupCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
+      );
+    }
+
     try {
       const approvalTx = await contracts.ensureGuardAllowance(
         contracts.getAuctionAddress(),
@@ -234,9 +309,15 @@ async function main() {
       startupAllowanceOk = false;
     }
 
-    if (NO_FALLBACK_MODE && !startupActive) {
+    if (NO_FALLBACK_MODE && !startupCollateralOk) {
       throw new Error(
-        "Startup preflight failed: wallet is not an active on-chain agent. " +
+        "Startup preflight failed: insufficient GUARD collateral and auto top-up could not satisfy minimum. " +
+        "Run 'npm run activate:live-agents' and retry."
+      );
+    }
+    if (NO_FALLBACK_MODE && !startupHbarOk) {
+      throw new Error(
+        "Startup preflight failed: insufficient payer HBAR and auto top-up could not satisfy minimum. " +
         "Run 'npm run activate:live-agents' and retry."
       );
     }
@@ -285,7 +366,27 @@ async function main() {
     }
 
     if (msg.type === "AUCTION_INVITE") {
-      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount, budget } = (msg as any).payload;
+      const {
+        jobId,
+        contractAddress,
+        contractType,
+        riskScore,
+        estimatedLOC,
+        estimatedLineCount,
+        budget,
+        eligibleAgentIds,
+        eligibleEvmAddresses,
+      } = (msg as any).payload;
+      const targetedIds = Array.isArray(eligibleAgentIds) ? eligibleAgentIds.map((v: unknown) => String(v)) : [];
+      const targetedAddresses = Array.isArray(eligibleEvmAddresses)
+        ? eligibleEvmAddresses.map((v: unknown) => String(v).toLowerCase())
+        : [];
+      if (targetedIds.length > 0 || targetedAddresses.length > 0) {
+        const myAddress = wallet.evmAddress.toLowerCase();
+        if (!targetedIds.includes(AGENT_ID) && !targetedAddresses.includes(myAddress)) {
+          return;
+        }
+      }
       const jobKey = String(jobId);
       if (bidSubmittedJobs.has(jobKey) || pendingJobs.has(jobKey)) {
         log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (already bid)`);
@@ -334,9 +435,10 @@ async function main() {
         `(collateral ${finalBid.collateral} GUARD)`
       );
 
+      const strictLiveBid = STRICT_LIVE && !DEMO_MODE;
       bidInFlightJobs.add(jobKey);
       try {
-        if (STRICT_LIVE && !DEMO_MODE) {
+        if (strictLiveBid) {
           let active = false;
           try {
             active = await contracts.isActiveAgent(wallet.evmAddress);
@@ -354,7 +456,7 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
@@ -373,15 +475,23 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
             return;
           }
+        }
 
-          const balance = await contracts.getGuardBalance(wallet.evmAddress);
-          if (balance < finalBid.collateralWei) {
+        if (!DEMO_MODE) {
+          const hbarTopUpConfig = getHbarTopUpConfig();
+          const payerReady = await ensureOperationalHbar({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: hbarTopUpConfig.minRequiredWei,
+            logger: log,
+          });
+          if (!payerReady.ok) {
             await hcs.publishAuditLog({
               type: "BID_SKIPPED",
               agentId: AGENT_ID,
@@ -389,16 +499,60 @@ async function main() {
               payload: {
                 jobId: String(jobId),
                 contractAddress,
-                reason: "Insufficient GUARD balance for bid collateral",
-                reasonCode: "insufficient_collateral_balance",
+                reason: payerReady.reason ?? "Insufficient payer HBAR for transaction fees",
+                reasonCode: payerReady.reasonCode ?? "insufficient_payer_hbar",
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
+                hbarBalance: ethers.formatEther(payerReady.balanceWei),
+                autoTopUpAttempted: payerReady.attemptedTopUp,
+                topUpSources: payerReady.donorAddressesUsed ?? [],
               },
             });
             return;
+          }
+          if (payerReady.toppedUpWei > 0n) {
+            log.info(
+              `Auto top-up applied before bid: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`
+            );
+          }
+
+          const collateralReady = await ensureBidCollateralBalance({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: finalBid.collateralWei,
+            logger: log,
+          });
+          if (!collateralReady.ok) {
+            await hcs.publishAuditLog({
+              type: "BID_SKIPPED",
+              agentId: AGENT_ID,
+              timestamp: Date.now(),
+              payload: {
+                jobId: String(jobId),
+                contractAddress,
+                reason: collateralReady.reason ?? "Insufficient GUARD balance for bid collateral",
+                reasonCode: collateralReady.attemptedTopUp
+                  ? "insufficient_collateral_balance_after_topup"
+                  : "insufficient_collateral_balance",
+                computedBid: finalBid.amount,
+                computedCollateral: finalBid.collateral,
+                budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+                strictLive: strictLiveBid,
+                evmAddress: wallet.evmAddress,
+                availableCollateral: Number(ethers.formatUnits(collateralReady.balanceWei, GUARD_DECIMALS)),
+                autoTopUpAttempted: collateralReady.attemptedTopUp,
+                topUpSources: collateralReady.donorAddressesUsed ?? [],
+              },
+            });
+            return;
+          }
+          if (collateralReady.toppedUpWei > 0n) {
+            log.info(
+              `Auto top-up applied before bid: +${ethers.formatUnits(collateralReady.toppedUpWei, GUARD_DECIMALS)} GUARD`
+            );
           }
 
           try {
@@ -424,7 +578,7 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
@@ -462,6 +616,60 @@ async function main() {
               if (reasonCode === "duplicate_bid") {
                 alreadyBidOnChain = true;
                 return;
+              }
+              const payerFailure =
+                reasonCode === "insufficient_payer_hbar" ||
+                error.toLowerCase().includes("insufficient funds for transfer");
+              if (payerFailure && attempt < maxAttempts) {
+                const recoveredPayer = await ensureOperationalHbar({
+                  contracts,
+                  recipientAddress: wallet.evmAddress,
+                  requiredWei: getHbarTopUpConfig().minRequiredWei,
+                  logger: log,
+                });
+                if (recoveredPayer.ok) {
+                  if (recoveredPayer.toppedUpWei > 0n) {
+                    log.info(
+                      `Recovered payer gas before retry: +${ethers.formatEther(recoveredPayer.toppedUpWei)} HBAR`
+                    );
+                  }
+                  await sleep(300 * attempt);
+                  continue;
+                }
+              }
+              const errorLower = error.toLowerCase();
+              const collateralFailure =
+                !DEMO_MODE &&
+                (
+                  reasonCode === "insufficient_funds" ||
+                  errorLower.includes("collateral") ||
+                  errorLower.includes("allowance") ||
+                  errorLower.includes("transfer amount exceeds balance") ||
+                  errorLower.includes("insufficient guard")
+                );
+              if (collateralFailure && attempt < maxAttempts) {
+                const recoveredCollateral = await ensureBidCollateralBalance({
+                  contracts,
+                  recipientAddress: wallet.evmAddress,
+                  requiredWei: finalBid.collateralWei,
+                  logger: log,
+                });
+                if (recoveredCollateral.ok) {
+                  if (recoveredCollateral.toppedUpWei > 0n) {
+                    log.info(
+                      `Recovered collateral before retry: +${ethers.formatUnits(recoveredCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
+                    );
+                  }
+                  const approvalTx = await contracts.ensureGuardAllowance(
+                    contracts.getAuctionAddress(),
+                    finalBid.collateralWei
+                  );
+                  if (approvalTx) {
+                    await approvalTx.wait?.();
+                  }
+                  await sleep(300 * attempt);
+                  continue;
+                }
               }
               const retriable = isRetriableBidFailure(error);
               if (!retriable || attempt === maxAttempts) {
@@ -522,6 +730,8 @@ async function main() {
             strictLive: STRICT_LIVE && !DEMO_MODE,
             error,
             reasonCode,
+            guardBalance: Number(ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)),
+            hbarBalance: ethers.formatEther(await contracts.wallet.provider.getBalance(wallet.evmAddress)),
           },
         });
         return;

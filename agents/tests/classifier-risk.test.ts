@@ -22,10 +22,28 @@ const ethersProviderMock = {
   getCode: vi.fn().mockResolvedValue("0x6080604052348015600f57600080fd"),
 };
 
+const mockJsonRpcProviderCtor = vi.fn(function MockJsonRpcProvider() {
+  return ethersProviderMock;
+});
+
+const mockWalletCtor = vi.fn(function MockWallet() {
+  return { address: "0xMOCKWALLET" };
+});
+
 vi.mock("ethers", () => ({
   ethers: {
-    JsonRpcProvider: vi.fn().mockReturnValue(ethersProviderMock),
-    Wallet: vi.fn().mockReturnValue({ address: "0xMOCKWALLET" }),
+    JsonRpcProvider: mockJsonRpcProviderCtor,
+    Wallet: mockWalletCtor,
+    parseUnits: vi.fn((value: string, decimals: number) => {
+      const amount = Number(value);
+      return BigInt(Math.floor(amount * 10 ** decimals));
+    }),
+    formatUnits: vi.fn((value: bigint, decimals: number) => {
+      return (Number(value) / 10 ** decimals).toString();
+    }),
+    isAddress: vi.fn((value: string) => /^0x[0-9a-fA-F]{40}$/.test(String(value || ""))),
+    toUtf8Bytes: vi.fn((value: string) => Buffer.from(String(value), "utf8")),
+    keccak256: vi.fn(() => `0x${"11".repeat(32)}`),
   },
 }));
 
@@ -35,10 +53,12 @@ const mockContractInfoFn = vi.fn();
 const mockInitializeFn = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("evmdecoder", () => ({
-  EvmDecoder: vi.fn().mockImplementation(() => ({
-    initialize: mockInitializeFn,
-    contractInfo: mockContractInfoFn,
-  })),
+  EvmDecoder: vi.fn().mockImplementation(function MockEvmDecoder() {
+    return {
+      initialize: mockInitializeFn,
+      contractInfo: mockContractInfoFn,
+    };
+  }),
 }));
 
 // ─── 0g broker mock ───────────────────────────────────────────────────────────
@@ -78,9 +98,11 @@ vi.mock("@0glabs/0g-serving-broker", () => ({
 const mockClaudeCreate = vi.fn();
 
 vi.mock("@anthropic-ai/sdk", () => ({
-  default: vi.fn().mockImplementation(() => ({
-    messages: { create: mockClaudeCreate },
-  })),
+  default: vi.fn().mockImplementation(function MockAnthropic() {
+    return {
+      messages: { create: mockClaudeCreate },
+    };
+  }),
 }));
 
 // ─── Shared infrastructure mocks ─────────────────────────────────────────────
@@ -1159,6 +1181,7 @@ describe("risk-inference.ts — health-check loop", () => {
 
   it("health check restores zgHealthy after successful probe", async () => {
     const {
+      assessRisk,
       startZgHealthCheckLoop,
       stopZgHealthCheckLoop,
       getCurrentInferenceSource,
@@ -1171,6 +1194,7 @@ describe("risk-inference.ts — health-check loop", () => {
     // We use direct state manipulation via the re-imported module after reset
     // Simulate: zgHealthy = false by providing no key initially
     delete process.env.ZG_PRIVATE_KEY;
+    await expect(assessRisk(makeRiskCtx(), mockLog)).rejects.toThrow();
 
     // Start loop; loop fires; mock fetch succeeds → restores zgHealthy
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
@@ -1188,6 +1212,7 @@ describe("risk-inference.ts — health-check loop", () => {
 
   it("health check stays on Claude when probe returns non-ok status", async () => {
     const {
+      assessRisk,
       startZgHealthCheckLoop,
       stopZgHealthCheckLoop,
       getCurrentInferenceSource,
@@ -1198,6 +1223,7 @@ describe("risk-inference.ts — health-check loop", () => {
     // Force unhealthy
     delete process.env.ZG_PRIVATE_KEY;
     process.env.ZG_PRIVATE_KEY = ""; // trigger no-key path
+    await expect(assessRisk(makeRiskCtx(), mockLog)).rejects.toThrow();
 
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     startZgHealthCheckLoop(mockLog);

@@ -38,6 +38,27 @@ function ErrorBanner({ message }) {
   );
 }
 
+function HydrationBanner({ status, error }) {
+  const show = status === 'failed' || status === 'degraded';
+  if (!show) return null;
+  const prefix = status === 'failed'
+    ? 'On-chain agents unavailable'
+    : 'On-chain agent hydration is degraded';
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0, height: 0 }}
+        animate={{ opacity: 1, height: 'auto' }}
+        exit={{ opacity: 0, height: 0 }}
+        className="flex-shrink-0 panel px-4 py-2 text-xs text-guard-amber font-mono"
+        style={{ borderColor: 'rgba(245, 158, 11, 0.2)' }}
+      >
+        {prefix}{error ? `: ${error}` : ''}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 const TABS = [
   { key: 'liveFeed', label: 'LIVE FEED', icon: '◉' },
   { key: 'agents', label: 'AGENTS', icon: '👤' },
@@ -227,6 +248,8 @@ export default function Dashboard() {
   const connectionError = useStore((s) => s.connectionError);
   const activeTab = useStore((s) => s.activeTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const agentHydrationStatus = useStore((s) => s.ingestionHealth?.agentHydrationStatus);
+  const agentHydrationError = useStore((s) => s.ingestionHealth?.agentHydrationError);
   const [storyMode, setStoryMode] = useState(false);
 
   return (
@@ -240,6 +263,7 @@ export default function Dashboard() {
       />
 
       <ErrorBanner message={connectionError} />
+      <HydrationBanner status={agentHydrationStatus} error={agentHydrationError} />
 
       <div className="flex-shrink-0 flex items-center border-b border-gray-900 bg-black">
         <TabBar activeTab={activeTab} onSelect={setActiveTab} />

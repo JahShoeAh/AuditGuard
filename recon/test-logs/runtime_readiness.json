@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-02-20T06:44:18.433Z",
+  "inputs": {
+    "verifyTimeoutMs": 3000
+  },
+  "preflight": {
+    "ok": true,
+    "status": 0,
+    "knownFailureCode": null
+  },
+  "verify": {
+    "ok": false,
+    "status": 1,
+    "reasonSummary": {
+      "network_timeout": {
+        "total": 7,
+        "requiredFailures": 4
+      }
+    },
+    "classification": "network_unhealthy",
+    "knownFailureCode": "one"
+  }
+}

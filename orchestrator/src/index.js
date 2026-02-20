@@ -21,11 +21,8 @@ process.on("SIGINT", () => {
 
 process.on("uncaughtException", (err) => {
   log.error(`Uncaught exception: ${err.message}\n${err.stack}`);
-  log.info("Attempting restart after uncaught exception...");
-  try { start(); } catch (e) {
-    log.error(`Restart failed: ${e.message}`);
-    process.exit(1);
-  }
+  log.error("Fatal runtime error — exiting to avoid duplicate in-process listeners");
+  process.exit(1);
 });
 
 process.on("unhandledRejection", (reason) => {

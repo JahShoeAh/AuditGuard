@@ -5,12 +5,15 @@
  * and ethers.js contract-event polling, routing everything into
  * the Zustand store.
  */
+import { normalizeAuctionType } from '../utils/auction-type';
 
 const MIRROR_NODE = import.meta.env.VITE_HEDERA_MIRROR_NODE
   || 'https://testnet.mirrornode.hedera.com';
 
 const HCS_POLL_MS = 4_000;       // 4 s for HCS topics
 const CONTRACT_POLL_MS = 5_000;  // 5 s for on-chain events
+const DEFAULT_SOURCE_MODE = 'onchain_strict';
+const DEFAULT_HCS_REPLAY_MODE = 'from_now';
 
 // ── DataMarketplace enum mappings ───────────────────────────
 const DATA_CATEGORIES = [
@@ -18,6 +21,30 @@ const DATA_CATEGORIES = [
   'HOT_LEAD', 'FUZZING_SEEDS', 'THREAT_INTEL',
 ];
 const LISTING_TYPES = ['ONE_TIME', 'SUBSCRIPTION', 'TIP'];
+const SETTLEMENT_PAYMENT_TYPE = {
+  AUDIT: 0,
+  REPORT: 1,
+  SUB_AUCTION: 2,
+  BOUNTY: 3,
+};
+
+function resolveTreasuryAddress(config) {
+  return (
+    config?.contracts?.treasury?.evmAddress ||
+    config?.contracts?.treasury?.address ||
+    'treasury'
+  );
+}
+
+function resolveSettlementFlowType(paymentType, description = '') {
+  const kind = Number(paymentType);
+  const normalized = String(description || '').toLowerCase();
+  if (kind === SETTLEMENT_PAYMENT_TYPE.SUB_AUCTION) return 'SUB_CONTRACT';
+  if (kind === SETTLEMENT_PAYMENT_TYPE.REPORT) return 'REPORT_FEE';
+  if (normalized.includes('speed')) return 'BONUS_SPEED';
+  if (normalized.includes('unique')) return 'BONUS_UNIQUE_FINDING';
+  return 'MAIN_AUDIT';
+}
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -28,6 +55,15 @@ export function parseGuardAmount(raw) {
   const frac  = n % 100_000_000n;
   const fracStr = frac.toString().padStart(8, '0').slice(0, 2);
   return `${whole}.${fracStr} GUARD`;
+}
+
+function parseDisplayBidAmount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return {
+    value: numeric,
+    formatted: `${numeric.toFixed(2)} GUARD`,
+  };
 }
 
 /** "0x1234...abcd" */
@@ -61,6 +97,18 @@ export class EventListenerService {
     this.provider  = provider;
 
     this.onlyTestDiscoveries = import.meta.env.VITE_TEST_MODE === 'true';
+    this.sourceMode = String(
+      config?.dashboard?.sourceMode
+      || import.meta.env.DASHBOARD_SOURCE_MODE
+      || import.meta.env.VITE_DASHBOARD_SOURCE_MODE
+      || DEFAULT_SOURCE_MODE
+    ).toLowerCase();
+    this.hcsReplayMode = String(
+      config?.dashboard?.hcsReplayMode
+      || import.meta.env.DASHBOARD_HCS_REPLAY_MODE
+      || import.meta.env.VITE_DASHBOARD_HCS_REPLAY_MODE
+      || DEFAULT_HCS_REPLAY_MODE
+    ).toLowerCase();
     const testContracts = Array.isArray(config?.testContracts) ? config.testContracts : [];
     this.allowedDiscoveryContracts = new Set(
       testContracts
@@ -69,6 +117,11 @@ export class EventListenerService {
     );
     this.seenTestDiscoveries = new Set();
     this.hcsHistorySkipped = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
+    };
+    this.hcsCursorInitialized = {
       discovery: false,
       auditLog: false,
       agentComms: false,
@@ -83,8 +136,13 @@ export class EventListenerService {
 
     // Contract event state
     this.lastProcessedBlock = null;
+    this.decodeFailures = 0;
+    this.pendingSettlementBreakdowns = 0;
+    this.hcsEventsSeen = 0;
+    this.contractEventsSeen = 0;
 
     this._intervals = [];
+    this._running = false;
 
     if (this.onlyTestDiscoveries) {
       console.log(
@@ -92,28 +150,67 @@ export class EventListenerService {
         `(${this.allowedDiscoveryContracts.size} configured test contracts)`
       );
     }
+    this.store.setIngestionHealth?.({
+      sourceMode: this.sourceMode,
+      replayMode: this.hcsReplayMode,
+    });
   }
 
   // ── public ───────────────────────────────────────────────
 
   startAll() {
+    if (this._running) {
+      console.warn('[EventListener] startAll called while already running on same instance; ignoring');
+      return () => this.stopAll();
+    }
+    if (EventListenerService._activeService && EventListenerService._activeService !== this) {
+      console.warn('[EventListener] startAll ignored because another EventListenerService instance is active');
+      return () => {};
+    }
+    EventListenerService._activeService = this;
+    this._running = true;
     this.startHCSPolling();
     this.startContractEventPolling();
     // Sync historical agents (fire-and-forget)
-    this._syncHistoricalAgents().catch(err => 
-      console.warn('[EventListener] Agent history sync failed:', err)
-    );
+    this._syncHistoricalAgents().catch((err) => {
+      console.warn('[EventListener] Agent history sync failed:', err);
+    });
     console.log('[EventListener] All polling loops started');
     return () => this.stopAll();
   }
 
-  async _syncHistoricalAgents() {
-    if (!this.contracts?.agentRegistryContract) return;
-    
-    console.log('[EventListener] Syncing historical agents...');
-    const agents = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
-    
-    for (const ev of agents) {
+  _setAgentHydrationHealth(status, error = null) {
+    this.store.setIngestionHealth?.({
+      agentHydrationStatus: status,
+      agentHydrationError: error,
+      agentHydrationLastAt: Date.now(),
+    });
+  }
+
+  _normalizeAgentStatus(statusValue) {
+    const numeric = Number(statusValue ?? 0);
+    const statuses = ['ACTIVE', 'INACTIVE', 'SLASHED', 'SUSPENDED'];
+    return statuses[numeric] || 'UNKNOWN';
+  }
+
+  async _syncAgentsFromRegistryEvents() {
+    if (!this.contracts?.agentRegistryContract) return 0;
+
+    const MAX_BLOCK_RANGE = 10000;
+    const latestBlock = await this.provider.getBlockNumber();
+    let allEvents = [];
+
+    for (let fromBlock = 0; fromBlock <= latestBlock; fromBlock += MAX_BLOCK_RANGE) {
+      const toBlock = Math.min(fromBlock + MAX_BLOCK_RANGE - 1, latestBlock);
+      try {
+        const events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', fromBlock, toBlock);
+        allEvents = allEvents.concat(events);
+      } catch (err) {
+        console.warn(`[EventListener] Failed to fetch AgentRegistered events from ${fromBlock} to ${toBlock}:`, err.message);
+      }
+    }
+
+    for (const ev of allEvents) {
       const a = ev.args;
       this.store.setAgent(a.agent, {
         address: a.agent,
@@ -121,14 +218,92 @@ export class EventListenerService {
         ucpEndpoint: a.ucpEndpoint,
         stakedAmount: a.stakedAmount,
         stakedFormatted: parseGuardAmount(a.stakedAmount),
+        source: 'onchain_event',
       });
     }
-    console.log(`[EventListener] Synced ${agents.length} historical agents`);
+    return allEvents.length;
+  }
+
+  async _syncAgentsFromRegistryViews() {
+    if (!this.contracts?.agentRegistryContract) return 0;
+    const allAgents = await this.contracts.agentRegistryContract.getAllAgents();
+    const agentAddresses = Array.isArray(allAgents) ? allAgents : [];
+    let synced = 0;
+    for (const address of agentAddresses) {
+      try {
+        const profile = await this.contracts.agentRegistryContract.getAgent(address);
+        const normalizedAddress = String(profile.agentAddress || address);
+        this.store.setAgent(normalizedAddress, {
+          address: normalizedAddress,
+          agentId: profile.agentId,
+          ucpEndpoint: profile.ucpEndpoint,
+          specializations: Array.isArray(profile.specializations) ? profile.specializations : [],
+          tier: Number(profile.tier ?? 0),
+          status: this._normalizeAgentStatus(profile.status),
+          stakedAmount: profile.stakedAmount ?? 0n,
+          stakedFormatted: parseGuardAmount(profile.stakedAmount ?? 0n),
+          reputationScore: Number(profile.reputationScore ?? 0),
+          completedJobs: Number(profile.completedJobs ?? 0),
+          successfulFindings: Number(profile.successfulFindings ?? 0),
+          falsePositives: Number(profile.falsePositives ?? 0),
+          falseNegatives: Number(profile.falseNegatives ?? 0),
+          registeredAt: Number(profile.registeredAt ?? 0),
+          lastActiveAt: Number(profile.lastActiveAt ?? 0),
+          source: 'onchain_view',
+        });
+        synced += 1;
+      } catch (err) {
+        console.warn(`[EventListener] getAgent failed for ${address}:`, err.message || err);
+      }
+    }
+    return synced;
+  }
+
+  async _syncHistoricalAgents() {
+    if (!this.contracts?.agentRegistryContract) return;
+    this._setAgentHydrationHealth('degraded', null);
+    console.log('[EventListener] Syncing historical agents...');
+    try {
+      const eventCount = await this._syncAgentsFromRegistryEvents();
+      if (eventCount > 0) {
+        this._setAgentHydrationHealth('ok', null);
+        console.log(`[EventListener] Synced ${eventCount} historical agents from events`);
+        return;
+      }
+      const viewCount = await this._syncAgentsFromRegistryViews();
+      if (viewCount > 0) {
+        this._setAgentHydrationHealth('ok', null);
+        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry view fallback`);
+        return;
+      }
+      this._setAgentHydrationHealth('degraded', 'No agents returned from on-chain events or views');
+      console.warn('[EventListener] Agent hydration returned zero records');
+    } catch (err) {
+      const eventErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[EventListener] Agent event hydration failed: ${eventErr}`);
+      try {
+        const viewCount = await this._syncAgentsFromRegistryViews();
+        if (viewCount > 0) {
+          this._setAgentHydrationHealth('ok', null);
+          console.log(`[EventListener] Recovered agent hydration via views (${viewCount} agents)`);
+          return;
+        }
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}`);
+      } catch (viewErr) {
+        const fallbackErr = viewErr instanceof Error ? viewErr.message : String(viewErr);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}; view fallback failed: ${fallbackErr}`);
+      }
+      throw err;
+    }
   }
 
   stopAll() {
     this._intervals.forEach(clearInterval);
     this._intervals = [];
+    this._running = false;
+    if (EventListenerService._activeService === this) {
+      EventListenerService._activeService = null;
+    }
     console.log('[EventListener] All polling loops stopped');
   }
 
@@ -155,10 +330,32 @@ export class EventListenerService {
     this._intervals.push(setInterval(() => {
       this._pollHCSTopic(topics.agentComms, 'agentComms');
     }, HCS_POLL_MS));
+
+    // Prime immediately so first data is visible without waiting for interval.
+    this._pollHCSTopic(topics.discovery, 'discovery');
+    this._pollHCSTopic(topics.auditLog, 'auditLog');
+    this._pollHCSTopic(topics.agentComms, 'agentComms');
   }
 
   async _pollHCSTopic(topicId, topicKey) {
     try {
+      if (!this.hcsCursorInitialized[topicKey]) {
+        const shouldSkipHistory = this.onlyTestDiscoveries || this.hcsReplayMode === 'from_now';
+        if (shouldSkipHistory) {
+          const latest = await this.fetchHCSMessages(topicId, 0, { limit: 1, order: 'desc' });
+          if (latest.length > 0) {
+            this.lastSeq[topicKey] = latest[latest.length - 1].sequenceNumber;
+          }
+        }
+        this.hcsCursorInitialized[topicKey] = true;
+        this.hcsHistorySkipped[topicKey] = shouldSkipHistory;
+        this.store.setIngestionHealth?.({
+          lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+          lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+        });
+        if (shouldSkipHistory) return;
+      }
+
       if (this.onlyTestDiscoveries && !this.hcsHistorySkipped[topicKey]) {
         const history = await this.fetchHCSMessages(topicId, 0);
         if (history.length > 0) {
@@ -175,6 +372,16 @@ export class EventListenerService {
         this.lastSeq[topicKey] = msg.sequenceNumber;
         this._routeHCSMessage(topicKey, msg);
       }
+      this.hcsEventsSeen += messages.length;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+        lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
+        hcsEventsSeen: this.hcsEventsSeen,
+        activeAuctionsCount,
+      });
     } catch (err) {
       console.warn(`[EventListener] HCS poll error (${topicKey}):`, err.message);
     }
@@ -184,8 +391,10 @@ export class EventListenerService {
    * Fetch new HCS messages from the mirror node REST API.
    * Returns array of { sequenceNumber, timestamp, parsedData }.
    */
-  async fetchHCSMessages(topicId, afterSequence) {
-    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages?order=desc&limit=100`;
+  async fetchHCSMessages(topicId, afterSequence, options = {}) {
+    const order = options.order || 'desc';
+    const limit = Number(options.limit || 100);
+    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages?order=${order}&limit=${limit}`;
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -205,11 +414,30 @@ export class EventListenerService {
         const decoded = atob(m.message);
         parsedData = JSON.parse(decoded);
       } catch {
+        this.decodeFailures += 1;
+        this.store.setIngestionHealth?.({ decodeFailures: this.decodeFailures });
         parsedData = { raw: m.message };
       }
+      
+      const ts = m.consensus_timestamp;
+      const timestamp = (() => {
+        if (typeof ts === 'bigint') return ts;
+        if (typeof ts === 'number') return BigInt(Math.floor(ts * 1e9));
+        if (typeof ts === 'string') {
+          const parts = ts.split('.');
+          if (parts.length === 2) {
+            const sec = BigInt(parts[0]);
+            const nano = BigInt(parts[1].padEnd(9, '0').slice(0, 9));
+            return sec * 1_000_000_000n + nano;
+          }
+          return BigInt(Math.floor(parseFloat(ts) * 1e9));
+        }
+        return BigInt(0);
+      })();
+      
       return {
         sequenceNumber: m.sequence_number,
-        timestamp: m.consensus_timestamp,
+        timestamp,
         parsedData,
       };
     });
@@ -225,6 +453,34 @@ export class EventListenerService {
     };
   }
 
+  _mkHcsEventId(topicId, sequenceNumber) {
+    return `hcs:${topicId}:${sequenceNumber}`;
+  }
+
+  _mkContractEventId(ev, suffix = 0) {
+    return `evm:${ev.transactionHash}:${Number(ev.logIndex ?? ev.index ?? 0)}:${suffix}`;
+  }
+
+  _mkFlowId(ev, suffix = 0) {
+    return `flow:${ev.transactionHash}:${Number(ev.logIndex ?? ev.index ?? 0)}:${suffix}`;
+  }
+
+  _addLogEntry(entry, eventId = null) {
+    if (eventId && this.store.upsertEvent) {
+      const inserted = this.store.upsertEvent({ ...entry, eventId });
+      if (inserted !== false) return;
+    }
+    this.store.addLogEntry?.(entry);
+  }
+
+  _addGuardFlow(flow) {
+    const inserted = this.store.upsertGuardFlow?.(flow);
+    if (inserted === false) return;
+    if (!this.store.upsertGuardFlow) {
+      this.store.addGuardFlow?.(flow);
+    }
+  }
+
   /** Route a parsed HCS message to the right store action. */
   _routeHCSMessage(topicKey, msg) {
     const { parsedData, timestamp, sequenceNumber } = msg;
@@ -232,6 +488,8 @@ export class EventListenerService {
     const payload = parsedData?.payload && typeof parsedData.payload === "object"
       ? parsedData.payload
       : {};
+    const eventId = this._mkHcsEventId(topicId, sequenceNumber);
+    const strictOnchain = this.sourceMode === 'onchain_strict';
     const entry = {
       ...payload,
       ...parsedData,
@@ -256,255 +514,338 @@ export class EventListenerService {
 
       this.store.addDiscovery(entry);
       this.store.incrementStat('totalDiscoveries');
-      this.store.addLogEntry({ ...entry, source: 'discovery' });
-    } else if (topicKey === 'auditLog') {
-      // Normalize HCS snake_case bid type to match the contract event name so the
-      // TX explorer displays it with the correct BID badge and AUCTIONS filter.
-      let displayEntry = entry;
-      if (parsedData.type === 'BID_SUBMITTED') {
-        const agentName = payload.agentId ?? 'unknown';
-        const bidAmount = payload.bidAmount ?? 0;
-        displayEntry = {
-          ...entry,
-          type: 'BidSubmitted',
-          agentName,
-          bidFormatted: parseGuardAmount(bidAmount),
-          jobId: String(payload.jobId ?? sequenceNumber),
-        };
-      } else if (parsedData.type === 'BID_SKIPPED') {
-        displayEntry = {
-          ...entry,
-          type: 'BID_SKIPPED',
-          jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
-          reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
-        };
-      } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
-        displayEntry = {
-          ...entry,
-          type: 'BID_SUBMISSION_FAILED',
-          jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
-          reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
-        };
-      } else if (parsedData.type === 'LLM_PROVIDER_READY') {
-        displayEntry = {
-          ...entry,
-          type: 'LLM_PROVIDER_READY',
-          reason: `Provider ${payload.providerAddress ?? 'unknown'} ready`,
-        };
-      } else if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
-        displayEntry = {
-          ...entry,
-          type: 'LLM_PROVIDER_UNHEALTHY',
-          reason: payload.reason ?? payload.reasonCode ?? 'Provider unhealthy',
-        };
-      } else if (parsedData.type === 'LLM_INFERENCE_STARTED') {
-        displayEntry = {
-          ...entry,
-          type: 'LLM_INFERENCE_STARTED',
-          jobId: String(payload.jobId ?? sequenceNumber),
-          reason: `Inference started (${payload.model ?? 'unknown model'})`,
-        };
-      } else if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
-        displayEntry = {
-          ...entry,
-          type: 'LLM_INFERENCE_SUCCEEDED',
-          jobId: String(payload.jobId ?? sequenceNumber),
-          reason: `Inference ok (${payload.findingsCount ?? 0} findings)`,
-        };
-      } else if (parsedData.type === 'LLM_INFERENCE_FAILED') {
-        displayEntry = {
-          ...entry,
-          type: 'LLM_INFERENCE_FAILED',
-          jobId: String(payload.jobId ?? sequenceNumber),
-          reason: payload.reason ?? payload.reasonCode ?? 'Inference failed',
-        };
-      }
-      if (parsedData.type !== 'REPORT_METADATA') {
-        this.store.addLogEntry({ ...displayEntry, source: 'auditLog' });
-      }
-      // Also update specific slices based on type
-      if (parsedData.type === 'REPORT_METADATA') {
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        this.store.addReportMetadata?.(jobId, {
-          cid: payload.cid,
-          listingId: payload.listingId,
-          contentHash: payload.contentHash,
-          deployer: payload.deployer,
-          agentCount: payload.agentCount,
-          findingCount: payload.findingCount,
-        });
-        this.store.addLogEntry({
-          type: 'REPORT_PUBLISHED',
-          jobId,
-          timestamp: Math.floor(Date.now() / 1000),
-          data: { cid: payload.cid, findingCount: payload.findingCount },
-          source: 'auditLog',
-        });
-        console.log(`[EventListener] REPORT_METADATA for job ${jobId}, CID: ${payload.cid}`);
-      } else if (parsedData.type === 'JOB_CREATED') {
-        const contractAddress = String(payload.contractAddress ?? '').toLowerCase();
-        if (
-          this.onlyTestDiscoveries &&
-          this.allowedDiscoveryContracts.size > 0 &&
-          !this.allowedDiscoveryContracts.has(contractAddress)
-        ) {
-          return;
-        }
+      this._addLogEntry({ ...entry, source: 'discovery' }, eventId);
+      return;
+    }
 
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        this.store.setJob(jobId, {
-          jobId,
-          contractAddress: payload.contractAddress,
-          contractChain: payload.chain ?? 'hedera',
-          contractType: payload.contractType ?? 'unknown',
-          budgetAvailable: payload.budget ?? 0,
-          budgetFormatted: parseGuardAmount(payload.budget ?? 0),
-          initialRiskScore: Number(payload.riskScore ?? 0),
-          lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
-          postedAt: Date.now(),
-        });
-        this.store.incrementStat('totalAuctions');
-      } else if (parsedData.type === 'BID_SUBMITTED') {
-        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+    if (topicKey !== 'auditLog' && topicKey !== 'agentComms') return;
+
+    const source = topicKey === 'auditLog' ? 'auditLog' : 'agentComms';
+    let displayEntry = entry;
+    let skipDisplayEntry = false;
+    if (parsedData.type === 'BID_SUBMITTED') {
+      const agentName = payload.agentId ?? 'unknown';
+      const bidAmount = parseDisplayBidAmount(payload.bidAmount);
+      if (!bidAmount) {
+        this._addLogEntry({
+          ...entry,
+          type: 'BID_SUBMITTED_MALFORMED',
+          reason: 'Malformed BID_SUBMITTED payload (missing/invalid bidAmount)',
+          source,
+        }, `${eventId}:malformed_bid`);
+        skipDisplayEntry = true;
+      }
+      displayEntry = {
+        ...entry,
+        type: 'BidSubmitted',
+        agentName,
+        bidFormatted: bidAmount?.formatted ?? null,
+        jobId: String(payload.jobId ?? sequenceNumber),
+      };
+    } else if (parsedData.type === 'BID_SKIPPED') {
+      displayEntry = {
+        ...entry,
+        type: 'BID_SKIPPED',
+        jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
+        reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
+      };
+    } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+      displayEntry = {
+        ...entry,
+        type: 'BID_SUBMISSION_FAILED',
+        jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
+        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+      };
+    } else if (parsedData.type === 'LLM_PROVIDER_READY') {
+      displayEntry = {
+        ...entry,
+        type: 'LLM_PROVIDER_READY',
+        reason: `Provider ${payload.providerAddress ?? 'unknown'} ready`,
+      };
+    } else if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
+      displayEntry = {
+        ...entry,
+        type: 'LLM_PROVIDER_UNHEALTHY',
+        reason: payload.reason ?? payload.reasonCode ?? 'Provider unhealthy',
+      };
+    } else if (parsedData.type === 'LLM_INFERENCE_STARTED') {
+      displayEntry = {
+        ...entry,
+        type: 'LLM_INFERENCE_STARTED',
+        jobId: String(payload.jobId ?? sequenceNumber),
+        reason: `Inference started (${payload.model ?? 'unknown model'})`,
+      };
+    } else if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
+      displayEntry = {
+        ...entry,
+        type: 'LLM_INFERENCE_SUCCEEDED',
+        jobId: String(payload.jobId ?? sequenceNumber),
+        reason: `Inference ok (${payload.findingsCount ?? 0} findings)`,
+      };
+    } else if (parsedData.type === 'LLM_INFERENCE_FAILED') {
+      displayEntry = {
+        ...entry,
+        type: 'LLM_INFERENCE_FAILED',
+        jobId: String(payload.jobId ?? sequenceNumber),
+        reason: payload.reason ?? payload.reasonCode ?? 'Inference failed',
+      };
+    }
+
+    if (!(topicKey === 'auditLog' && parsedData.type === 'REPORT_METADATA') && !skipDisplayEntry) {
+      this._addLogEntry({ ...displayEntry, source }, eventId);
+    }
+
+    if (parsedData.type === 'REPORT_METADATA') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.addReportMetadata?.(jobId, {
+        cid: payload.cid,
+        listingId: payload.listingId,
+        contentHash: payload.contentHash,
+        deployer: payload.deployer,
+        agentCount: payload.agentCount,
+        findingCount: payload.findingCount,
+      });
+      this._addLogEntry({
+        type: 'REPORT_PUBLISHED',
+        jobId,
+        timestamp: Math.floor(Date.now() / 1000),
+        data: { cid: payload.cid, findingCount: payload.findingCount },
+        source: 'auditLog',
+      }, `${eventId}:report`);
+      return;
+    }
+
+    if (parsedData.type === 'JOB_CREATED' && !strictOnchain) {
+      const contractAddress = String(payload.contractAddress ?? '').toLowerCase();
+      if (
+        this.onlyTestDiscoveries &&
+        this.allowedDiscoveryContracts.size > 0 &&
+        !this.allowedDiscoveryContracts.has(contractAddress)
+      ) {
+        return;
+      }
+
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.setJob(jobId, {
+        jobId,
+        contractAddress: payload.contractAddress,
+        contractChain: payload.chain ?? 'hedera',
+        contractType: normalizeAuctionType(payload.contractType),
+        budgetAvailable: payload.budget ?? 0,
+        budgetFormatted: parseGuardAmount(payload.budget ?? 0),
+        initialRiskScore: Number(payload.riskScore ?? 0),
+        lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        postedAt: Date.now(),
+      });
+      this.store.incrementStat('totalAuctions');
+      return;
+    }
+
+    if (parsedData.type === 'BID_SUBMITTED') {
+      const bidAmount = parseDisplayBidAmount(payload.bidAmount);
+      if (!bidAmount) return;
+      const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+      if (!strictOnchain) {
         this.store.addBid(jobId, {
           agent: payload.evmAddress ?? payload.agentAddress ?? payload.agentId,
           agentName: payload.agentId ?? 'unknown',
-          bidAmount: payload.bidAmount ?? 0,
-          bidFormatted: parseGuardAmount(payload.bidAmount ?? 0),
+          bidAmount: bidAmount.value,
+          bidFormatted: bidAmount.formatted,
           collateralLocked: payload.collateral ?? 0,
           reputationAtBid: Number(payload.reputation ?? 0),
           specialization: payload.specialization ?? 'unknown',
           estimatedCompletionTime: Number(payload.estimatedTimeSec ?? 0),
           timestamp: parsedData.timestamp ?? Date.now(),
         });
-        this.store.addJobBidStatus?.(jobId, {
-          status: 'submitted',
-          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
-          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
-          reason: null,
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
         this.store.incrementStat('totalBids');
-      } else if (parsedData.type === 'BID_SKIPPED') {
-        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
-        this.store.addJobBidStatus?.(jobId, {
-          status: 'skipped',
-          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
-          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
-          reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
-        const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
-        this.store.addJobBidStatus?.(jobId, {
-          status: 'failed',
-          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
-          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
-          reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'AUCTION_INVITE_SUMMARY') {
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        const invites = Array.isArray(payload.eligibleAgents) ? payload.eligibleAgents : [];
-        for (const invite of invites) {
-          this.store.addJobBidStatus?.(jobId, {
-            status: 'invite_sent',
-            agentId: invite?.agentId ?? 'unknown',
-            evmAddress: invite?.evmAddress ?? null,
-            reason: null,
-            timestamp: parsedData.timestamp ?? Date.now(),
-          });
-        }
-      } else if (parsedData.type === 'AGENT_REGISTERED') {
-        const addr = payload.evmAddress ?? payload.agentAddress ?? parsedData.address;
-        if (!addr) return;
+      }
+      this.store.addJobBidStatus?.(jobId, {
+        status: 'submitted',
+        agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+        evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+        reason: null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+        eventId,
+      });
+      return;
+    }
 
-        const rep = Number(payload.reputation ?? payload.reputationScore ?? 0);
-        const reputationScore = rep <= 100 ? Math.round(rep * 100) : Math.round(rep);
-        const stakedAmountRaw =
-          payload.stakedAmount != null
-            ? BigInt(payload.stakedAmount)
-            : BigInt(Math.max(0, Math.floor(Number(payload.stake ?? 0) * 1e8)));
+    if (parsedData.type === 'BID_SKIPPED') {
+      const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+      this.store.addJobBidStatus?.(jobId, {
+        status: 'skipped',
+        agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+        evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+        reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
+        timestamp: parsedData.timestamp ?? Date.now(),
+        eventId,
+      });
+      return;
+    }
 
-        this.store.setAgent(addr, {
-          ...(this.store.agents?.[addr] || {}),
-          address: addr,
-          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown-agent',
-          specializations: payload.specializations ?? [],
-          ucpEndpoint: payload.ucpEndpoint ?? payload.endpoint ?? '',
-          stakedAmount: stakedAmountRaw,
-          stakedFormatted: parseGuardAmount(stakedAmountRaw),
-          reputation: rep,
-          reputationScore,
-          status: 'ACTIVE',
-          source: 'hcs_auditlog',
-          lastSeenAt: Date.now(),
-        });
-      } else if (parsedData.type === 'LLM_PROVIDER_READY') {
-        this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
-          status: 'ready',
-          providerAddress: payload.providerAddress ?? null,
-          model: payload.model ?? null,
-          endpoint: payload.endpoint ?? null,
+    if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+      const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+      this.store.addJobBidStatus?.(jobId, {
+        status: 'failed',
+        agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+        evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        timestamp: parsedData.timestamp ?? Date.now(),
+        eventId,
+      });
+      return;
+    }
+
+    if (parsedData.type === 'AUCTION_INVITE_SUMMARY') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      const invites = Array.isArray(payload.eligibleAgents) ? payload.eligibleAgents : [];
+      for (const invite of invites) {
+        this.store.addJobBidStatus?.(jobId, {
+          status: 'invite_sent',
+          agentId: invite?.agentId ?? 'unknown',
+          evmAddress: invite?.evmAddress ?? null,
           reason: null,
-          reasonCode: null,
           timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
-        this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
-          status: 'unhealthy',
-          providerAddress: payload.providerAddress ?? null,
-          model: payload.model ?? null,
-          endpoint: payload.endpoint ?? null,
-          reason: payload.reason ?? null,
-          reasonCode: payload.reasonCode ?? null,
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'LLM_INFERENCE_STARTED') {
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        this.store.addLlmInferenceStatus?.(jobId, {
-          status: 'started',
-          agentId: parsedData.agentId ?? 'llm-contextual-003',
-          providerAddress: payload.providerAddress ?? null,
-          model: payload.model ?? null,
-          reason: null,
-          reasonCode: null,
-          findingsCount: null,
-          usedFallback: null,
-          requestId: payload.requestId ?? null,
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        this.store.addLlmInferenceStatus?.(jobId, {
-          status: 'succeeded',
-          agentId: parsedData.agentId ?? 'llm-contextual-003',
-          providerAddress: payload.providerAddress ?? null,
-          model: payload.model ?? null,
-          reason: null,
-          reasonCode: null,
-          findingsCount: Number(payload.findingsCount ?? 0),
-          usedFallback: Boolean(payload.usedFallback),
-          requestId: payload.requestId ?? null,
-          timestamp: parsedData.timestamp ?? Date.now(),
-        });
-      } else if (parsedData.type === 'LLM_INFERENCE_FAILED') {
-        const jobId = String(payload.jobId ?? sequenceNumber);
-        this.store.addLlmInferenceStatus?.(jobId, {
-          status: 'failed',
-          agentId: parsedData.agentId ?? 'llm-contextual-003',
-          providerAddress: payload.providerAddress ?? null,
-          model: payload.model ?? null,
-          reason: payload.reason ?? null,
-          reasonCode: payload.reasonCode ?? null,
-          findingsCount: null,
-          usedFallback: null,
-          requestId: payload.requestId ?? null,
-          timestamp: parsedData.timestamp ?? Date.now(),
+          eventId: `${eventId}:summary:${invite?.agentId ?? 'unknown'}`,
         });
       }
-    } else if (topicKey === 'agentComms') {
-      this.store.addLogEntry({ ...entry, source: 'agentComms' });
+      return;
+    }
+
+    if (topicKey === 'agentComms' && parsedData.type === 'AUCTION_INVITE') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      const targetedIds = Array.isArray(payload.eligibleAgentIds)
+        ? payload.eligibleAgentIds.map((value) => String(value))
+        : [];
+      const targetedAddresses = Array.isArray(payload.eligibleEvmAddresses)
+        ? payload.eligibleEvmAddresses.map((value) => String(value))
+        : [];
+      if (targetedIds.length > 0 || targetedAddresses.length > 0) {
+        targetedIds.forEach((agentId, idx) => {
+          this.store.addJobBidStatus?.(jobId, {
+            status: 'invite_sent',
+            agentId,
+            evmAddress: targetedAddresses[idx] ?? null,
+            reason: null,
+            timestamp: parsedData.timestamp ?? Date.now(),
+            eventId: `${eventId}:invite:${agentId}`,
+          });
+        });
+      } else {
+        this.store.addJobBidStatus?.(jobId, {
+          status: 'invite_sent',
+          agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
+          evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
+          reason: null,
+          timestamp: parsedData.timestamp ?? Date.now(),
+          eventId,
+        });
+      }
+      return;
+    }
+
+    if (parsedData.type === 'AGENT_REGISTERED' && !strictOnchain) {
+      const addr = payload.evmAddress ?? payload.agentAddress ?? parsedData.address;
+      if (!addr) return;
+
+      const rep = Number(payload.reputation ?? payload.reputationScore ?? 0);
+      const reputationScore = rep <= 100 ? Math.round(rep * 100) : Math.round(rep);
+      const stakedAmountRaw =
+        payload.stakedAmount != null
+          ? BigInt(payload.stakedAmount)
+          : BigInt(Math.max(0, Math.floor(Number(payload.stake ?? 0) * 1e8)));
+
+      this.store.setAgent(addr, {
+        ...(this.store.agents?.[addr] || {}),
+        address: addr,
+        agentId: parsedData.agentId ?? payload.agentId ?? 'unknown-agent',
+        specializations: payload.specializations ?? [],
+        ucpEndpoint: payload.ucpEndpoint ?? payload.endpoint ?? '',
+        stakedAmount: stakedAmountRaw,
+        stakedFormatted: parseGuardAmount(stakedAmountRaw),
+        reputation: rep,
+        reputationScore,
+        status: 'ACTIVE',
+        source: 'hcs_auditlog',
+        lastSeenAt: Date.now(),
+      });
+      return;
+    }
+
+    if (parsedData.type === 'LLM_PROVIDER_READY') {
+      this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
+        status: 'ready',
+        providerAddress: payload.providerAddress ?? null,
+        model: payload.model ?? null,
+        endpoint: payload.endpoint ?? null,
+        reason: null,
+        reasonCode: null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+      });
+      return;
+    }
+
+    if (parsedData.type === 'LLM_PROVIDER_UNHEALTHY') {
+      this.store.setLlmProviderStatus?.(parsedData.agentId ?? 'llm-contextual-003', {
+        status: 'unhealthy',
+        providerAddress: payload.providerAddress ?? null,
+        model: payload.model ?? null,
+        endpoint: payload.endpoint ?? null,
+        reason: payload.reason ?? null,
+        reasonCode: payload.reasonCode ?? null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+      });
+      return;
+    }
+
+    if (parsedData.type === 'LLM_INFERENCE_STARTED') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.addLlmInferenceStatus?.(jobId, {
+        status: 'started',
+        agentId: parsedData.agentId ?? 'llm-contextual-003',
+        providerAddress: payload.providerAddress ?? null,
+        model: payload.model ?? null,
+        reason: null,
+        reasonCode: null,
+        findingsCount: null,
+        usedFallback: null,
+        requestId: payload.requestId ?? null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+      });
+      return;
+    }
+
+    if (parsedData.type === 'LLM_INFERENCE_SUCCEEDED') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.addLlmInferenceStatus?.(jobId, {
+        status: 'succeeded',
+        agentId: parsedData.agentId ?? 'llm-contextual-003',
+        providerAddress: payload.providerAddress ?? null,
+        model: payload.model ?? null,
+        reason: null,
+        reasonCode: null,
+        findingsCount: Number(payload.findingsCount ?? 0),
+        usedFallback: Boolean(payload.usedFallback),
+        requestId: payload.requestId ?? null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+      });
+      return;
+    }
+
+    if (parsedData.type === 'LLM_INFERENCE_FAILED') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.addLlmInferenceStatus?.(jobId, {
+        status: 'failed',
+        agentId: parsedData.agentId ?? 'llm-contextual-003',
+        providerAddress: payload.providerAddress ?? null,
+        model: payload.model ?? null,
+        reason: payload.reason ?? null,
+        reasonCode: payload.reasonCode ?? null,
+        findingsCount: null,
+        usedFallback: null,
+        requestId: payload.requestId ?? null,
+        timestamp: parsedData.timestamp ?? Date.now(),
+      });
     }
   }
 
@@ -519,6 +860,7 @@ export class EventListenerService {
     this._intervals.push(setInterval(() => {
       this._pollContractEvents();
     }, CONTRACT_POLL_MS));
+    this._pollContractEvents();
   }
 
   async _pollContractEvents() {
@@ -526,10 +868,11 @@ export class EventListenerService {
       const currentBlock = await this.provider.getBlockNumber();
 
       if (this.lastProcessedBlock === null) {
-        // In test mode, skip historical backfill to avoid stale jobs on page load.
+        // Strict mode starts from the current block to avoid replaying stale auctions.
+        const backfillBlocks = this.sourceMode === 'onchain_strict' ? 0 : 100;
         this.lastProcessedBlock = this.onlyTestDiscoveries
           ? currentBlock
-          : Math.max(0, currentBlock - 100);
+          : Math.max(0, currentBlock - backfillBlocks);
       }
 
       if (currentBlock <= this.lastProcessedBlock) return; // no new blocks
@@ -556,7 +899,7 @@ export class EventListenerService {
         contract ? contract.queryFilter(event, from, to).catch(() => []) : Promise.resolve([]);
 
       const [
-        jobPosted, bidSubmitted, winnersSelected, bidRefunded,
+        jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
         agentRegistered, reputationUpdated, agentPromoted,
         subAuctionCreated, subBidSubmitted, subContractorSelected,
         resultDelivered, resultAccepted,
@@ -572,6 +915,8 @@ export class EventListenerService {
         q(auctionContract, 'BidSubmitted'),
         q(auctionContract, 'WinnersSelected'),
         q(auctionContract, 'BidRefunded'),
+        q(auctionContract, 'JobCancelled'),
+        q(auctionContract, 'JobCompleted'),
         q(agentRegistryContract, 'AgentRegistered'),
         q(agentRegistryContract, 'ReputationUpdated'),
         q(agentRegistryContract, 'AgentPromoted'),
@@ -599,6 +944,20 @@ export class EventListenerService {
         q(treasuryContract, 'FeeDistributed'),
       ]);
 
+      const polledEventCount = [
+        jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
+        agentRegistered, reputationUpdated, agentPromoted,
+        subAuctionCreated, subBidSubmitted, subContractorSelected,
+        resultDelivered, resultAccepted,
+        dataListed, dataPurchased, dataRated,
+        jobSettled, subJobSettled,
+        vaultCreated, autoAuditTriggered,
+        staked, stakeLocked, stakeUnlocked,
+        slashInitiated, appealFiled, appealApproved, appealDenied,
+        feeReceived, feeDistributed,
+      ].reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0);
+      this.contractEventsSeen += polledEventCount;
+
       // ── Process AuditAuction events ──
 
       for (const ev of jobPosted) {
@@ -616,7 +975,7 @@ export class EventListenerService {
           jobId: a.jobId.toString(),
           contractAddress: a.contractAddress,
           contractChain: a.contractChain,
-          contractType: a.contractType,
+          contractType: normalizeAuctionType(a.contractType),
           budgetAvailable: a.budgetAvailable,
           budgetFormatted: parseGuardAmount(a.budgetAvailable),
           auctionDeadline: a.auctionDeadline,
@@ -625,7 +984,7 @@ export class EventListenerService {
           blockNumber: ev.blockNumber,
         });
         this.store.incrementStat('totalAuctions');
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'JobPosted',
           source: 'contract',
           jobId: a.jobId.toString(),
@@ -633,7 +992,7 @@ export class EventListenerService {
           budgetFormatted: parseGuardAmount(a.budgetAvailable),
           timestamp: Date.now(),
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of bidSubmitted) {
@@ -651,7 +1010,23 @@ export class EventListenerService {
         };
         this.store.addBid(a.jobId.toString(), bid);
         this.store.incrementStat('totalBids');
-        this.store.addLogEntry({
+        this._addGuardFlow({
+          flowId: this._mkFlowId(ev, 0),
+          source: 'contract_event',
+          from: a.agent,
+          fromName: bid.agentName,
+          to: this.contracts?.auctionContract?.target || 'auction',
+          toName: 'Audit Auction',
+          amount: a.collateralLocked,
+          amountFormatted: parseGuardAmount(a.collateralLocked),
+          type: 'BID_COLLATERAL_LOCK',
+          jobId: a.jobId.toString(),
+          txHash: ev.transactionHash,
+          logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+          blockNumber: ev.blockNumber,
+          timestamp: Date.now(),
+        });
+        this._addLogEntry({
           type: 'BidSubmitted',
           source: 'contract',
           jobId: a.jobId.toString(),
@@ -659,7 +1034,7 @@ export class EventListenerService {
           bidFormatted: bid.bidFormatted,
           timestamp: Date.now(),
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of winnersSelected) {
@@ -671,18 +1046,53 @@ export class EventListenerService {
           platformFee: a.platformFee,
           platformFeeFormatted: parseGuardAmount(a.platformFee),
         });
-        this.store.addLogEntry({
+        if ((a.platformFee ?? 0n) > 0n) {
+          this._addGuardFlow({
+            flowId: this._mkFlowId(ev, 0),
+            source: 'contract_event',
+            from: this.contracts?.auctionContract?.target || 'auction',
+            fromLabel: 'Audit Auction',
+            to: resolveTreasuryAddress(this.config),
+            toName: 'Treasury',
+            amount: a.platformFee,
+            amountFormatted: parseGuardAmount(a.platformFee),
+            type: 'PLATFORM_FEE',
+            jobId: a.jobId.toString(),
+            txHash: ev.transactionHash,
+            logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+            blockNumber: ev.blockNumber,
+            timestamp: Date.now(),
+          });
+        }
+        this._addLogEntry({
           type: 'WinnersSelected',
           source: 'contract',
           jobId: a.jobId.toString(),
           winnerCount: a.winners.length,
           timestamp: Date.now(),
-        });
+          _tx: this._mkTx(ev, blockTs),
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of bidRefunded) {
         const a = ev.args;
-        this.store.addLogEntry({
+        this._addGuardFlow({
+          flowId: this._mkFlowId(ev, 0),
+          source: 'contract_event',
+          from: this.contracts?.auctionContract?.target || 'auction',
+          fromName: 'Audit Auction',
+          to: a.agent,
+          toName: resolveAgentName(a.agent, this.config),
+          amount: a.refundedCollateral,
+          amountFormatted: parseGuardAmount(a.refundedCollateral),
+          type: 'BID_COLLATERAL_REFUND',
+          jobId: a.jobId.toString(),
+          txHash: ev.transactionHash,
+          logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+          blockNumber: ev.blockNumber,
+          timestamp: Date.now(),
+        });
+        this._addLogEntry({
           type: 'BidRefunded',
           source: 'contract',
           jobId: a.jobId.toString(),
@@ -690,7 +1100,44 @@ export class EventListenerService {
           agentName: resolveAgentName(a.agent, this.config),
           refunded: parseGuardAmount(a.refundedCollateral),
           timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
+        }, this._mkContractEventId(ev));
+      }
+
+      for (const ev of jobCancelled) {
+        const a = ev.args;
+        const jobId = a.jobId.toString();
+        this.store.setJobTerminal?.(jobId, {
+          status: 'cancelled',
+          endedAt: Date.now(),
+          txHash: ev.transactionHash,
+          source: 'contract',
         });
+        this._addLogEntry({
+          type: 'JobCancelled',
+          source: 'contract',
+          jobId,
+          timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
+        }, this._mkContractEventId(ev));
+      }
+
+      for (const ev of jobCompleted) {
+        const a = ev.args;
+        const jobId = a.jobId.toString();
+        this.store.setJobTerminal?.(jobId, {
+          status: 'completed',
+          endedAt: Date.now(),
+          txHash: ev.transactionHash,
+          source: 'contract',
+        });
+        this._addLogEntry({
+          type: 'JobCompleted',
+          source: 'contract',
+          jobId,
+          timestamp: Date.now(),
+          _tx: this._mkTx(ev, blockTs),
+        }, this._mkContractEventId(ev));
       }
 
       // ── Process AgentRegistry events ──
@@ -852,7 +1299,9 @@ export class EventListenerService {
         // Create GUARD flow — look up stored sub-job for requester/agent addresses
         const subJob = this.store.subJobs?.[subJobId];
         if (subJob?.selectedAgent) {
-          this.store.addGuardFlow({
+          this._addGuardFlow({
+            flowId: this._mkFlowId(ev, 0),
+            source: 'contract_event',
             from: subJob.requester,
             to: subJob.selectedAgent,
             toName: subJob.selectedAgentName,
@@ -860,6 +1309,9 @@ export class EventListenerService {
             amountFormatted: parseGuardAmount(a.paymentAmount),
             type: 'SUB_CONTRACT',
             jobId: subJob.parentJobId,
+            txHash: ev.transactionHash,
+            logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+            blockNumber: ev.blockNumber,
             timestamp: Date.now(),
           });
         }
@@ -898,7 +1350,7 @@ export class EventListenerService {
           active: true,
           _tx: this._mkTx(ev, blockTs),
         });
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'DATA_LISTED',
           source: 'contract',
           listingId,
@@ -908,13 +1360,14 @@ export class EventListenerService {
           priceFormatted,
           timestamp: Date.now(),
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of dataPurchased) {
         const a = ev.args;
         const listingId = a.listingId.toString();
         const pricePaidFormatted = parseGuardAmount(a.pricePaid);
+        const sellerNet = a.pricePaid > a.platformFee ? a.pricePaid - a.platformFee : 0n;
         const purchase = {
           listingId,
           buyer: a.buyer,
@@ -927,19 +1380,44 @@ export class EventListenerService {
           timestamp: Date.now(),
         };
         this.store.addDataPurchase(purchase);
-        this.store.addGuardFlow({
-          from: a.buyer,
-          fromName: resolveAgentName(a.buyer, this.config),
-          to: a.seller,
-          toName: resolveAgentName(a.seller, this.config),
-          amount: a.pricePaid,
-          amountFormatted: pricePaidFormatted,
-          type: 'DATA_PURCHASE',
-          listingId,
-          timestamp: Date.now(),
-        });
+        if (sellerNet > 0n) {
+          this._addGuardFlow({
+            flowId: this._mkFlowId(ev, 0),
+            source: 'contract_event',
+            from: a.buyer,
+            fromName: resolveAgentName(a.buyer, this.config),
+            to: a.seller,
+            toName: resolveAgentName(a.seller, this.config),
+            amount: sellerNet,
+            amountFormatted: parseGuardAmount(sellerNet),
+            type: 'DATA_PURCHASE_NET',
+            listingId,
+            txHash: ev.transactionHash,
+            logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+            blockNumber: ev.blockNumber,
+            timestamp: Date.now(),
+          });
+        }
+        if (a.platformFee > 0n) {
+          this._addGuardFlow({
+            flowId: this._mkFlowId(ev, 1),
+            source: 'contract_event',
+            from: a.buyer,
+            fromName: resolveAgentName(a.buyer, this.config),
+            to: resolveTreasuryAddress(this.config),
+            toName: 'Treasury',
+            amount: a.platformFee,
+            amountFormatted: parseGuardAmount(a.platformFee),
+            type: 'PLATFORM_FEE',
+            listingId,
+            txHash: ev.transactionHash,
+            logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+            blockNumber: ev.blockNumber,
+            timestamp: Date.now(),
+          });
+        }
         this.store.incrementStat('totalDataSales');
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'DATA_PURCHASED',
           source: 'contract',
           listingId,
@@ -948,7 +1426,7 @@ export class EventListenerService {
           pricePaidFormatted,
           timestamp: Date.now(),
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of dataRated) {
@@ -956,14 +1434,14 @@ export class EventListenerService {
         const listingId = a.listingId.toString();
         const rating = Number(a.rating);
         this.store.updateDataPurchaseRating(listingId, a.buyer, rating);
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'DATA_RATED',
           source: 'contract',
           listingId,
           buyerName: resolveAgentName(a.buyer, this.config),
           rating,
           timestamp: Date.now(),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       // ── Process PaymentSettlement events ──
@@ -987,7 +1465,7 @@ export class EventListenerService {
         });
         this.store.incrementStat('totalSettlements');
         this.store.incrementStat('totalGuardTransacted', Number(totalDisbursed) / 100_000_000);
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'JOB_SETTLED',
           source: 'contract',
           settlementId,
@@ -996,25 +1474,87 @@ export class EventListenerService {
           recipientCount: Number(a.recipientCount),
           timestamp: Date.now(),
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
         // Fetch per-recipient breakdown and emit individual GUARD flows
         if (paymentSettlementContract) {
           try {
             const payments = await paymentSettlementContract.getSettlementPayments(a.settlementId);
+            if (this.pendingSettlementBreakdowns > 0) {
+              this.pendingSettlementBreakdowns -= 1;
+            }
+            this.store.setIngestionHealth?.({
+              pendingSettlementBreakdowns: this.pendingSettlementBreakdowns,
+            });
+            const treasuryAddress = resolveTreasuryAddress(this.config);
+            let paymentIndex = 0;
             for (const payment of payments) {
-              const total = payment.basePayment + payment.bonus;
-              this.store.addGuardFlow({
+              const base = payment.basePayment ?? 0n;
+              const bonus = payment.bonus ?? 0n;
+              const reportFee = payment.reportFee ?? 0n;
+              const gross = base + bonus;
+              const net = gross > reportFee ? gross - reportFee : 0n;
+              const flowType = resolveSettlementFlowType(payment.paymentType, payment.description);
+              if (net > 0n) {
+                this._addGuardFlow({
+                  flowId: this._mkFlowId(ev, paymentIndex),
+                  source: 'contract_event',
+                  from: 'vault',
+                  to: payment.recipient,
+                  toName: resolveAgentName(payment.recipient, this.config),
+                  amount: net,
+                  amountFormatted: parseGuardAmount(net),
+                  type: flowType,
+                  jobId,
+                  settlementId,
+                  txHash: ev.transactionHash,
+                  logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+                  blockNumber: ev.blockNumber,
+                  timestamp: Date.now(),
+                });
+              }
+              if (reportFee > 0n) {
+                this._addGuardFlow({
+                  flowId: this._mkFlowId(ev, paymentIndex + 5000),
+                  source: 'contract_event',
+                  from: 'vault',
+                  to: treasuryAddress,
+                  toName: 'Treasury',
+                  amount: reportFee,
+                  amountFormatted: parseGuardAmount(reportFee),
+                  type: 'REPORT_FEE',
+                  jobId,
+                  settlementId,
+                  txHash: ev.transactionHash,
+                  logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+                  blockNumber: ev.blockNumber,
+                  timestamp: Date.now(),
+                });
+              }
+              paymentIndex += 1;
+            }
+            if ((a.platformFee ?? 0n) > 0n) {
+              this._addGuardFlow({
+                flowId: this._mkFlowId(ev, 9999),
+                source: 'contract_event',
                 from: 'vault',
-                to: payment.recipient,
-                toName: resolveAgentName(payment.recipient, this.config),
-                amount: total,
-                amountFormatted: parseGuardAmount(total),
-                type: payment.description || 'SETTLEMENT',
+                to: treasuryAddress,
+                toName: 'Treasury',
+                amount: a.platformFee,
+                amountFormatted: parseGuardAmount(a.platformFee),
+                type: 'PLATFORM_FEE',
                 jobId,
+                settlementId,
+                txHash: ev.transactionHash,
+                logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+                blockNumber: ev.blockNumber,
                 timestamp: Date.now(),
               });
             }
           } catch (err) {
+            this.pendingSettlementBreakdowns += 1;
+            this.store.setIngestionHealth?.({
+              pendingSettlementBreakdowns: this.pendingSettlementBreakdowns,
+            });
             console.warn('[EventListener] Could not fetch settlement payments:', err.message);
           }
         }
@@ -1022,7 +1562,7 @@ export class EventListenerService {
 
       for (const ev of subJobSettled) {
         const a = ev.args;
-        this.store.addLogEntry({
+        this._addLogEntry({
           type: 'SUB_JOB_SETTLED',
           source: 'contract',
           settlementId: a.settlementId.toString(),
@@ -1030,7 +1570,7 @@ export class EventListenerService {
           agentName: resolveAgentName(a.agent, this.config),
           amountFormatted: parseGuardAmount(a.amount),
           timestamp: Date.now(),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       // ── Process VaultFactory events ──
@@ -1128,12 +1668,30 @@ export class EventListenerService {
           appealStatus: 'NONE',
         };
         this.store.addSlashEvent(slash);
-        this.store.addLogEntry({
+        if ((a.slashedAmount ?? 0n) > 0n) {
+          this._addGuardFlow({
+            flowId: this._mkFlowId(ev, 0),
+            source: 'contract_event',
+            from: a.agent,
+            fromName: resolveAgentName(a.agent, this.config),
+            to: resolveTreasuryAddress(this.config),
+            toName: 'Treasury',
+            amount: a.slashedAmount,
+            amountFormatted: parseGuardAmount(a.slashedAmount),
+            type: 'SLASH_TO_TREASURY',
+            jobId: a.jobId.toString(),
+            txHash: ev.transactionHash,
+            logIndex: Number(ev.logIndex ?? ev.index ?? 0),
+            blockNumber: ev.blockNumber,
+            timestamp: Date.now(),
+          });
+        }
+        this._addLogEntry({
           type: 'SLASH_INITIATED',
           source: 'contract',
           ...slash,
           _tx: this._mkTx(ev, blockTs),
-        });
+        }, this._mkContractEventId(ev));
       }
 
       for (const ev of appealFiled) {
@@ -1210,8 +1768,18 @@ export class EventListenerService {
       }
 
       this.lastProcessedBlock = to;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        lastContractBlock: Number(to),
+        contractEventsSeen: this.contractEventsSeen,
+        activeAuctionsCount,
+      });
     } catch (err) {
       console.warn('[EventListener] Contract poll error:', err.message);
     }
   }
 }
+
+EventListenerService._activeService = null;

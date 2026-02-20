@@ -4,14 +4,18 @@ import useStore from '../store';
 // ── Flow type → hex color (CSS vars don't work in SVG fill/stroke) ──
 
 export const FLOW_COLORS = {
+  BID_COLLATERAL_LOCK:    '#0ea5e9',
+  BID_COLLATERAL_REFUND:  '#38bdf8',
+  WINNER_PAYOUT:          '#d97706',
+  SLASH_TO_TREASURY:      '#ef4444',
   SUB_CONTRACT:          '#a855f7',
-  DATA_PURCHASE:         '#14b8a6',
+  DATA_PURCHASE_NET:     '#14b8a6',
   SETTLEMENT:            '#d97706',
   MAIN_AUDIT:            '#d97706',
   BONUS_SPEED:           '#22c55e',
   BONUS_UNIQUE_FINDING:  '#4ade80',
   PLATFORM_FEE:          '#6b7280',
-  BidRefunded:           '#f59e0b',
+  REPORT_FEE:            '#6366f1',
 };
 
 export function getFlowColor(type) {
@@ -33,7 +37,6 @@ function agentColor(name) {
 
 export function useGuardFlows(windowSeconds = 120) {
   const guardFlows = useStore((s) => s.guardFlows);
-  const stats      = useStore((s) => s.stats);
   const config     = useStore((s) => s.config);
 
   const { recentFlows, agentAddresses } = useMemo(() => {
@@ -86,16 +89,26 @@ export function useGuardFlows(windowSeconds = 120) {
 
   const flowsByType = useMemo(() => {
     const map = {};
-    for (const f of guardFlows) {
+    for (const f of recentFlows) {
       map[f.type] = (map[f.type] || 0) + (Number(f.amount) / 1e8 || 0);
     }
     return map;
-  }, [guardFlows]);
+  }, [recentFlows]);
+
+  const windowTotal = useMemo(
+    () => recentFlows.reduce((sum, f) => sum + (Number(f.amount) / 1e8 || 0), 0),
+    [recentFlows]
+  );
+  const lifetimeTotal = useMemo(
+    () => guardFlows.reduce((sum, f) => sum + (Number(f.amount) / 1e8 || 0), 0),
+    [guardFlows]
+  );
 
   return {
     recentFlows,
     agentNodes,
-    totalTransacted: stats.totalGuardTransacted || 0,
+    totalTransacted: lifetimeTotal,
+    windowTransacted: windowTotal,
     flowsByType,
   };
 }

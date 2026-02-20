@@ -4,6 +4,7 @@ import useStore from '../store';
 import AuctionCard from './AuctionCard';
 import { shortenAddress } from '../services/event-listener';
 import { useAutoScroll } from '../hooks/useAutoScroll';
+import { useAuctionData } from '../hooks/useAuctionData';
 
 // ── Gavel empty state ──────────────────────────────────────
 
@@ -40,36 +41,25 @@ function EmptyState() {
 // ── Main AuctionFeed ───────────────────────────────────────
 
 export default function AuctionFeed() {
-  const activeJobs = useStore((s) => s.activeJobs);
   const bids = useStore((s) => s.bids);
   const jobBidStatus = useStore((s) => s.jobBidStatus);
   const llmInferenceStatus = useStore((s) => s.llmInferenceStatus);
-  const winners = useStore((s) => s.winners);
   const config = useStore((s) => s.config);
+  const { auctions: mergedAuctions } = useAuctionData();
 
   const contractAddr = config?.contracts?.auctionContract?.evmAddress;
 
-  // Build sorted auction list (most recent first)
-  const auctions = useMemo(() => {
-    const jobs = Object.values(activeJobs);
-    if (jobs.length === 0) return [];
-
-    return jobs
-      .map((job) => ({
+  const auctions = useMemo(
+    () =>
+      mergedAuctions.map(({ job, bids: jobBids, winnerData }) => ({
         job,
-        bids: bids[job.jobId] || [],
+        bids: jobBids,
+        winnerData,
         bidLifecycle: jobBidStatus[job.jobId] || [],
         llmInference: llmInferenceStatus[job.jobId] || [],
-        winnerData: winners[job.jobId] || null,
-      }))
-      .sort((a, b) => {
-        // Active auctions (no winners) first, then by jobId desc
-        const aHasWinner = a.winnerData ? 1 : 0;
-        const bHasWinner = b.winnerData ? 1 : 0;
-        if (aHasWinner !== bHasWinner) return aHasWinner - bHasWinner;
-        return Number(b.job.jobId) - Number(a.job.jobId);
-      });
-  }, [activeJobs, bids, jobBidStatus, llmInferenceStatus, winners]);
+      })),
+    [mergedAuctions, jobBidStatus, llmInferenceStatus]
+  );
 
   // Track recently-arrived bids (within last 3s) for highlight effect
   const recentBidTimestamps = useMemo(() => {

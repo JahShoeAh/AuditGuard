@@ -5,22 +5,7 @@ import BidRow from './BidRow';
 import SubContractTree from './SubContractTree';
 import { shortenAddress, parseGuardAmount } from '../services/event-listener';
 import { hashscan } from '../utils/hashscan';
-
-// ── Contract type styling ──────────────────────────────────
-
-const TYPE_LABELS = {
-  lending_protocol: 'LENDING',
-  dex: 'DEX',
-  staking_pool: 'STAKING',
-  yield_aggregator: 'YIELD AGG',
-};
-
-const TYPE_COLORS = {
-  lending_protocol: 'var(--accent-cyan)',
-  dex: 'var(--accent-amber)',
-  staking_pool: 'var(--accent-purple)',
-  yield_aggregator: 'var(--accent-green)',
-};
+import { auctionTypeColor, auctionTypeLabel, normalizeAuctionType } from '../utils/auction-type';
 
 const BID_LIFECYCLE_STYLE = {
   invite_sent: 'text-cyan-300 border-cyan-400/30 bg-cyan-500/10',
@@ -41,7 +26,7 @@ function bidLifecycleLabel(status) {
   if (status === 'skipped') return 'Bid Skipped';
   if (status === 'failed') return 'Bid Failed';
   return status || 'Unknown';
-}
+};
 
 function llmInferenceLabel(status) {
   if (status === 'started') return 'LLM Inference Started';
@@ -102,8 +87,9 @@ export default function AuctionCard({
   recentBidTimestamps,
 }) {
   const state = resolveState(job, winnerData);
-  const accentColor = TYPE_COLORS[job.contractType] || 'var(--accent-cyan)';
-  const typeLabel = TYPE_LABELS[job.contractType] || job.contractType?.toUpperCase() || 'UNKNOWN';
+  const canonicalType = normalizeAuctionType(job.contractType);
+  const accentColor = auctionTypeColor(canonicalType);
+  const typeLabel = auctionTypeLabel(canonicalType);
 
   const winnerAddresses = useMemo(() => {
     if (!winnerData?.agents) return new Set();
@@ -146,30 +132,6 @@ export default function AuctionCard({
     return Array.from(latestByAgent.values()).slice(0, 4);
   }, [llmInference]);
   const strictWarning = llmPreview.find((item) => item.status === 'succeeded' && item.usedFallback);
-
-  // STATE C — Completed: collapsed summary line
-  if (state === STATE_COMPLETED && !winnerData) {
-    return (
-      <motion.div
-        layout
-        initial={{ opacity: 0.7 }}
-        animate={{ opacity: 0.4 }}
-        exit={{ opacity: 0, height: 0 }}
-        transition={{ duration: 0.5 }}
-        className="card px-3 py-2 mb-2 text-[11px] font-mono text-gray-500 flex items-center gap-2"
-      >
-        <span>Job #{job.jobId}</span>
-        <span className="text-gray-600">&mdash;</span>
-        <span style={{ color: accentColor }}>{typeLabel}</span>
-        <span className="text-gray-600">&mdash;</span>
-        <span>{sortedBids.length} bids</span>
-        <span className="text-gray-600">&mdash;</span>
-        <span style={{ color: 'var(--accent-gold)' }}>{budgetDisplay}</span>
-        <span className="text-gray-600">&mdash;</span>
-        <span className="text-guard-red">EXPIRED</span>
-      </motion.div>
-    );
-  }
 
   const isWinnerState = state === STATE_WINNERS;
 

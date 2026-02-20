@@ -39,6 +39,13 @@ export class Roster {
 
   evaluateEligibility(contractType) {
     const cutoff = now() - CONFIG.timeouts.livenessExpiryMs;
+    const normalizedType =
+      typeof contractType === "string" ? contractType.trim().toLowerCase() : "";
+    // Unknown/scheduled jobs should not be blocked by specialization labels.
+    const enforceSpecializationMatch =
+      normalizedType.length > 0 &&
+      normalizedType !== "unknown" &&
+      normalizedType !== "scheduled_audit";
     const eligible = [];
     const excluded = [];
     const staleAgentIds = [];
@@ -48,9 +55,9 @@ export class Roster {
       if ((agent.lastSeen ?? 0) < cutoff) reasons.push("stale");
       if ((agent.stake ?? 0) < CONFIG.stakes.minStake) reasons.push("low_stake");
       if ((agent.reputation ?? 0) < CONFIG.reputation.minReputation) reasons.push("low_reputation");
-      if (agent.specializations && agent.specializations.length && contractType) {
+      if (enforceSpecializationMatch && agent.specializations && agent.specializations.length) {
         const matches =
-          agent.specializations.includes(contractType) ||
+          agent.specializations.includes(normalizedType) ||
           agent.specializations.includes("any");
         if (!matches) reasons.push("specialization_mismatch");
       }

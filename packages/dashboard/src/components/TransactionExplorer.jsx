@@ -25,11 +25,18 @@ const TAB_COLOR = {
   AGENTS: 'var(--accent-green)',
 };
 
+const HEARTBEAT_TYPES = new Set(['PING', 'PONG']);
+
+export function isHeartbeatEntry(entry) {
+  return HEARTBEAT_TYPES.has(String(entry?.type || '').toUpperCase());
+}
+
 // ── Main TransactionExplorer ──────────────────────────────
 
 export default function TransactionExplorer() {
   const [activeTab, setActiveTab] = useState('ALL');
   const [settleId, setSettleId] = useState(null);
+  const [showHeartbeat, setShowHeartbeat] = useState(false);
 
   const auditLog = useStore((s) => s.auditLog);
 
@@ -40,6 +47,9 @@ export default function TransactionExplorer() {
     let entries = auditLog;
     if (tab && tab.types) {
       entries = auditLog.filter((e) => tab.types.has(e.type));
+    }
+    if (!showHeartbeat) {
+      entries = entries.filter((e) => !isHeartbeatEntry(e));
     }
 
     // 2. Sort (Newest first)
@@ -69,16 +79,25 @@ export default function TransactionExplorer() {
         <div className="px-4 py-2.5 border-b border-white/[0.04] flex-shrink-0 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="text-[11px]" style={{ color: 'var(--accent-cyan)' }}>⚡</span>
-            <h2 className="text-xs font-semibold tracking-wider uppercase font-sans text-gray-400">
-              Tx Explorer
-            </h2>
-            <span className="text-[10px] text-gray-600 font-mono">({auditLog.length})</span>
+              <h2 className="text-xs font-semibold tracking-wider uppercase font-sans text-gray-400">
+                Tx Explorer
+              </h2>
+              <span className="text-[10px] text-gray-600 font-mono">({auditLog.length})</span>
+            </div>
+          <div className="flex items-center gap-3">
+            {onChainCount > 0 && (
+              <span className="text-[9px] font-mono text-gray-600">
+                {onChainCount} on-chain
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowHeartbeat((prev) => !prev)}
+              className="text-[9px] font-mono text-gray-500 hover:text-gray-300 border border-white/[0.08] rounded px-1.5 py-0.5"
+            >
+              {showHeartbeat ? 'Hide heartbeat' : 'Show heartbeat'}
+            </button>
           </div>
-          {onChainCount > 0 && (
-            <span className="text-[9px] font-mono text-gray-600">
-              {onChainCount} on-chain
-            </span>
-          )}
         </div>
 
         {/* Filter tabs */}

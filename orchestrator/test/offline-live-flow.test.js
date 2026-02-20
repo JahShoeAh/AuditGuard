@@ -38,6 +38,8 @@ function makeOfflineHarness() {
         wait: async () => ({ logs: [{}], hash: "0xfake_auction_tx" }),
       }),
     },
+    cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
+    selectWinners: async () => ({ hash: "0xselect", status: 1 }),
     dataMarketplace: { purchaseData: async () => {} },
     subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
     paymentSettlement: {
@@ -157,7 +159,11 @@ async function main() {
 
     // Discovery should have produced auction invites.
     const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
-    assert.ok(invites.length >= 3, "expected invites for eligible practice agents");
+    assert.equal(invites.length, 1, "expected one AUCTION_INVITE publish per job");
+    assert.ok(
+      Array.isArray(invites[0].payload.eligibleAgentIds) && invites[0].payload.eligibleAgentIds.length >= 3,
+      "invite payload should carry eligible agent ids"
+    );
 
     // 3) Agents submit bids (low-stake agent gets rejected by orchestrator).
     orch.handleBidSubmitted({
@@ -213,8 +219,8 @@ async function main() {
       },
     });
 
-    // 4) Winner selection fallback (offline mode).
-    orch.selectWinnersFallback(4242);
+    // 4) Winner selection (strict on-chain path with mocked tx).
+    await orch.selectWinnersOnChain(4242);
     const job = orch.jobs.get("4242");
     assert.ok(job, "job must exist");
     assert.ok(job.winners.length > 0, "winners should be selected");

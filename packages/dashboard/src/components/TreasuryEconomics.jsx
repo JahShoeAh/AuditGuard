@@ -2,9 +2,6 @@ import { useMemo } from 'react';
 import useStore from '../store/index';
 import { fmt } from '../utils/format';
 
-// ── Treasury address ──────────────────────────────────────────
-const TREASURY_ADDR = '0xe5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d40005';
-
 // ── Revenue categories (from on-chain FeeSource enum) ────────
 const REVENUE_SOURCES = [
   { key: 'auditFees',       label: 'Audit Platform Fee', color: '#d97706' },
@@ -45,16 +42,21 @@ function useTreasuryRevenue() {
   const guardFlows   = useStore((s) => s.guardFlows);
   const storeTreasury = useStore((s) => s.treasuryRevenue);
   const slashEvents  = useStore((s) => s.slashEvents);
+  const config = useStore((s) => s.config);
 
   return useMemo(() => {
     // Derive from guardFlows (works in both mock and live mode)
     let auditFees = 0, marketplaceFees = 0, reportFees = 0;
     let subAuctionFees = 0;
 
-    const treasuryId = TREASURY_ADDR.toLowerCase();
+    const treasuryId = (
+      config?.contracts?.treasury?.evmAddress ||
+      config?.contracts?.treasury?.address ||
+      ''
+    ).toLowerCase();
     for (const f of guardFlows) {
       const to = (f.to || '').toLowerCase();
-      if (to !== treasuryId && f.to !== 'treasury') continue;
+      if ((treasuryId && to !== treasuryId) && f.to !== 'treasury') continue;
       const amt = Number(f.amount || 0);
       if      (f.type === 'PLATFORM_FEE' && f.from === 'vault') auditFees       += amt;
       else if (f.type === 'PLATFORM_FEE')                       marketplaceFees += amt;
@@ -78,7 +80,7 @@ function useTreasuryRevenue() {
     merged.total = Object.values(merged).reduce((s, v) => s + v, 0);
 
     return merged;
-  }, [guardFlows, storeTreasury, slashEvents]);
+  }, [guardFlows, storeTreasury, slashEvents, config]);
 }
 
 // ── TreasuryEconomics ─────────────────────────────────────────

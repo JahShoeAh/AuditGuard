@@ -17,9 +17,12 @@ interface IHederaTokenService {
         int64 amount
     ) external returns (int64 responseCode);
 
-    /// @notice Associates an account with a token.
+    /// @notice Associates an account with a token (correct HTS precompile name).
     /// @param account The account to associate.
     /// @param token The token EVM address.
     /// @return responseCode Hedera response code.
+    function associateToken(address account, address token) external returns (int64 responseCode);
+
+    /// @notice Legacy alias — kept for backward compatibility with already-deployed contracts.
     function tokenAssociate(address account, address token) external returns (int64 responseCode);
 }

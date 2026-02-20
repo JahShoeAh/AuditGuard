@@ -47,6 +47,8 @@ export const fmt = {
     let d;
     if (typeof unix === 'string') {
       d = new Date(unix);
+    } else if (typeof unix === 'bigint') {
+      d = new Date(Number(unix));
     } else if (typeof unix === 'number' && unix < 1e12) {
       d = new Date(unix * 1000); // seconds → ms
     } else {

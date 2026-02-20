@@ -35,6 +35,8 @@ function makeMocks() {
         wait: async () => ({ logs: [{}], hash: "0xtx" }),
       }),
     },
+    cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
+    selectWinners: async () => ({ hash: "0xselect", status: 1 }),
     dataMarketplace: { purchaseData: async () => {} },
     subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
     paymentSettlement: {
@@ -123,12 +125,40 @@ async function testE2EBasicFlow() {
     });
 
     const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
-    assert.equal(invites.length, 2, "should invite only eligible agents");
-    assert.ok(invites.every((m) => m.payload.contractType === "lending"), "invite payload should include contract type");
+    assert.equal(invites.length, 1, "should publish one AUCTION_INVITE per job");
+    assert.equal(invites[0].payload.contractType, "lending", "invite payload should include contract type");
+    assert.equal(invites[0].payload.eligibleAgentIds.length, 2, "invite payload should include eligible agent ids");
+
+    orch.handleBidSubmitted({
+      type: "BID_SUBMITTED",
+      agentId: "static-47",
+      timestamp: now(),
+      payload: {
+        contractAddress: "0xdeadbeef00000000000000000000000000beef01",
+        bidAmount: 12,
+        collateral: 6,
+        estimatedTimeSec: 220,
+        reputation: 92,
+        evmAddress: "0x0000000000000000000000000000000000000047",
+      },
+    });
+    orch.handleBidSubmitted({
+      type: "BID_SUBMITTED",
+      agentId: "fuzzer-12",
+      timestamp: now(),
+      payload: {
+        contractAddress: "0xdeadbeef00000000000000000000000000beef01",
+        bidAmount: 14,
+        collateral: 6,
+        estimatedTimeSec: 260,
+        reputation: 85,
+        evmAddress: "0x0000000000000000000000000000000000000012",
+      },
+    });
 
     await sleep(30);
-    const fallback = auditLogMessages.find((m) => m.type === MessageType.WINNERS_SELECTED_FALLBACK);
-    assert.ok(fallback, "fallback winners should be published");
+    const selectedJob = orch.jobs.get("101");
+    assert.ok(selectedJob?.winners?.length > 0, "winners should be selected by on-chain path");
 
     await orch.handleFindings({
       type: MessageType.FINDINGS_SUBMITTED,

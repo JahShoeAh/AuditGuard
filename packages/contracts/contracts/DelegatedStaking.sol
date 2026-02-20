@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IHederaTokenService} from "./interfaces/IHederaTokenService.sol";
 
 // ─── Minimal interfaces ───────────────────────────────────────────────────────
@@ -18,6 +19,12 @@ interface IAgentRegistryDelegation {
 interface IStakingManagerDelegation {
     /// @notice Returns the effective self-stake of an agent (totalStaked - unbonding).
     function getEffectiveStake(address agent) external view returns (uint256);
+}
+
+/// @dev Minimal HbarPool surface for HBAR/GUARD conversion.
+interface IHbarPool {
+    function hbarToGuard() external payable returns (uint256 guardAmount);
+    function guardToHbarFor(uint256 guardAmount, address recipient) external returns (uint256 hbarAmount);
 }
 
 /// @title AuditGuard Delegated Staking
@@ -124,6 +131,9 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
 
     /// @notice Treasury address — receives the delegator portion of slashed GUARD.
     address public treasury;
+
+    /// @notice HbarPool contract — converts HBAR ↔ GUARD at fixed rate for user-facing operations.
+    address public hbarPool;
 
     // ──────────────────────────────────────────────
     //  State — Authorization
@@ -273,6 +283,13 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
 
         guardToken = _guardToken;
         treasury = _treasury;
+
+        // Associate with GUARD token via HTS (required on Hedera before receiving tokens)
+        int64 code = HTS.associateToken(address(this), _guardToken);
+        require(
+            code == HTS_SUCCESS || code == HTS_TOKEN_ALREADY_ASSOCIATED,
+            "DelegatedStaking: HTS association failed"
+        );
     }
 
     // ──────────────────────────────────────────────
@@ -307,7 +324,27 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     /// @param amount GUARD to delegate in smallest units (must be >= minDelegation).
     function delegate(address agent, uint96 amount) external nonReentrant whenNotPaused {
         require(amount >= minDelegation, "DelegatedStaking: below minimum delegation");
+        _transferGuard(msg.sender, address(this), amount);
+        _executeDelegation(msg.sender, agent, amount);
+    }
 
+    /// @notice Delegates using HBAR. Converts HBAR → GUARD via HbarPool, then delegates.
+    ///         Users never hold GUARD — the conversion is fully internal.
+    /// @param agent Agent wallet address to delegate to.
+    function delegateWithHbar(address agent) external payable nonReentrant whenNotPaused {
+        require(msg.value > 0, "DelegatedStaking: zero hbar");
+        require(hbarPool != address(0), "DelegatedStaking: hbar pool not set");
+
+        // Send HBAR to pool, receive GUARD back to this contract
+        uint256 guardAmount = IHbarPool(hbarPool).hbarToGuard{value: msg.value}();
+        require(guardAmount >= minDelegation, "DelegatedStaking: below minimum delegation");
+
+        _executeDelegation(msg.sender, agent, uint96(guardAmount));
+    }
+
+    /// @dev Core delegation logic shared by delegate() and delegateWithHbar().
+    ///      GUARD must already be in this contract before calling.
+    function _executeDelegation(address delegator, address agent, uint96 amount) internal {
         if (agentRegistry != address(0)) {
             require(
                 IAgentRegistryDelegation(agentRegistry).isActiveAgent(agent),
@@ -323,7 +360,7 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
             pool.rewardShareBps = uint16(defaultRewardBps);
         }
 
-        bytes32 key = _delegationKey(msg.sender, agent);
+        bytes32 key = _delegationKey(delegator, agent);
         Delegation storage d = delegations[key];
 
         if (!d.active) {
@@ -332,15 +369,15 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
                 pool.delegatorCount < maxDelegatorsPerAgent,
                 "DelegatedStaking: agent at max delegators"
             );
-            d.delegator = msg.sender;
+            d.delegator = delegator;
             d.agent = agent;
             d.delegatedAt = uint48(block.timestamp);
             d.active = true;
             d.rewardPerTokenPaid = pool.rewardPerTokStored;
 
             // Track lists (no duplicates)
-            _addToDelegatorAgents(msg.sender, agent);
-            _addToAgentDelegators(agent, msg.sender);
+            _addToDelegatorAgents(delegator, agent);
+            _addToAgentDelegators(agent, delegator);
 
             pool.delegatorCount++;
         } else {
@@ -348,15 +385,13 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
             _settlePending(d, pool);
         }
 
-        _transferGuard(msg.sender, address(this), amount);
-
         d.amount += amount;
         pool.totalDelegated += amount;
         totalDelegatedAllAgents += amount;
 
         d.lastRewardClaimAt = uint48(block.timestamp);
 
-        emit Delegated(msg.sender, agent, amount, pool.totalDelegated);
+        emit Delegated(delegator, agent, amount, pool.totalDelegated);
     }
 
     /// @notice Initiates an unbonding cooldown for a portion of a delegation.
@@ -399,11 +434,28 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     }
 
     /// @notice Completes a matured unbonding, returning GUARD to the delegator.
-    ///         If the remaining active delegation is zero after withdrawal, the delegation
-    ///         record is marked inactive and removed from pool counts.
-    /// @dev Callable by anyone on behalf of a delegator (permissionless completion).
     /// @param agent Agent wallet address the delegation targets.
     function completeUndelegate(address agent) external nonReentrant {
+        uint96 amount = _executeCompleteUndelegate(agent);
+        _transferGuard(address(this), msg.sender, amount);
+        emit UndelegationCompleted(msg.sender, agent, amount);
+    }
+
+    /// @notice Completes a matured unbonding, converting GUARD to HBAR and returning to delegator.
+    /// @param agent Agent wallet address the delegation targets.
+    function completeUndelegateToHbar(address agent) external nonReentrant {
+        require(hbarPool != address(0), "DelegatedStaking: hbar pool not set");
+        uint96 amount = _executeCompleteUndelegate(agent);
+
+        // Approve pool and convert GUARD → HBAR, sent directly to user
+        IERC20(guardToken).approve(hbarPool, amount);
+        IHbarPool(hbarPool).guardToHbarFor(amount, msg.sender);
+
+        emit UndelegationCompleted(msg.sender, agent, amount);
+    }
+
+    /// @dev Core undelegation completion logic.
+    function _executeCompleteUndelegate(address agent) internal returns (uint96 amount) {
         bytes32 key = _delegationKey(msg.sender, agent);
         Delegation storage d = delegations[key];
         require(d.active, "DelegatedStaking: no active delegation");
@@ -413,7 +465,7 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
             "DelegatedStaking: unbonding period not elapsed"
         );
 
-        uint96 amount = d.unbondingAmount;
+        amount = d.unbondingAmount;
         d.unbondingAmount = 0;
         d.unbondingCompleteAt = 0;
 
@@ -422,10 +474,6 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
             d.active = false;
             agentPools[agent].delegatorCount--;
         }
-
-        _transferGuard(address(this), msg.sender, amount);
-
-        emit UndelegationCompleted(msg.sender, agent, amount);
     }
 
     // ──────────────────────────────────────────────
@@ -473,20 +521,20 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     ///      Calling this frequently is gas-efficient (O(1) math, one HTS transfer).
     /// @param agent Agent wallet whose pool to claim from.
     function claimRewards(address agent) external nonReentrant {
-        bytes32 key = _delegationKey(msg.sender, agent);
-        Delegation storage d = delegations[key];
-        require(d.active, "DelegatedStaking: no active delegation");
-
-        AgentDelegationPool storage pool = agentPools[agent];
-        _settlePending(d, pool);
-
-        uint96 reward = d.pendingRewards;
-        require(reward > 0, "DelegatedStaking: no rewards to claim");
-
-        d.pendingRewards = 0;
-        d.lastRewardClaimAt = uint48(block.timestamp);
-
+        uint96 reward = _executeClaimRewards(agent);
         _transferGuard(address(this), msg.sender, reward);
+        emit RewardsClaimed(msg.sender, agent, reward);
+    }
+
+    /// @notice Claims accumulated rewards for a single agent, converting GUARD → HBAR via HbarPool.
+    /// @param agent Agent wallet whose pool to claim from.
+    function claimRewardsAsHbar(address agent) external nonReentrant {
+        require(hbarPool != address(0), "DelegatedStaking: hbar pool not set");
+        uint96 reward = _executeClaimRewards(agent);
+
+        // Convert GUARD → HBAR and send directly to user
+        IERC20(guardToken).approve(hbarPool, reward);
+        IHbarPool(hbarPool).guardToHbarFor(reward, msg.sender);
 
         emit RewardsClaimed(msg.sender, agent, reward);
     }
@@ -496,29 +544,20 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     /// @dev Gas cost grows linearly with the number of agent delegations. Callers with
     ///      many delegations should claim individually to stay within block gas limits.
     function claimAllRewards() external nonReentrant {
-        address[] storage agents = delegatorAgents[msg.sender];
-        uint256 total = agents.length;
+        uint256 totalReward = _executeClaimAllRewards();
+        _transferGuard(address(this), msg.sender, totalReward);
+    }
 
-        for (uint256 i = 0; i < total; i++) {
-            address agent = agents[i];
-            bytes32 key = _delegationKey(msg.sender, agent);
-            Delegation storage d = delegations[key];
+    /// @notice Claims rewards from all agents, converting total GUARD → HBAR in one batch.
+    function claimAllRewardsAsHbar() external nonReentrant {
+        require(hbarPool != address(0), "DelegatedStaking: hbar pool not set");
+        uint256 totalReward = _executeClaimAllRewards();
 
-            if (!d.active) continue;
+        require(totalReward > 0, "DelegatedStaking: no rewards to claim");
 
-            AgentDelegationPool storage pool = agentPools[agent];
-            _settlePending(d, pool);
-
-            uint96 reward = d.pendingRewards;
-            if (reward == 0) continue;
-
-            d.pendingRewards = 0;
-            d.lastRewardClaimAt = uint48(block.timestamp);
-
-            _transferGuard(address(this), msg.sender, reward);
-
-            emit RewardsClaimed(msg.sender, agent, reward);
-        }
+        // Single batch conversion: GUARD → HBAR → user
+        IERC20(guardToken).approve(hbarPool, totalReward);
+        IHbarPool(hbarPool).guardToHbarFor(totalReward, msg.sender);
     }
 
     // ──────────────────────────────────────────────
@@ -730,36 +769,6 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
         return _computePending(d, agentPools[agent]);
     }
 
-    /// @notice Returns all agents sorted by totalDelegated descending.
-    ///         Limited to agents that have at least one delegation.
-    /// @dev [Frontend] Agent leaderboard — "Most Backed" sort option.
-    ///      Iterates all agents with pools — gas-heavy; use off-chain indexing for scale.
-    /// @param maxResults Maximum number of results to return (cap at call site).
-    /// @return agents_  Sorted agent addresses (highest delegation first).
-    /// @return totals   Corresponding totalDelegated values.
-    function getTopAgentsByDelegation(
-        uint256 maxResults
-    ) external view returns (address[] memory agents_, uint96[] memory totals) {
-        // Collect agents with non-zero pools
-        // We use agentDelegators length to enumerate active agents
-        // In production, maintain a separate sorted list; this is adequate for hackathon scale
-        uint256 found = 0;
-        // Temporary arrays bounded by maxResults
-        address[] memory tmp = new address[](maxResults);
-        uint96[] memory tvals = new uint96[](maxResults);
-
-        // Enumerate: iterate all delegatorAgents to find unique agents
-        // This is O(n) and acceptable for small hackathon datasets
-        // For each address that has a pool with totalDelegated > 0, include it
-        // We can't enumerate all agents without a list; we return what's been tracked.
-        // (In production, maintain address[] public allAgentsWithPool)
-
-        // Fallback: return empty — caller should use getDelegatorPortfolio per known agent
-        // This is a known limitation; the frontend uses per-agent queries in hooks.
-        agents_ = new address[](0);
-        totals = new uint96[](0);
-        return (agents_, totals);
-    }
 
     /// @notice Returns true if the delegator has an active delegation to the agent.
     /// @dev [Frontend] "Delegate" button state — is already delegating?
@@ -799,6 +808,13 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     function setTreasury(address _treasury) external onlyOwner {
         require(_treasury != address(0), "DelegatedStaking: address is zero");
         treasury = _treasury;
+    }
+
+    /// @notice Sets the HbarPool address for HBAR ↔ GUARD conversion.
+    /// @param _hbarPool New HbarPool contract address.
+    function setHbarPool(address _hbarPool) external onlyOwner {
+        require(_hbarPool != address(0), "DelegatedStaking: address is zero");
+        hbarPool = _hbarPool;
     }
 
     /// @notice Authorizes a contract to call distributeRewards (e.g., PaymentSettlement).
@@ -841,16 +857,6 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
         defaultRewardBps = bps;
     }
 
-    /// @notice Associates this contract with the GUARD token through HTS precompile.
-    /// @dev Call once post-deployment on Hedera; constructor precompile calls can revert.
-    function associateGuardToken() external onlyOwner nonReentrant {
-        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
-        require(
-            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
-            "DelegatedStaking: token association failed"
-        );
-        emit GuardTokenAssociated(guardToken);
-    }
 
     /// @notice Pauses delegation and reward operations. Emergency use only.
     function pause() external onlyOwner {
@@ -869,6 +875,48 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     /// @dev Returns the storage key for a delegator→agent pair.
     function _delegationKey(address delegator, address agent) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(delegator, agent));
+    }
+
+    /// @dev Core claim logic shared by claimRewards() and claimRewardsAsHbar().
+    function _executeClaimRewards(address agent) internal returns (uint96 reward) {
+        bytes32 key = _delegationKey(msg.sender, agent);
+        Delegation storage d = delegations[key];
+        require(d.active, "DelegatedStaking: no active delegation");
+
+        AgentDelegationPool storage pool = agentPools[agent];
+        _settlePending(d, pool);
+
+        reward = d.pendingRewards;
+        require(reward > 0, "DelegatedStaking: no rewards to claim");
+
+        d.pendingRewards = 0;
+        d.lastRewardClaimAt = uint48(block.timestamp);
+    }
+
+    /// @dev Core claim-all logic shared by claimAllRewards() and claimAllRewardsAsHbar().
+    function _executeClaimAllRewards() internal returns (uint256 totalReward) {
+        address[] storage agents = delegatorAgents[msg.sender];
+        uint256 total = agents.length;
+
+        for (uint256 i = 0; i < total; i++) {
+            address agent = agents[i];
+            bytes32 key = _delegationKey(msg.sender, agent);
+            Delegation storage d = delegations[key];
+
+            if (!d.active) continue;
+
+            AgentDelegationPool storage pool = agentPools[agent];
+            _settlePending(d, pool);
+
+            uint96 reward = d.pendingRewards;
+            if (reward == 0) continue;
+
+            d.pendingRewards = 0;
+            d.lastRewardClaimAt = uint48(block.timestamp);
+            totalReward += reward;
+
+            emit RewardsClaimed(msg.sender, agent, reward);
+        }
     }
 
     /// @dev Settles pending rewards into d.pendingRewards and advances the checkpoint.
@@ -915,13 +963,19 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
         }
     }
 
-    /// @dev Transfers GUARD via HTS precompile. Mirrors StakingManager._transferGuard pattern.
+    /// @dev Transfers GUARD using ERC20 transferFrom (respects ERC20 approvals).
+    ///      For transfers from users to this contract, we use transferFrom which requires prior approval.
+    ///      For transfers from this contract to users, we use transfer.
     function _transferGuard(address from, address to, uint256 amount) internal {
-        require(
-            amount <= uint256(uint64(type(int64).max)),
-            "DelegatedStaking: amount exceeds int64"
-        );
-        int64 responseCode = HTS.transferToken(guardToken, from, to, int64(uint64(amount)));
-        require(responseCode == HTS_SUCCESS, "DelegatedStaking: HTS transfer failed");
+        if (from == address(this)) {
+            // Transfer from contract to user - use ERC20 transfer
+            require(IERC20(guardToken).transfer(to, amount), "DelegatedStaking: transfer failed");
+        } else {
+            // Transfer from user to contract - use ERC20 transferFrom (requires prior approval)
+            require(
+                IERC20(guardToken).transferFrom(from, to, amount),
+                "DelegatedStaking: transferFrom failed"
+            );
+        }
     }
 }

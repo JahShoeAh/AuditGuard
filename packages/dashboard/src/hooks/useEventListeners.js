@@ -45,12 +45,16 @@ export function useEventListeners(connection) {
         // Day 1
         addDiscovery:              useStore.getState().addDiscovery,
         addLogEntry:               useStore.getState().addLogEntry,
+        upsertEvent:               useStore.getState().upsertEvent,
         setJob:                    useStore.getState().setJob,
+        setJobTerminal:            useStore.getState().setJobTerminal,
         addBid:                    useStore.getState().addBid,
         setWinners:                useStore.getState().setWinners,
         setAgent:                  useStore.getState().setAgent,
         incrementStat:             useStore.getState().incrementStat,
         get agents()               { return useStore.getState().agents; },
+        get activeJobs()           { return useStore.getState().activeJobs; },
+        get reportMetadata()       { return useStore.getState().reportMetadata; },
         // Day 2 — SubAuction
         addSubJob:                 useStore.getState().addSubJob,
         addSubBid:                 useStore.getState().addSubBid,
@@ -65,12 +69,14 @@ export function useEventListeners(connection) {
         addSettlement:             useStore.getState().addSettlement,
         // Day 2 — GUARD flows
         addGuardFlow:              useStore.getState().addGuardFlow,
+        upsertGuardFlow:           useStore.getState().upsertGuardFlow,
         // Day 3 — StakingManager
         updateAgentStake:          useStore.getState().updateAgentStake,
         addSlashEvent:             useStore.getState().addSlashEvent,
         // Day 3 — Treasury
         addTreasuryRevenue:        useStore.getState().addTreasuryRevenue,
         addTreasuryDistribution:   useStore.getState().addTreasuryDistribution,
+        setIngestionHealth:        useStore.getState().setIngestionHealth,
       };
       const service = new EventListenerService(config, contracts, storeActions, ethersProvider);
       const stop = service.startAll();

@@ -73,6 +73,22 @@ describe('Store — Auction jobs and bids', () => {
     expect(lifecycle).toHaveLength(2);
     expect(lifecycle[0].status).toBe('skipped');
   });
+
+  it('should dedupe bid lifecycle rows by eventId/status/agent', () => {
+    useStore.getState().addJobBidStatus('1', {
+      status: 'invite_sent',
+      agentId: 'static-47',
+      eventId: 'hcs:0.0.2:77:summary:static-47',
+    });
+    useStore.getState().addJobBidStatus('1', {
+      status: 'invite_sent',
+      agentId: 'static-47',
+      eventId: 'hcs:0.0.2:77:summary:static-47',
+    });
+
+    const lifecycle = useStore.getState().jobBidStatus['1'];
+    expect(lifecycle).toHaveLength(1);
+  });
 });
 
 describe('Store — LLM provider/inference status', () => {
@@ -188,6 +204,20 @@ describe('Store — GUARD flow tracking', () => {
     expect(useStore.getState().guardFlows).toHaveLength(1);
     expect(useStore.getState().guardFlows[0].amount).toBe(15);
   });
+
+  it('should dedupe guard flows by flowId with upsertGuardFlow', () => {
+    useStore.getState().upsertGuardFlow({
+      flowId: 'flow:1',
+      from: '0xAAA', to: '0xBBB', amount: 10, type: 'MAIN_AUDIT',
+    });
+    useStore.getState().upsertGuardFlow({
+      flowId: 'flow:1',
+      from: '0xAAA', to: '0xBBB', amount: 10, type: 'MAIN_AUDIT',
+    });
+
+    expect(useStore.getState().guardFlows).toHaveLength(1);
+    expect(useStore.getState().ingestionHealth.duplicatesDropped).toBe(1);
+  });
 });
 
 describe('Store — Stats', () => {
@@ -241,7 +271,47 @@ describe('Store — Reputation history', () => {
 
 describe('Store — Winners', () => {
   it('should set winner addresses for a job', () => {
-    useStore.getState().setWinners('J1', ['0xAAA', '0xBBB']);
-    expect(useStore.getState().winners['J1']).toEqual(['0xAAA', '0xBBB']);
+    useStore.getState().setWinners('J1', { agents: ['0xAAA', '0xBBB'] });
+    expect(useStore.getState().winners['J1']).toEqual({ agents: ['0xAAA', '0xBBB'] });
+  });
+});
+
+describe('Store — Event dedupe', () => {
+  it('should dedupe log entries by eventId with upsertEvent', () => {
+    useStore.getState().upsertEvent({ eventId: 'hcs:0.0.1:1', type: 'PING' });
+    useStore.getState().upsertEvent({ eventId: 'hcs:0.0.1:1', type: 'PING' });
+
+    expect(useStore.getState().auditLog).toHaveLength(1);
+    expect(useStore.getState().ingestionHealth.duplicatesDropped).toBe(1);
+  });
+});
+
+describe('Store — Ingestion health', () => {
+  it('tracks required ingestion health counters and topic cursors', () => {
+    const health = useStore.getState().ingestionHealth;
+    expect(health.lastTopicSeq).toEqual({ discovery: 0, auditLog: 0, agentComms: 0 });
+    expect(health.duplicateDrops).toBe(0);
+    expect(health.contractEventsSeen).toBe(0);
+    expect(health.hcsEventsSeen).toBe(0);
+    expect(health.activeAuctionsCount).toBe(0);
+  });
+
+  it('merges lastHcsSeq and lastTopicSeq patches without dropping existing keys', () => {
+    useStore.getState().setIngestionHealth({
+      lastHcsSeq: { discovery: 9 },
+      lastTopicSeq: { discovery: 9 },
+      hcsEventsSeen: 10,
+    });
+    useStore.getState().setIngestionHealth({
+      lastHcsSeq: { auditLog: 12 },
+      lastTopicSeq: { auditLog: 12 },
+      contractEventsSeen: 5,
+    });
+
+    const health = useStore.getState().ingestionHealth;
+    expect(health.lastHcsSeq).toEqual({ discovery: 9, auditLog: 12, agentComms: 0 });
+    expect(health.lastTopicSeq).toEqual({ discovery: 9, auditLog: 12, agentComms: 0 });
+    expect(health.hcsEventsSeen).toBe(10);
+    expect(health.contractEventsSeen).toBe(5);
   });
 });

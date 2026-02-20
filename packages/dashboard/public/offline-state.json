@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1771486422785,
+  "generatedAt": 1771569846035,
   "discoveries": [
     {
       "type": "CONTRACT_DISCOVERY",
@@ -8,8 +8,8 @@
       "chain": "hedera",
       "estimatedLineCount": 1800,
       "initialRiskScore": 82,
-      "discoveryTimestamp": "2026-02-19T07:33:42.785Z",
-      "timestamp": 1771486422785
+      "discoveryTimestamp": "2026-02-20T06:44:06.035Z",
+      "timestamp": 1771569846036
     }
   ],
   "activeJobs": {
@@ -19,12 +19,12 @@
       "contractChain": "hedera",
       "contractType": "lending",
       "budgetAvailable": 12000000000,
-      "auctionDeadline": 1771486542,
+      "auctionDeadline": 1771569966,
       "initialRiskScore": 82,
       "lineCount": 1800,
-      "discoveredAt": 1771486417785,
-      "postedAt": 1771486419785,
-      "winnersAt": 1771486421785
+      "discoveredAt": 1771569841036,
+      "postedAt": 1771569843036,
+      "winnersAt": 1771569845036
     }
   },
   "bids": {
@@ -37,7 +37,7 @@
         "collateralLocked": 6,
         "reputationAtBid": 91,
         "estimatedCompletionTime": 220,
-        "timestamp": 1771486422783
+        "timestamp": 1771569846034
       },
       {
         "jobId": "4242",
@@ -47,7 +47,7 @@
         "collateralLocked": 5,
         "reputationAtBid": 87,
         "estimatedCompletionTime": 280,
-        "timestamp": 1771486422783
+        "timestamp": 1771569846034
       },
       {
         "jobId": "4242",
@@ -57,7 +57,7 @@
         "collateralLocked": 8,
         "reputationAtBid": 95,
         "estimatedCompletionTime": 190,
-        "timestamp": 1771486422783
+        "timestamp": 1771569846034
       }
     ]
   },
@@ -69,7 +69,7 @@
         "0x00000000000000000000000000000000000000b2"
       ],
       "winnerCount": 3,
-      "winnersAt": 1771486422785
+      "winnersAt": 1771569846036
     }
   },
   "agents": {
@@ -112,16 +112,16 @@
       "jobId": "4242",
       "totalDisbursed": 0,
       "recipientCount": 2,
-      "settledAt": 1771486422785
+      "settledAt": 1771569846036
     }
   ],
   "auditLog": [
     {
       "type": "JOB_CREATED",
       "agentId": "orchestrator",
-      "timestamp": 1771486422782,
+      "timestamp": 1771569846032,
       "payload": {
-        "jobId": "4242",
+        "jobId": 4242,
         "contractAddress": "0xdeadbeef00000000000000000000000000ff1111",
         "contractType": "lending",
         "budget": 120,
@@ -135,9 +135,9 @@
     {
       "type": "AUCTION_INVITE_SUMMARY",
       "agentId": "orchestrator",
-      "timestamp": 1771486422782,
+      "timestamp": 1771569846033,
       "payload": {
-        "jobId": "4242",
+        "jobId": 4242,
         "contractType": "lending",
         "eligibleAgents": [
           {
@@ -170,24 +170,9 @@
       "source": "offline-test"
     },
     {
-      "type": "WINNERS_SELECTED_FALLBACK",
-      "agentId": "orchestrator",
-      "timestamp": 1771486422783,
-      "payload": {
-        "jobId": "4242",
-        "winners": [
-          "0x00000000000000000000000000000000000000a1",
-          "0x00000000000000000000000000000000000000c3",
-          "0x00000000000000000000000000000000000000b2"
-        ]
-      },
-      "id": "offline-3",
-      "source": "offline-test"
-    },
-    {
       "type": "REPORT_PUBLISHED",
       "agentId": "report-agent",
-      "timestamp": 1771486422784,
+      "timestamp": 1771569846035,
       "payload": {
         "jobId": "4242",
         "totalFindings": 16,
@@ -199,24 +184,24 @@
           "practice-lowstake"
         ]
       },
-      "id": "offline-4",
+      "id": "offline-3",
       "source": "offline-test"
     },
     {
       "type": "ALERT_FIRED",
       "agentId": "orchestrator",
-      "timestamp": 1771486422784,
+      "timestamp": 1771569846035,
       "payload": {
         "jobId": "4242",
         "criticalFindings": 7
       },
-      "id": "offline-5",
+      "id": "offline-4",
       "source": "offline-test"
     },
     {
       "type": "PAYMENT_SETTLED",
       "agentId": "orchestrator",
-      "timestamp": 1771486422785,
+      "timestamp": 1771569846035,
       "payload": {
         "jobId": "4242",
         "recipients": [
@@ -226,17 +211,29 @@
         "reportAgent": "0x0000000000000000000000000000000000000abc",
         "winnerCount": 3
       },
+      "id": "offline-5",
+      "source": "offline-test"
+    },
+    {
+      "type": "REPUTATION_UPDATED",
+      "agentId": "orchestrator",
+      "timestamp": 1771569846035,
+      "payload": {
+        "jobId": "4242",
+        "agentId": "practice-static-1",
+        "delta": 6
+      },
       "id": "offline-6",
       "source": "offline-test"
     },
     {
       "type": "REPUTATION_UPDATED",
       "agentId": "orchestrator",
-      "timestamp": 1771486422785,
+      "timestamp": 1771569846035,
       "payload": {
         "jobId": "4242",
-        "agentId": "practice-static-1",
-        "delta": 6
+        "agentId": "practice-fuzzer-1",
+        "delta": 5
       },
       "id": "offline-7",
       "source": "offline-test"
@@ -244,25 +241,13 @@
     {
       "type": "REPUTATION_UPDATED",
       "agentId": "orchestrator",
-      "timestamp": 1771486422785,
-      "payload": {
-        "jobId": "4242",
-        "agentId": "practice-fuzzer-1",
-        "delta": 5
-      },
-      "id": "offline-8",
-      "source": "offline-test"
-    },
-    {
-      "type": "REPUTATION_UPDATED",
-      "agentId": "orchestrator",
-      "timestamp": 1771486422785,
+      "timestamp": 1771569846035,
       "payload": {
         "jobId": "4242",
         "agentId": "practice-lowstake",
         "delta": 19
       },
-      "id": "offline-9",
+      "id": "offline-8",
       "source": "offline-test"
     }
   ],

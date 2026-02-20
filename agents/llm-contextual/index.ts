@@ -5,6 +5,10 @@ import {
   createAgentWallet,
   CONFIG,
   computeLiveBid,
+  ensureBidCollateralBalance,
+  getBidCollateralTopUpConfig,
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
   isRetriableBidFailure,
   normalizeBidFailureReasonCode,
   randomInt,
@@ -28,6 +32,7 @@ import {
   infer,
   getReadinessSnapshot,
   ZGClientError,
+  canonicalizeModelId,
 } from "./zg-client.js";
 import { buildMessages } from "./prompt-builder.js";
 import { parseFindings } from "./response-parser.js";
@@ -107,12 +112,32 @@ function updatePricingAfterOutcome(won: boolean) {
 function normalizeZgFailureReasonCode(error: unknown): string {
   if (error instanceof ZGClientError) return error.code;
   const message = String(error ?? "").toLowerCase();
+  if (message.includes("@0glabs/0g-serving-broker")) return "missing_runtime_dependency";
+  if (message.includes("does not provide an export named")) return "zg_broker_module_interop_error";
+  if (message.includes("model not supported")) return "zg_model_mismatch";
+  if (message.includes("configured model") && message.includes("provider")) return "zg_model_mismatch";
   if (message.includes("timeout")) return "zg_timeout";
   if (message.includes("metadata")) return "zg_provider_metadata_failed";
   if (message.includes("header")) return "zg_request_headers_failed";
   if (message.includes("ack")) return "zg_provider_ack_failed";
   if (message.includes("ledger")) return "zg_ledger_unfunded";
   return "zg_http_error";
+}
+
+function formatZgStartupFailure(reasonCode: string, reason: string): string {
+  if (reasonCode === "missing_runtime_dependency") {
+    return (
+      "Startup blocked: missing runtime dependency '@0glabs/0g-serving-broker'. " +
+      "Run `npm --workspace agents install` then retry."
+    );
+  }
+  if (reasonCode === "zg_broker_module_interop_error") {
+    return (
+      "Startup blocked: 0g broker module interop error. " +
+      "Set `ZG_BROKER_LOADER_MODE=auto` (recommended) or update @0glabs/0g-serving-broker."
+    );
+  }
+  return `Strict live startup blocked: ${reasonCode}: ${reason}`;
 }
 
 // ---- Bidding Logic ----
@@ -225,6 +250,7 @@ interface AnalyzeResult {
   providerAddress?: string;
   model?: string;
   requestId?: string;
+  modelAutoCorrected?: boolean;
 }
 
 export async function analyzeWithAI(
@@ -243,14 +269,18 @@ export async function analyzeWithAI(
   }
 
   const cfg = (CONFIG as any).zgInference ?? {};
-  const model = cfg.model || process.env.ZG_MODEL || zgRuntime.model || "qwen-2.5-7b-instruct";
+  const requestedModel =
+    zgRuntime.model ||
+    cfg.model ||
+    process.env.ZG_MODEL ||
+    "";
   const messages = buildMessages(ctx);
   const maxAttempts = 2;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const inference = await infer({
-        model,
+        model: requestedModel,
         messages,
         temperature: 0.3,
         max_tokens: 4000,
@@ -280,8 +310,13 @@ export async function analyzeWithAI(
         providerAddress: inference.providerAddress,
         model: inference.model,
         requestId: inference.requestId,
+        modelAutoCorrected: inference.modelAutoCorrected,
       };
     } catch (err) {
+      const reasonCode = normalizeZgFailureReasonCode(err);
+      if (reasonCode === "missing_runtime_dependency") {
+        throw err;
+      }
       const errMsg = err instanceof Error ? err.message : String(err);
       log.warn(`[0g] Inference error (attempt ${attempt}): ${errMsg}`);
       if (attempt < maxAttempts) {
@@ -336,7 +371,7 @@ async function main() {
         reason,
         strictLive: true,
         providerAddress: (CONFIG as any).zgInference?.providerAddress ?? process.env.ZG_PROVIDER_ADDRESS ?? "",
-        model: (CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? "",
+        model: canonicalizeModelId((CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? ""),
       },
     });
     throw new Error(reason);
@@ -374,11 +409,15 @@ async function main() {
           reason,
           strictLive: STRICT_LIVE_ZG_REQUIRED,
           providerAddress: (CONFIG as any).zgInference?.providerAddress ?? process.env.ZG_PROVIDER_ADDRESS ?? "",
-          model: (CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? "",
+          model: canonicalizeModelId((CONFIG as any).zgInference?.model ?? process.env.ZG_MODEL ?? ""),
+          dependency:
+            reasonCode === "missing_runtime_dependency"
+              ? "@0glabs/0g-serving-broker"
+              : undefined,
         },
       });
-      if (STRICT_LIVE_ZG_REQUIRED) {
-        throw new Error(`Strict live startup blocked: ${reasonCode}: ${reason}`);
+      if (reasonCode === "missing_runtime_dependency" || STRICT_LIVE_ZG_REQUIRED) {
+        throw new Error(formatZgStartupFailure(reasonCode, reason));
       }
       log.warn(`0g startup not healthy; mock fallback remains enabled in non-strict mode: ${reason}`);
     }
@@ -401,6 +440,30 @@ async function main() {
     log.warn(`Failed to read MIN_BID_COLLATERAL from chain, using config default: ${error}`);
   }
   log.info(`Live bid policy: min collateral ${minBidCollateralGuard.toFixed(2)} GUARD`);
+  if (!DEMO_MODE) {
+    const topUpConfig = getBidCollateralTopUpConfig();
+    log.info(
+      `Collateral auto-top-up: ${topUpConfig.enabled ? "enabled" : "disabled"} ` +
+      `(donors=${topUpConfig.donorsConfigured})`
+    );
+    if (topUpConfig.donorAddressesMasked.length > 0) {
+      log.info(`Collateral donors: ${topUpConfig.donorAddressesMasked.join(", ")}`);
+    }
+    if (topUpConfig.donorWarning) {
+      log.warn(`Collateral auto-top-up config: ${topUpConfig.donorWarning}`);
+    }
+    const hbarTopUpConfig = getHbarTopUpConfig();
+    log.info(
+      `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
+      `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR)`
+    );
+    if (hbarTopUpConfig.donorAddressesMasked.length > 0) {
+      log.info(`HBAR donors: ${hbarTopUpConfig.donorAddressesMasked.join(", ")}`);
+    }
+    if (hbarTopUpConfig.donorWarning) {
+      log.warn(`HBAR auto-top-up config: ${hbarTopUpConfig.donorWarning}`);
+    }
+  }
 
   // Register with the orchestrator so our bids are accepted
   await hcs.publishAuditLog({
@@ -418,7 +481,6 @@ async function main() {
 
   if (STRICT_LIVE && !DEMO_MODE) {
     let startupActive = false;
-    let startupAllowanceOk = true;
 
     try {
       startupActive = await contracts.isActiveAgent(wallet.evmAddress);
@@ -436,6 +498,54 @@ async function main() {
       }
     }
 
+    if (NO_FALLBACK_MODE && !startupActive) {
+      throw new Error(
+        "Startup preflight failed: wallet is not an active on-chain agent. " +
+        "Run 'npm run activate:live-agents' and retry."
+      );
+    }
+  }
+
+  if (!DEMO_MODE) {
+    let startupAllowanceOk = true;
+    let startupCollateralOk = true;
+    let startupHbarOk = true;
+    const hbarTopUpConfig = getHbarTopUpConfig();
+
+    const startupHbar = await ensureOperationalHbar({
+      contracts,
+      recipientAddress: wallet.evmAddress,
+      requiredWei: hbarTopUpConfig.minRequiredWei,
+      logger: log,
+    });
+    if (!startupHbar.ok) {
+      startupHbarOk = false;
+      log.warn(
+        `Startup preflight: ${startupHbar.reason ?? "Insufficient payer HBAR for transaction fees"}`
+      );
+    } else if (startupHbar.toppedUpWei > 0n) {
+      log.info(
+        `Startup preflight: topped up ${ethers.formatEther(startupHbar.toppedUpWei)} HBAR`
+      );
+    }
+
+    const startupCollateral = await ensureBidCollateralBalance({
+      contracts,
+      recipientAddress: wallet.evmAddress,
+      requiredWei: minBidCollateralWei,
+      logger: log,
+    });
+    if (!startupCollateral.ok) {
+      startupCollateralOk = false;
+      log.warn(
+        `Startup preflight: ${startupCollateral.reason ?? "Insufficient GUARD balance for bid collateral"}`
+      );
+    } else if (startupCollateral.toppedUpWei > 0n) {
+      log.info(
+        `Startup preflight: topped up ${ethers.formatUnits(startupCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
+      );
+    }
+
     try {
       const approvalTx = await contracts.ensureGuardAllowance(
         contracts.getAuctionAddress(),
@@ -451,9 +561,15 @@ async function main() {
       startupAllowanceOk = false;
     }
 
-    if (NO_FALLBACK_MODE && !startupActive) {
+    if (NO_FALLBACK_MODE && !startupCollateralOk) {
       throw new Error(
-        "Startup preflight failed: wallet is not an active on-chain agent. " +
+        "Startup preflight failed: insufficient GUARD collateral and auto top-up could not satisfy minimum. " +
+        "Run 'npm run activate:live-agents' and retry."
+      );
+    }
+    if (NO_FALLBACK_MODE && !startupHbarOk) {
+      throw new Error(
+        "Startup preflight failed: insufficient payer HBAR and auto top-up could not satisfy minimum. " +
         "Run 'npm run activate:live-agents' and retry."
       );
     }
@@ -495,7 +611,27 @@ async function main() {
     }
 
     if (msg.type === "AUCTION_INVITE") {
-      const { jobId, contractAddress, contractType, riskScore, estimatedLOC, estimatedLineCount, budget } = (msg as any).payload;
+      const {
+        jobId,
+        contractAddress,
+        contractType,
+        riskScore,
+        estimatedLOC,
+        estimatedLineCount,
+        budget,
+        eligibleAgentIds,
+        eligibleEvmAddresses,
+      } = (msg as any).payload;
+      const targetedIds = Array.isArray(eligibleAgentIds) ? eligibleAgentIds.map((v: unknown) => String(v)) : [];
+      const targetedAddresses = Array.isArray(eligibleEvmAddresses)
+        ? eligibleEvmAddresses.map((v: unknown) => String(v).toLowerCase())
+        : [];
+      if (targetedIds.length > 0 || targetedAddresses.length > 0) {
+        const myAddress = wallet.evmAddress.toLowerCase();
+        if (!targetedIds.includes(AGENT_ID) && !targetedAddresses.includes(myAddress)) {
+          return;
+        }
+      }
       const jobKey = String(jobId);
       if (bidSubmittedJobs.has(jobKey) || pendingJobs.has(jobKey)) {
         log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (already bid)`);
@@ -546,9 +682,10 @@ async function main() {
         `(collateral ${finalBid.collateral} GUARD)`
       );
 
+      const strictLiveBid = STRICT_LIVE && !DEMO_MODE;
       bidInFlightJobs.add(jobKey);
       try {
-        if (STRICT_LIVE && !DEMO_MODE) {
+        if (strictLiveBid) {
           let active = false;
           try {
             active = await contracts.isActiveAgent(wallet.evmAddress);
@@ -566,7 +703,7 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
@@ -585,15 +722,23 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
             return;
           }
+        }
 
-          const balance = await contracts.getGuardBalance(wallet.evmAddress);
-          if (balance < finalBid.collateralWei) {
+        if (!DEMO_MODE) {
+          const hbarTopUpConfig = getHbarTopUpConfig();
+          const payerReady = await ensureOperationalHbar({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: hbarTopUpConfig.minRequiredWei,
+            logger: log,
+          });
+          if (!payerReady.ok) {
             await hcs.publishAuditLog({
               type: "BID_SKIPPED",
               agentId: AGENT_ID,
@@ -601,16 +746,60 @@ async function main() {
               payload: {
                 jobId: String(jobId),
                 contractAddress,
-                reason: "Insufficient GUARD balance for bid collateral",
-                reasonCode: "insufficient_collateral_balance",
+                reason: payerReady.reason ?? "Insufficient payer HBAR for transaction fees",
+                reasonCode: payerReady.reasonCode ?? "insufficient_payer_hbar",
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
+                hbarBalance: ethers.formatEther(payerReady.balanceWei),
+                autoTopUpAttempted: payerReady.attemptedTopUp,
+                topUpSources: payerReady.donorAddressesUsed ?? [],
               },
             });
             return;
+          }
+          if (payerReady.toppedUpWei > 0n) {
+            log.info(
+              `Auto top-up applied before bid: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`
+            );
+          }
+
+          const collateralReady = await ensureBidCollateralBalance({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: finalBid.collateralWei,
+            logger: log,
+          });
+          if (!collateralReady.ok) {
+            await hcs.publishAuditLog({
+              type: "BID_SKIPPED",
+              agentId: AGENT_ID,
+              timestamp: Date.now(),
+              payload: {
+                jobId: String(jobId),
+                contractAddress,
+                reason: collateralReady.reason ?? "Insufficient GUARD balance for bid collateral",
+                reasonCode: collateralReady.attemptedTopUp
+                  ? "insufficient_collateral_balance_after_topup"
+                  : "insufficient_collateral_balance",
+                computedBid: finalBid.amount,
+                computedCollateral: finalBid.collateral,
+                budget: finalBid.inviteBudget ?? Number(budget ?? 0),
+                strictLive: strictLiveBid,
+                evmAddress: wallet.evmAddress,
+                availableCollateral: Number(ethers.formatUnits(collateralReady.balanceWei, GUARD_DECIMALS)),
+                autoTopUpAttempted: collateralReady.attemptedTopUp,
+                topUpSources: collateralReady.donorAddressesUsed ?? [],
+              },
+            });
+            return;
+          }
+          if (collateralReady.toppedUpWei > 0n) {
+            log.info(
+              `Auto top-up applied before bid: +${ethers.formatUnits(collateralReady.toppedUpWei, GUARD_DECIMALS)} GUARD`
+            );
           }
 
           try {
@@ -636,7 +825,7 @@ async function main() {
                 computedBid: finalBid.amount,
                 computedCollateral: finalBid.collateral,
                 budget: finalBid.inviteBudget ?? Number(budget ?? 0),
-                strictLive: true,
+                strictLive: strictLiveBid,
                 evmAddress: wallet.evmAddress,
               },
             });
@@ -674,6 +863,60 @@ async function main() {
               if (reasonCode === "duplicate_bid") {
                 alreadyBidOnChain = true;
                 return;
+              }
+              const payerFailure =
+                reasonCode === "insufficient_payer_hbar" ||
+                error.toLowerCase().includes("insufficient funds for transfer");
+              if (payerFailure && attempt < maxAttempts) {
+                const recoveredPayer = await ensureOperationalHbar({
+                  contracts,
+                  recipientAddress: wallet.evmAddress,
+                  requiredWei: getHbarTopUpConfig().minRequiredWei,
+                  logger: log,
+                });
+                if (recoveredPayer.ok) {
+                  if (recoveredPayer.toppedUpWei > 0n) {
+                    log.info(
+                      `Recovered payer gas before retry: +${ethers.formatEther(recoveredPayer.toppedUpWei)} HBAR`
+                    );
+                  }
+                  await sleep(300 * attempt);
+                  continue;
+                }
+              }
+              const errorLower = error.toLowerCase();
+              const collateralFailure =
+                !DEMO_MODE &&
+                (
+                  reasonCode === "insufficient_funds" ||
+                  errorLower.includes("collateral") ||
+                  errorLower.includes("allowance") ||
+                  errorLower.includes("transfer amount exceeds balance") ||
+                  errorLower.includes("insufficient guard")
+                );
+              if (collateralFailure && attempt < maxAttempts) {
+                const recoveredCollateral = await ensureBidCollateralBalance({
+                  contracts,
+                  recipientAddress: wallet.evmAddress,
+                  requiredWei: finalBid.collateralWei,
+                  logger: log,
+                });
+                if (recoveredCollateral.ok) {
+                  if (recoveredCollateral.toppedUpWei > 0n) {
+                    log.info(
+                      `Recovered collateral before retry: +${ethers.formatUnits(recoveredCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
+                    );
+                  }
+                  const approvalTx = await contracts.ensureGuardAllowance(
+                    contracts.getAuctionAddress(),
+                    finalBid.collateralWei
+                  );
+                  if (approvalTx) {
+                    await approvalTx.wait?.();
+                  }
+                  await sleep(300 * attempt);
+                  continue;
+                }
               }
               const retriable = isRetriableBidFailure(error);
               if (!retriable || attempt === maxAttempts) {
@@ -736,6 +979,8 @@ async function main() {
             strictLive: STRICT_LIVE && !DEMO_MODE,
             error,
             reasonCode,
+            guardBalance: Number(ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)),
+            hbarBalance: ethers.formatEther(await contracts.wallet.provider.getBalance(wallet.evmAddress)),
           },
         });
         return;
@@ -965,7 +1210,7 @@ async function simulateAuditCycle(
       jobId,
       contractAddress,
       providerAddress: zgRuntime.providerAddress || (CONFIG as any).zgInference?.providerAddress || process.env.ZG_PROVIDER_ADDRESS || "",
-      model: zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || "",
+      model: canonicalizeModelId(zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || ""),
       strictLive: STRICT_LIVE_ZG_REQUIRED,
     },
   });
@@ -973,8 +1218,11 @@ async function simulateAuditCycle(
   let findings: Finding[] = [];
   let usedFallback = false;
   let inferenceProviderAddress = zgRuntime.providerAddress || (CONFIG as any).zgInference?.providerAddress || process.env.ZG_PROVIDER_ADDRESS || "";
-  let inferenceModel = zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || "";
+  let inferenceModel = canonicalizeModelId(
+    zgRuntime.model || (CONFIG as any).zgInference?.model || process.env.ZG_MODEL || ""
+  );
   let inferenceRequestId: string | undefined;
+  let inferenceModelAutoCorrected = false;
 
   try {
     const analysis = await analyzeWithAI({
@@ -989,6 +1237,7 @@ async function simulateAuditCycle(
     inferenceProviderAddress = analysis.providerAddress || inferenceProviderAddress;
     inferenceModel = analysis.model || inferenceModel;
     inferenceRequestId = analysis.requestId;
+    inferenceModelAutoCorrected = analysis.modelAutoCorrected === true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const reasonCode = normalizeZgFailureReasonCode(err);
@@ -1003,6 +1252,7 @@ async function simulateAuditCycle(
         reason,
         providerAddress: inferenceProviderAddress,
         model: inferenceModel,
+        modelAutoCorrected: inferenceModelAutoCorrected,
         strictLive: STRICT_LIVE_ZG_REQUIRED,
       },
     });
@@ -1046,6 +1296,7 @@ async function simulateAuditCycle(
       providerAddress: inferenceProviderAddress,
       model: inferenceModel,
       requestId: inferenceRequestId ?? null,
+      modelAutoCorrected: inferenceModelAutoCorrected,
       strictLive: STRICT_LIVE_ZG_REQUIRED,
     },
   });

@@ -1,16 +1,9 @@
-import { BrowserProvider, Contract, formatEther, formatUnits } from 'ethers';
+import { BrowserProvider, formatEther } from 'ethers';
 import { create } from 'zustand';
-import { loadConfig } from '../services/hedera-connection';
 
 const HEDERA_TESTNET_HEX_CHAIN_ID = '0x128';
 const HEDERA_TESTNET_DEC_CHAIN_ID = '296';
 const BALANCE_POLL_MS = 30_000;
-
-const ERC20_ABI = ['function balanceOf(address owner) view returns (uint256)'];
-const EXCHANGE_ABI = [
-  'function getRate() view returns (uint256)',
-  'function quoteHbarIn(uint256 guardOut) view returns (uint256)',
-];
 
 let balancePollInterval = null;
 let ethereumListenersBound = false;
@@ -97,10 +90,6 @@ export const useWalletStore = create((set, get) => ({
   provider: null,
 
   hbarBalance: null,
-  guardBalance: null,
-  hbarPerGuard: 0,
-  guardPerHbar: 0,
-  exchangeReserves: null,
 
   isModalOpen: false,
   modalContext: null,
@@ -169,7 +158,6 @@ export const useWalletStore = create((set, get) => ({
         address: null,
         displayName: null,
         hbarBalance: null,
-        guardBalance: null,
         error: error?.message || 'Wallet connection failed',
       });
       return false;
@@ -188,7 +176,6 @@ export const useWalletStore = create((set, get) => ({
       signer: null,
       provider: null,
       hbarBalance: null,
-      guardBalance: null,
       isModalOpen: false,
       modalContext: null,
     });
@@ -199,37 +186,11 @@ export const useWalletStore = create((set, get) => ({
     if (!signer || !address) return;
 
     try {
-      const config = loadConfig();
       const provider = signer.provider;
-      const [hbarRaw, guardRaw] = await Promise.all([
-        provider.getBalance(address),
-        new Contract(config.guardTokenEvmAddress, ERC20_ABI, provider).balanceOf(address),
-      ]);
-
-      set({
-        hbarBalance: Number(formatEther(hbarRaw)),
-        guardBalance: Number(formatUnits(guardRaw, 8)),
-      });
-
-      await get().refreshExchangeRate();
+      const hbarRaw = await provider.getBalance(address);
+      set({ hbarBalance: Number(formatEther(hbarRaw)) });
     } catch (error) {
       set({ error: error?.message || 'Failed to refresh wallet balances' });
-    }
-  },
-
-  refreshExchangeRate: async () => {
-    const config = loadConfig();
-    const exchangeAddress = config.contracts?.guardExchange?.evmAddress;
-    if (!exchangeAddress || !get().provider) return;
-    try {
-      const exchange = new Contract(exchangeAddress, EXCHANGE_ABI, get().provider);
-      const rate = await exchange.getRate();
-      set({ hbarPerGuard: Number(rate) });
-      if (Number(rate) > 0) {
-        set({ guardPerHbar: Math.round(1e16 / Number(rate)) / 1e8 });
-      }
-    } catch {
-      // Exchange not yet deployed — silently skip
     }
   },
 
@@ -237,10 +198,3 @@ export const useWalletStore = create((set, get) => ({
 }));
 
 export default useWalletStore;
-
-export function hbarEquivalent(guardAmountHuman, hbarPerGuard) {
-  if (!guardAmountHuman || !hbarPerGuard || hbarPerGuard === 0) return '0';
-  const guardBaseUnits = Math.round(parseFloat(guardAmountHuman) * 1e8);
-  const hbarTinybars = (guardBaseUnits * hbarPerGuard) / 1e8;
-  return (hbarTinybars / 1e8).toFixed(4);
-}

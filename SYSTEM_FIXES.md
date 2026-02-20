@@ -724,6 +724,47 @@ ZG_PROVIDER_MODE=pinned
 
 ---
 
+## 4. Scanner Wallet Cutover Reliability
+
+When scanner credentials are rotated, activation can fail on GUARD funding due to transient Hedera JSON-RPC estimate/send instability even when scanner/account setup is correct.
+
+### 4.1 Required Env Controls
+
+Set these in root `.env` (recommended defaults shown):
+
+```env
+ACTIVATE_GUARD_TRANSFER_RETRY_MAX=3
+ACTIVATE_GUARD_TRANSFER_RETRY_BASE_MS=900
+ACTIVATE_GUARD_TRANSFER_GAS_LIMIT=250000
+ACTIVATE_GUARD_FALLBACK_HAPI_TRANSFER=true
+```
+
+### 4.2 Cutover Run Sequence
+
+Run these in order:
+
+```bash
+npm run preflight:runtime
+npm run activate:live-agents
+npm run verify:live-agents
+```
+
+Expected behavior:
+1. Activation first tries EVM GUARD transfer with explicit gas and bounded retries.
+2. If EVM transfer remains unstable, activation falls back to HAPI token transfer.
+3. Scanner should then complete allowance/registration and verify as active.
+
+### 4.3 Troubleshooting
+
+| Symptom | Meaning | Action |
+|-------|-------|-----|
+| `guard_transfer_estimate_or_rpc_failure` | Hedera estimate/send path instability | Re-run activation; keep HAPI fallback enabled |
+| `guard_transfer_operator_insufficient` | Operator cannot fund scanner | Top up operator GUARD or lower scanner funding target |
+| `guard_transfer_hapi_fallback_failed` | Both EVM and fallback failed | Check token association + network health + operator signer key |
+| `agent_inactive` with `guard>0` | Funding succeeded, registration did not | Re-run activation and inspect `registerAgent` return logs |
+
+---
+
 ## Troubleshooting Checklist
 
 ### GUARD Economy

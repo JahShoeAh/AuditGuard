@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { useConnection } from '../hooks/useConnection';
-import { useEventListeners } from '../hooks/useEventListeners';
 import Header from '../components/Header';
 import DelegationPortfolio from '../components/stake/DelegationPortfolio';
 import AgentBrowser from '../components/stake/AgentBrowser';
@@ -10,13 +8,6 @@ import DelegationWizard from '../components/stake/DelegationWizard';
 import { ToastContainer } from '../components/ui/Toast';
 import useWalletStore from '../store/wallet';
 import WalletButton from '../components/wallet/WalletButton';
-
-// ── Bootstrap hook (reuse connection + event listeners) ───
-
-function useBootstrap() {
-  const connection = useConnection();
-  useEventListeners(connection);
-}
 
 // ── Sub-header ─────────────────────────────────────────────
 
@@ -56,8 +47,6 @@ function StakeHeader({ hasPortfolio, connected }) {
 // ── Main page ──────────────────────────────────────────────
 
 export default function StakeDelegation() {
-  useBootstrap();
-
   const [searchParams, setSearchParams] = useSearchParams();
   const connected  = useWalletStore((s) => s.connectionStatus === 'connected');
 

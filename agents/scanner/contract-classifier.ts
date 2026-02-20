@@ -1,5 +1,6 @@
 import { EvmDecoder } from "evmdecoder";
 import type { ContractInfo } from "evmdecoder";
+import { ethers } from "ethers";
 
 export interface ClassificationResult {
   evmType: string;
@@ -11,6 +12,58 @@ export interface ClassificationResult {
 }
 
 export type DefiCategory = "lending" | "dex" | "staking" | "bridge" | "vault";
+
+/**
+ * Convert Hedera contract ID to EVM address.
+ * Hedera contract IDs (0.0.X format) automatically map to EVM addresses.
+ * Formula: EVM address is the 20-byte representation of the contract shard.realm.num
+ * @param contractId Hedera contract ID like "0.0.7946509"
+ * @returns EVM address like "0x00000000..."
+ */
+function hederaContractIdToEvmAddress(contractId: string): string {
+  const parts = contractId.split(".");
+  if (parts.length !== 3) {
+    throw new Error(`Invalid Hedera contract ID format: ${contractId}`);
+  }
+
+  const shard = BigInt(parts[0]);
+  const realm = BigInt(parts[1]);
+  const num = BigInt(parts[2]);
+
+  // Combine into 64-bit value: (shard << 40) | (realm << 24) | num
+  const combined = (shard << BigInt(40)) | (realm << BigInt(24)) | num;
+
+  // Convert to 20-byte hex (padded)
+  const hex = combined.toString(16).padStart(40, "0");
+  return "0x" + hex;
+}
+
+/**
+ * Normalize contract address: accept either EVM format (0xXXX) or Hedera format (0.0.X)
+ * and always return EVM format for evmdecoder.
+ * @param address Either EVM address or Hedera contract ID
+ * @returns EVM address
+ */
+function normalizeContractAddress(address: string): string {
+  if (!address) {
+    throw new Error("Contract address cannot be empty");
+  }
+
+  // If already EVM format (starts with 0x), return as-is
+  if (address.startsWith("0x")) {
+    if (ethers.isAddress(address)) {
+      return address.toLowerCase();
+    }
+    throw new Error(`Invalid EVM address: ${address}`);
+  }
+
+  // If Hedera format (0.0.X), convert to EVM
+  if (address.includes(".")) {
+    return hederaContractIdToEvmAddress(address);
+  }
+
+  throw new Error(`Unknown address format: ${address}`);
+}
 
 let decoderInstance: EvmDecoder | null = null;
 let initPromise: Promise<void> | null = null;
@@ -71,7 +124,16 @@ export async function classifyContract(
   contractAddress: string
 ): Promise<ClassificationResult> {
   const decoder = await ensureDecoder();
-  const info = await decoder.contractInfo({ address: contractAddress });
+
+  // Normalize address: convert Hedera format (0.0.X) to EVM format (0xXXX) if needed
+  let evmAddress: string;
+  try {
+    evmAddress = normalizeContractAddress(contractAddress);
+  } catch (err) {
+    throw new Error(`Failed to normalize contract address "${contractAddress}": ${err}`);
+  }
+
+  const info = await decoder.contractInfo({ address: evmAddress });
 
   if (!info?.isContract) {
     return {

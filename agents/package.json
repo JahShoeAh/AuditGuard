@@ -19,6 +19,8 @@
     "fund": "tsx scripts/fund-agents.ts",
     "test": "vitest run --reporter=verbose",
     "test:invite": "vitest run tests/auction-invite.test.ts --reporter=verbose",
+    "test:classifier": "RUN_CLASSIFIER_RISK_TESTS=true vitest run tests/classifier-risk.test.ts --reporter=verbose",
+    "test:classifier:live": "LIVE_CLASSIFIER_TEST=true RUN_CLASSIFIER_RISK_TESTS=true vitest run tests/classifier-risk.test.ts --reporter=verbose",
     "test:token-transfer": "node --import tsx test-token-transfer.ts",
     "test:staking": "node --import tsx test-staking.ts",
     "test:rewards": "node --import tsx test-rewards.ts",

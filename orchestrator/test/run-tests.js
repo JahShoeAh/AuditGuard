@@ -18,9 +18,13 @@ function makeMocks(opts = {}) {
     createAuctionShouldFail = false,
     activeBuyer = true,
     settledOnChain = false,
+    activeCheckThrows = false,
+    cancelDelayMs = 0,
+    selectDelayMs = 0,
   } = opts;
   const auditLogMessages = [];
   const agentCommsMessages = [];
+  const cancelledJobs = [];
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
@@ -40,6 +44,20 @@ function makeMocks(opts = {}) {
         parseLog: () => ({ name: "JobPosted", args: { jobId: 4242n } }),
       },
     },
+    cancelJob: async (jobId) => {
+      if (cancelDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, cancelDelayMs));
+      cancelledJobs.push(Number(jobId));
+      return { hash: "0xcancel", status: 1 };
+    },
+    selectWinners: async () => {
+      if (selectDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, selectDelayMs));
+      return { hash: "0xselect", status: 1 };
+    },
+    getActiveJobs: async () => [],
+    getJob: async () => ({
+      auctionDeadline: BigInt(Math.floor(Date.now() / 1000) + 60),
+      status: 0,
+    }),
     dataMarketplace: {
       purchaseData: async () => {},
     },
@@ -52,7 +70,10 @@ function makeMocks(opts = {}) {
       isJobSettled: async () => settledOnChain,
     },
     agentRegistry: {
-      isActiveAgent: async () => activeBuyer,
+      isActiveAgent: async () => {
+        if (activeCheckThrows) throw new Error("transient rpc failure");
+        return activeBuyer;
+      },
     },
     getAddress: () => ADDR_ORCH,
   };
@@ -62,7 +83,7 @@ function makeMocks(opts = {}) {
     markJobCompleted: async () => {},
   };
 
-  return { hcs, contracts, auditLogMessages, agentCommsMessages, inft };
+  return { hcs, contracts, auditLogMessages, agentCommsMessages, inft, cancelledJobs };
 }
 
 async function testAgentRegistration() {
@@ -111,6 +132,82 @@ async function testDiscoveryInvites() {
   const invite = agentCommsMessages.find((m) => m.type === MessageType.AUCTION_INVITE);
   assert.ok(invite, "AUCTION_INVITE should be sent");
   assert.equal(invite.payload.contractAddress, ADDR_JOB);
+  assert.deepEqual(invite.payload.eligibleAgentIds, ["a1"]);
+  assert.ok(typeof invite.payload.inviteBatchId === "string" && invite.payload.inviteBatchId.length > 0);
+}
+
+async function testDiscoveryDedupeSkipsDuplicate() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "a1",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, agentCommsMessages, auditLogMessages } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  const discovery = {
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: ADDR_JOB,
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  };
+
+  await orch.handleDiscovery(discovery);
+  await orch.handleDiscovery(discovery);
+
+  const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+  assert.equal(invites.length, 1, "duplicate discovery should not produce another invite");
+  assert.ok(auditLogMessages.some((m) => m.type === "DISCOVERY_DEDUPED"), "dedupe telemetry should be emitted");
+}
+
+async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
+  const previousRetries = process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
+  process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = "1";
+  try {
+    const log = mockLog();
+    const roster = new Roster(log);
+    roster.upsert({
+      agentId: "a1",
+      evmAddress: ADDR_AGENT_A,
+      stake: 50,
+      reputation: 80,
+      specializations: ["lending"],
+    });
+    const { hcs, contracts, agentCommsMessages, auditLogMessages } = makeMocks({ activeCheckThrows: true });
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+    await orch.handleDiscovery({
+      type: MessageType.CONTRACT_DISCOVERED,
+      agentId: "scanner",
+      timestamp: now(),
+      payload: {
+        contractAddress: "0xfeed000000000000000000000000000000000002",
+        contractType: "lending",
+        budget: 100,
+        riskScore: 65,
+        estimatedLOC: 1400,
+      },
+    });
+
+    const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+    assert.equal(invites.length, 0, "invite should be suppressed when active checks are unavailable");
+    const summary = auditLogMessages.find((m) => m.type === "AUCTION_INVITE_SUMMARY");
+    assert.ok(summary, "summary should still be emitted");
+    assert.equal(summary.payload.excludedByReason.active_check_unavailable, 1);
+  } finally {
+    if (previousRetries == null) delete process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
+    else process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = previousRetries;
+  }
 }
 
 async function testInviteSummaryTelemetry() {
@@ -158,6 +255,50 @@ async function testInviteSummaryTelemetry() {
   assert.equal(summary.payload.eligibleAgents.length, 1, "expected one eligible agent");
   assert.equal(summary.payload.excludedByReason.specialization_mismatch, 1);
   assert.equal(summary.payload.excludedByReason.low_stake, 1);
+}
+
+async function testSingleInviteBatchPerJob() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "a1",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  roster.upsert({
+    agentId: "a2",
+    evmAddress: ADDR_AGENT_B,
+    stake: 55,
+    reputation: 82,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, auditLogMessages, agentCommsMessages } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  await orch.handleDiscovery({
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: "0xfeed0000000000000000000000000000000000aa",
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  });
+
+  const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+  assert.equal(invites.length, 1, "exactly one invite batch should be published per job");
+  const summaries = auditLogMessages.filter((m) => m.type === "AUCTION_INVITE_SUMMARY");
+  assert.equal(summaries.length, 1, "exactly one invite summary should be published per job");
+  assert.equal(
+    invites[0].payload.eligibleAgentIds.length,
+    summaries[0].payload.eligibleAgents.length,
+    "invite batch and invite summary must report matching eligible counts"
+  );
 }
 
 async function testDiscoveryRejectsInvalidAddress() {
@@ -259,6 +400,126 @@ async function testNoBidJobFailure() {
       (m) => m.type === "JOB_FAILED" && m?.payload?.phase === "select_winners"
     ),
     "no-bid jobs should be marked as failed in no-fallback mode"
+  );
+}
+
+async function testReconcileClosesExpiredActiveAuction() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, cancelledJobs } = makeMocks();
+  contracts.getActiveJobs = async () => [4242n];
+  contracts.getJob = async () => ({
+    auctionDeadline: BigInt(Math.floor(Date.now() / 1000) - 5),
+    status: 0, // AUCTION_OPEN
+  });
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  await orch.reconcileExpiredActiveAuctions();
+
+  assert.ok(cancelledJobs.includes(4242), "reconcile should cancel expired active job");
+}
+
+async function testTerminalAuctionNoReopenAfterCancel() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, cancelledJobs } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  const closed = await orch.closeExpiredAuction("4242", "manual_close");
+  assert.equal(closed, true, "manual close should succeed");
+  assert.equal(cancelledJobs.length, 1, "manual close should call cancelJob once");
+
+  contracts.getActiveJobs = async () => [4242n];
+  contracts.getJob = async () => ({
+    auctionDeadline: BigInt(Math.floor(Date.now() / 1000) - 5),
+    status: 2, // not AUCTION_OPEN => terminal
+  });
+  await orch.reconcileExpiredActiveAuctions();
+
+  assert.equal(cancelledJobs.length, 1, "reconcile must not re-cancel already terminal jobs");
+}
+
+async function testCloseExpiredAuctionSingleflight() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, cancelledJobs, auditLogMessages } = makeMocks({ cancelDelayMs: 20 });
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  const [first, second] = await Promise.all([
+    orch.closeExpiredAuction("4242", "test_singleflight"),
+    orch.closeExpiredAuction("4242", "test_singleflight"),
+  ]);
+
+  assert.equal(first, true, "first close should succeed");
+  assert.equal(second, true, "second close should share the in-flight result");
+  assert.equal(cancelledJobs.length, 1, "single-flight should issue only one cancel tx");
+  assert.ok(
+    auditLogMessages.some((m) => m.type === "AUCTION_CLOSE_SKIPPED"),
+    "single-flight skip telemetry should be emitted"
+  );
+}
+
+async function testSelectWinnersSingleflight() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks({ selectDelayMs: 20 });
+  let selectCalls = 0;
+  contracts.selectWinners = async () => {
+    selectCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { hash: "0xselect", status: 1 };
+  };
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [
+      {
+        agentId: "agent-1",
+        evmAddress: ADDR_AGENT_A,
+        bidAmount: 10,
+        estimatedTimeSec: 100,
+        reputation: 90,
+      },
+    ],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  await Promise.all([
+    orch.selectWinnersOnChain("4242"),
+    orch.selectWinnersOnChain("4242"),
+  ]);
+
+  assert.equal(selectCalls, 1, "single-flight should issue one selectWinners tx");
+  assert.ok(
+    auditLogMessages.some((m) => m.type === "WINNER_SELECTION_SKIPPED"),
+    "single-flight winner-selection telemetry should be emitted"
   );
 }
 
@@ -438,10 +699,17 @@ async function run() {
   const tests = [
     ["agent registration", testAgentRegistration],
     ["discovery invites", testDiscoveryInvites],
+    ["single invite batch per job", testSingleInviteBatchPerJob],
+    ["discovery dedupe", testDiscoveryDedupeSkipsDuplicate],
+    ["invite filter fail-closed active check", testInviteFilterFailClosedOnUnavailableActiveCheck],
     ["invite summary telemetry", testInviteSummaryTelemetry],
     ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],
     ["strict fail-fast on create failure", testStrictFailFastOnCreateFailure],
     ["no-bid job failure", testNoBidJobFailure],
+    ["reconcile closes expired active auction", testReconcileClosesExpiredActiveAuction],
+    ["terminal auction no reopen after cancel", testTerminalAuctionNoReopenAfterCancel],
+    ["close expired auction single-flight", testCloseExpiredAuctionSingleflight],
+    ["select winners single-flight", testSelectWinnersSingleflight],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],
