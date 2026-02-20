@@ -1,7 +1,7 @@
 import type { LLMRiskResponse } from "./risk-prompt.js";
 import type { DefiCategory } from "./contract-classifier.js";
 
-interface BlendWeights {
+export interface BlendWeights {
   llm: number;
   bytecodeComplexity: number;
   contractTypeRisk: number;
@@ -9,7 +9,7 @@ interface BlendWeights {
   codeSize: number;
 }
 
-function getWeights(): BlendWeights {
+export function getWeights(): BlendWeights {
   return {
     llm: Number(process.env.RISK_WEIGHT_LLM ?? 0.55),
     bytecodeComplexity: Number(process.env.RISK_WEIGHT_BYTECODE ?? 0.15),
@@ -19,7 +19,7 @@ function getWeights(): BlendWeights {
   };
 }
 
-const CATEGORY_RISK_BASE: Record<DefiCategory, number> = {
+export const CATEGORY_RISK_BASE: Record<DefiCategory, number> = {
   bridge: 78,
   lending: 68,
   dex: 58,
@@ -27,7 +27,7 @@ const CATEGORY_RISK_BASE: Record<DefiCategory, number> = {
   vault: 48,
 };
 
-function scoreBytecodeComplexity(bytecodeHex: string): number {
+export function scoreBytecodeComplexity(bytecodeHex: string): number {
   const byteLength = bytecodeHex.startsWith("0x")
     ? (bytecodeHex.length - 2) / 2
     : bytecodeHex.length / 2;
@@ -40,7 +40,7 @@ function scoreBytecodeComplexity(bytecodeHex: string): number {
   return 85;
 }
 
-function scoreCodeSize(estimatedLOC: number): number {
+export function scoreCodeSize(estimatedLOC: number): number {
   if (estimatedLOC < 200) return 25;
   if (estimatedLOC < 500) return 35;
   if (estimatedLOC < 1_500) return 50;
@@ -49,7 +49,7 @@ function scoreCodeSize(estimatedLOC: number): number {
   return 88;
 }
 
-function scoreProxyRisk(isProxy: boolean, standards: string[]): number {
+export function scoreProxyRisk(isProxy: boolean, standards: string[]): number {
   if (!isProxy) return 10;
 
   if (standards.includes("ERC1967")) return 55;
