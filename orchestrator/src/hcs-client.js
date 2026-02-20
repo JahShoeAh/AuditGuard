@@ -21,6 +21,9 @@ function parsePrivateKey(raw) {
 export class HCSClient {
   constructor(client) {
     this.client = client ?? HCSClient.buildClient();
+    const lookbackSecRaw = Number(process.env.HCS_SUBSCRIBE_LOOKBACK_SECONDS ?? "15");
+    const lookbackSec = Number.isFinite(lookbackSecRaw) ? Math.max(0, lookbackSecRaw) : 15;
+    this.subscribeLookbackMs = Math.floor(lookbackSec * 1000);
   }
 
   static buildClient() {
@@ -51,9 +54,14 @@ export class HCSClient {
   }
 
   subscribe(topicId, handler) {
-    new TopicMessageQuery()
-      .setTopicId(TopicId.fromString(topicId))
-      .subscribe(this.client, null, (msg) => {
+    const query = new TopicMessageQuery()
+      .setTopicId(TopicId.fromString(topicId));
+
+    if (this.subscribeLookbackMs > 0) {
+      query.setStartTime(new Date(Date.now() - this.subscribeLookbackMs));
+    }
+
+    query.subscribe(this.client, null, (msg) => {
         try {
           const parsed = JSON.parse(Buffer.from(msg.contents).toString("utf-8"));
           handler(parsed);

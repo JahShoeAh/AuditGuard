@@ -103,6 +103,8 @@ export function normalizeBidFailureReasonCode(error: unknown): string {
   if (message.includes("bid exceeds budget")) return "bid_exceeds_budget";
   if (message.includes("auction expired")) return "auction_expired";
   if (message.includes("job does not exist")) return "job_not_found";
+  if (message.includes("insufficient funds for transfer")) return "insufficient_payer_hbar";
+  if (message.includes("insufficient payer balance")) return "insufficient_payer_hbar";
   if (message.includes("insufficient funds")) return "insufficient_funds";
   if (message.includes("nonce")) return "nonce_conflict";
   if (message.includes("server response 5")) return "network_error";

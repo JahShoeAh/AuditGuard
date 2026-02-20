@@ -33,14 +33,45 @@ export class OrchestratorAgent {
     this.autoTopupHbar = (process.env.ORCHESTRATOR_AUTO_TOPUP_HBAR ?? "true") !== "false";
     this.operationalCheckIntervalMs = Number(process.env.ORCHESTRATOR_OPERATIONAL_CHECK_INTERVAL_MS ?? "30000");
     this.lastOperationalCheckAt = 0;
+    this.staleAuctionReconcileEnabled = (process.env.ORCHESTRATOR_RECONCILE_EXPIRED_AUCTIONS ?? "true") !== "false";
+    this.staleAuctionReconcileIntervalMs = Number(
+      process.env.ORCHESTRATOR_RECONCILE_EXPIRED_AUCTIONS_INTERVAL_MS ?? "30000"
+    );
+    this.staleAuctionReconcileMaxPerCycle = Number(
+      process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE ?? "3"
+    );
+    this.staleAuctionReconcileFailureCooldownMs = Number(
+      process.env.ORCHESTRATOR_RECONCILE_FAILURE_COOLDOWN_MS ?? "15000"
+    );
+    this.staleAuctionReconcileTimer = null;
+    this.rosterBootstrapOnchain = (process.env.ORCHESTRATOR_ROSTER_BOOTSTRAP_ONCHAIN ?? "true") !== "false";
+    this.filterInvitesOnchainActive = (process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE ?? "true") !== "false";
+    this.onchainActiveCacheTtlMs = Number(process.env.ORCHESTRATOR_ACTIVE_CACHE_TTL_MS ?? "15000");
+    this.activeCheckRetries = Number(process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES ?? "3");
+    this.activeCheckFailOpen = (process.env.ORCHESTRATOR_ACTIVE_CHECK_FAIL_OPEN ?? "false") === "true";
+    this.discoveryDedupeEnabled = (process.env.ORCHESTRATOR_ENABLE_DISCOVERY_DEDUPE ?? "true") !== "false";
+    this.discoveryDedupeTtlMs = Number(process.env.ORCHESTRATOR_DISCOVERY_DEDUPE_TTL_MS ?? "120000");
+    this.auctionCloseSingleflightEnabled = (process.env.ORCHESTRATOR_AUCTION_CLOSE_SINGLEFLIGHT ?? "true") !== "false";
+    this.onchainActiveCache = new Map();
+    this.recentDiscovery = new Map();
+    this.rosterBootstrapPromise = Promise.resolve();
+    this.inflightCloseJobs = new Map();
+    this.inflightSelectWinnerJobs = new Map();
+    this.reconcileCloseCooldown = new Map();
   }
 
   buildContractClient() {
     try {
       const client = ContractClient.fromOperatorKey(getOperatorKeys().privateKey.replace(/^0x/, ""));
       const missing = [];
-      if (typeof client.auction?.createAuditJob !== "function") missing.push("auction.createAuditJob");
+      if (typeof client.createAuditJob !== "function") missing.push("createAuditJob");
       if (typeof client.selectWinners !== "function") missing.push("selectWinners");
+      if (typeof client.cancelJob !== "function") missing.push("cancelJob");
+      if (typeof client.getActiveJobs !== "function") missing.push("getActiveJobs");
+      if (typeof client.getJob !== "function") missing.push("getJob");
+      if (typeof client.getAllAgents !== "function") missing.push("getAllAgents");
+      if (typeof client.getAgent !== "function") missing.push("getAgent");
+      if (typeof client.isActiveAgent !== "function") missing.push("isActiveAgent");
       if (typeof client.dataMarketplace?.purchaseData !== "function") missing.push("dataMarketplace.purchaseData");
       if (typeof client.paymentSettlement?.settleJob !== "function") missing.push("paymentSettlement.settleJob");
       if (missing.length) {
@@ -173,6 +204,12 @@ export class OrchestratorAgent {
     );
   }
 
+  isAuctionTerminalError(message) {
+    return /(only open jobs cancellable|invalid job status|job does not exist|already (completed|cancelled))/i.test(
+      String(message ?? "")
+    );
+  }
+
   async ensureOrchestratorOperationalHbar(reason = "runtime", { force = false } = {}) {
     const provider = this.contracts.wallet?.provider;
     if (!provider || !this.orchestratorAddress) return;
@@ -235,13 +272,221 @@ export class OrchestratorAgent {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.warn(`Startup preflight: ${msg}`);
     });
+    this.rosterBootstrapPromise = this.syncRosterFromRegistry().catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Startup roster bootstrap failed: ${msg}`);
+    });
     this.subscribeDiscovery();
     this.subscribeAgentComms();
     this.subscribeAuditLog();
     this.subscribeContractEvents();
     this.subscribeSchedulerEvents();  // HSS audit triggers
+    this.startStaleAuctionReconcileLoop();
     if (this.enablePing) this.startPingLoop();
     this.log.info("Orchestrator started (isolated branch)");
+  }
+
+  normalizeAddress(value) {
+    if (!value) return "";
+    const str = String(value);
+    return ethers.isAddress(str) ? str : "";
+  }
+
+  toGuardAmount(value) {
+    try {
+      const guardRaw = typeof value === "bigint" ? value : BigInt(value ?? 0);
+      return Number(ethers.formatUnits(guardRaw, CONFIG.guardToken.decimals));
+    } catch {
+      const numeric = Number(value ?? 0);
+      return Number.isFinite(numeric) ? numeric : 0;
+    }
+  }
+
+  toNumeric(value) {
+    if (value == null) return 0;
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    if (typeof value === "bigint") return Number(value);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  hasOpenJobForContract(contractAddress) {
+    const normalized = this.normalizeAddress(contractAddress).toLowerCase();
+    if (!normalized) return false;
+    for (const job of this.jobs.values()) {
+      const jobAddress = this.normalizeAddress(job?.contractAddress).toLowerCase();
+      if (!jobAddress || jobAddress !== normalized) continue;
+      if (job?.reportPublished) continue;
+      if (job?.cancelledOnChain) continue;
+      if (job?.terminalOnChain) continue;
+      return true;
+    }
+    return false;
+  }
+
+  shouldDedupeDiscovery(contractAddress) {
+    if (!this.discoveryDedupeEnabled) return false;
+    const normalized = this.normalizeAddress(contractAddress).toLowerCase();
+    if (!normalized) return false;
+
+    const nowMs = Date.now();
+    const seenAt = this.recentDiscovery.get(normalized) ?? 0;
+    const withinTtl = seenAt > 0 && nowMs - seenAt <= this.discoveryDedupeTtlMs;
+    const hasOpenJob = this.hasOpenJobForContract(normalized);
+    if (!withinTtl && !hasOpenJob) return false;
+
+    this.recentDiscovery.set(normalized, nowMs);
+    return true;
+  }
+
+  markDiscoverySeen(contractAddress) {
+    const normalized = this.normalizeAddress(contractAddress).toLowerCase();
+    if (!normalized) return;
+    this.recentDiscovery.set(normalized, Date.now());
+  }
+
+  async syncRosterFromRegistry() {
+    if (!this.rosterBootstrapOnchain) {
+      this.log.info("On-chain roster bootstrap disabled by config");
+      return;
+    }
+    const getAllAgents =
+      this.contracts.getAllAgents?.bind(this.contracts) ??
+      this.contracts.agentRegistry?.getAllAgents?.bind(this.contracts.agentRegistry);
+    const getAgent =
+      this.contracts.getAgent?.bind(this.contracts) ??
+      this.contracts.agentRegistry?.getAgent?.bind(this.contracts.agentRegistry);
+    const isActiveAgent =
+      this.contracts.isActiveAgent?.bind(this.contracts) ??
+      this.contracts.agentRegistry?.isActiveAgent?.bind(this.contracts.agentRegistry);
+
+    if (typeof getAllAgents !== "function" || typeof getAgent !== "function" || typeof isActiveAgent !== "function") {
+      this.log.warn("On-chain roster bootstrap skipped: AgentRegistry read methods unavailable");
+      return;
+    }
+
+    const allAgents = await getAllAgents();
+    const agentAddresses = Array.isArray(allAgents) ? allAgents : [];
+    if (!agentAddresses.length) {
+      this.log.info("On-chain roster bootstrap returned zero registered agents");
+      return;
+    }
+
+    let upserted = 0;
+    let activeCount = 0;
+    for (const rawAddress of agentAddresses) {
+      const evmAddress = this.normalizeAddress(rawAddress);
+      if (!evmAddress) continue;
+
+      let active = false;
+      try {
+        active = Boolean(await isActiveAgent(evmAddress));
+      } catch (err) {
+        this.log.warn(`On-chain active check failed for ${evmAddress}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.onchainActiveCache.set(evmAddress.toLowerCase(), { active, checkedAt: Date.now() });
+      if (!active) continue;
+      activeCount += 1;
+
+      let profile = null;
+      try {
+        profile = await getAgent(evmAddress);
+      } catch (err) {
+        this.log.warn(`On-chain getAgent failed for ${evmAddress}: ${err instanceof Error ? err.message : String(err)}`);
+        profile = null;
+      }
+
+      const agentId = String(profile?.agentId || `onchain-${evmAddress.slice(2, 10)}`);
+      const stake = this.toGuardAmount(profile?.stakedAmount ?? profile?.stakeAmount ?? 0n);
+      const reputation = this.toNumeric(profile?.reputationScore ?? profile?.reputation ?? 0);
+      const specializations = Array.isArray(profile?.specializations) && profile.specializations.length
+        ? profile.specializations.map((s) => String(s))
+        : ["any"];
+      const endpoint = String(profile?.ucpEndpoint ?? "");
+
+      this.roster.upsert({
+        agentId,
+        evmAddress,
+        specializations,
+        stake,
+        reputation,
+        endpoint,
+      });
+      upserted += 1;
+    }
+    this.log.info(
+      `On-chain roster bootstrap complete: active=${activeCount}, roster_upserts=${upserted}, total_registry_entries=${agentAddresses.length}`
+    );
+  }
+
+  async getCachedOnchainActiveStatus(evmAddress) {
+    const normalized = this.normalizeAddress(evmAddress);
+    if (!normalized) return { active: false, unavailable: false, reason: "invalid_address" };
+    const key = normalized.toLowerCase();
+    const cached = this.onchainActiveCache.get(key);
+    if (cached && Date.now() - cached.checkedAt <= this.onchainActiveCacheTtlMs) {
+      return { active: cached.active, unavailable: false, reason: null };
+    }
+    const isActiveAgent =
+      this.contracts.isActiveAgent?.bind(this.contracts) ??
+      this.contracts.agentRegistry?.isActiveAgent?.bind(this.contracts.agentRegistry);
+    if (typeof isActiveAgent !== "function") {
+      return { active: true, unavailable: false, reason: null };
+    }
+
+    let lastError = "";
+    const attempts = Math.max(1, this.activeCheckRetries);
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const active = Boolean(await isActiveAgent(normalized));
+        this.onchainActiveCache.set(key, { active, checkedAt: Date.now() });
+        return { active, unavailable: false, reason: null };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        const retriable = this.isTransientRpcError(lastError);
+        if (!retriable || attempt === attempts) break;
+        await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+      }
+    }
+
+    this.log.warn(
+      `Invite-time on-chain active check failed for ${normalized}: ${lastError}`
+    );
+    if (this.activeCheckFailOpen) {
+      return { active: true, unavailable: true, reason: lastError };
+    }
+    return { active: false, unavailable: true, reason: lastError };
+  }
+
+  async filterEligibleAgentsOnChain(eligibleAgents) {
+    if (!this.filterInvitesOnchainActive) {
+      return { eligible: eligibleAgents, excluded: [] };
+    }
+
+    const eligible = [];
+    const excluded = [];
+    for (const agent of eligibleAgents) {
+      const evmAddress = this.normalizeAddress(agent?.evmAddress);
+      if (!evmAddress) {
+        excluded.push({
+          agentId: agent?.agentId ?? "unknown",
+          evmAddress: agent?.evmAddress ?? null,
+          reasons: ["missing_evm_address"],
+        });
+        continue;
+      }
+      const activeCheck = await this.getCachedOnchainActiveStatus(evmAddress);
+      if (activeCheck.active) {
+        eligible.push(agent);
+      } else {
+        excluded.push({
+          agentId: agent?.agentId ?? "unknown",
+          evmAddress,
+          reasons: [activeCheck.unavailable ? "active_check_unavailable" : "inactive_onchain"],
+        });
+      }
+    }
+    return { eligible, excluded };
   }
 
   // ─── Subscriptions ─────────────────────────────────────────────────────
@@ -327,7 +572,22 @@ export class OrchestratorAgent {
   }
 
   async handleDiscovery(msg) {
+    await this.rosterBootstrapPromise.catch(() => { });
     const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
+    if (this.shouldDedupeDiscovery(contractAddress)) {
+      this.log.info(`Discovery deduped for ${String(contractAddress).slice(0, 12)}…`);
+      await this.hcs.publishAuditLog({
+        type: "DISCOVERY_DEDUPED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          contractAddress,
+          contractType: contractType ?? "unknown",
+          reason: "recent_duplicate_or_open_job_exists",
+        },
+      });
+      return;
+    }
     try {
       this.validateDiscoveryPayload({ contractAddress, budget, riskScore, estimatedLOC });
     } catch (err) {
@@ -346,6 +606,7 @@ export class OrchestratorAgent {
       });
       return;
     }
+    this.markDiscoverySeen(contractAddress);
 
     let jobId = this.normalizeJobId(Date.now()); // provisional until chain jobId is resolved
     let auctionOpenedOnChain = false;
@@ -379,7 +640,13 @@ export class OrchestratorAgent {
         const maxAttempts = 3;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            tx = await this.contracts.auction.createAuditJob(
+            const createAuditJob =
+              this.contracts.createAuditJob?.bind(this.contracts) ??
+              this.contracts.auction?.createAuditJob?.bind(this.contracts.auction);
+            if (typeof createAuditJob !== "function") {
+              throw new Error("createAuditJob unavailable on contract client");
+            }
+            tx = await createAuditJob(
               contractAddress,
               "hedera-testnet",
               contractType ?? "unknown",
@@ -531,15 +798,19 @@ export class OrchestratorAgent {
     const eligibility = typeof this.roster.evaluateEligibility === "function"
       ? this.roster.evaluateEligibility(contractType)
       : { eligible: this.roster.eligibleFor(contractType), excluded: [] };
-    const eligible = eligibility.eligible;
+    let eligible = Array.isArray(eligibility.eligible) ? eligibility.eligible : [];
+    const excludedAgents = Array.isArray(eligibility.excluded) ? [...eligibility.excluded] : [];
+    const onchainFiltered = await this.filterEligibleAgentsOnChain(eligible);
+    eligible = onchainFiltered.eligible;
+    excludedAgents.push(...onchainFiltered.excluded);
     const excludedByReason = {};
-    for (const item of eligibility.excluded) {
+    for (const item of excludedAgents) {
       for (const reason of item.reasons ?? []) {
         excludedByReason[reason] = (excludedByReason[reason] ?? 0) + 1;
       }
     }
     this.log.info(
-      `Invite eligibility for job ${jobId}: eligible=${eligible.length} excluded=${eligibility.excluded.length} ` +
+      `Invite eligibility for job ${jobId}: eligible=${eligible.length} excluded=${excludedAgents.length} ` +
       `${JSON.stringify(excludedByReason)}`
     );
     try {
@@ -554,7 +825,7 @@ export class OrchestratorAgent {
             agentId: agent.agentId,
             evmAddress: agent.evmAddress,
           })),
-          excludedAgents: eligibility.excluded,
+          excludedAgents,
           excludedByReason,
         },
       });
@@ -982,92 +1253,399 @@ export class OrchestratorAgent {
   // ─── Actions ───────────────────────────────────────────────────────────
 
   async inviteAgents(jobId, agents, payload) {
-    for (const agent of agents) {
-      await this.hcs.publishAgentComms({
-        type: MessageType.AUCTION_INVITE,
+    if (!Array.isArray(agents) || agents.length === 0) {
+      this.log.info(`No eligible agents to invite for job ${jobId}`);
+      return;
+    }
+    const eligibleAgentIds = agents.map((agent) => String(agent?.agentId ?? "")).filter(Boolean);
+    const eligibleEvmAddresses = agents.map((agent) => this.normalizeAddress(agent?.evmAddress)).filter(Boolean);
+    const inviteBatchId = `invite:${String(jobId)}:${Date.now()}`;
+    await this.hcs.publishAgentComms({
+      type: MessageType.AUCTION_INVITE,
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId,
+        contractAddress: payload.contractAddress,
+        contractType: payload.contractType,
+        budget: payload.budget ?? CONFIG.payments.totalGuard,
+        riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
+        estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
+        estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
+        inviteBatchId,
+        eligibleAgentIds,
+        eligibleEvmAddresses,
+      },
+    });
+    this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
+  }
+
+  async closeExpiredAuction(jobId, reasonCode = "expired_no_bids") {
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key) ?? { contractAddress: null };
+    if (!this.getJobByKey(key)) this.setJobByKey(key, job);
+    const existingClose = this.inflightCloseJobs.get(key);
+    if (this.auctionCloseSingleflightEnabled && existingClose) {
+      this.log.info(`[Orchestrator] closeExpiredAuction single-flight skip for job ${key}`);
+      await this.hcs.publishAuditLog({
+        type: "AUCTION_CLOSE_SKIPPED",
         agentId: "orchestrator",
         timestamp: now(),
         payload: {
-          jobId,
-          contractAddress: payload.contractAddress,
-          contractType: payload.contractType,
-          budget: payload.budget ?? CONFIG.payments.totalGuard,
-          riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
-          estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
-          estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
+          jobId: key,
+          contractAddress: job.contractAddress,
+          reasonCode: "close_singleflight_skipped",
+        },
+      }).catch(() => { });
+      return existingClose;
+    }
+
+    const runClose = async () => {
+      if (typeof this.contracts.cancelJob !== "function") {
+        this.log.warn(`[Orchestrator] cancelJob unavailable; cannot hard-close expired auction ${key}`);
+        return false;
+      }
+
+      let lastError = "";
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.ensureOrchestratorOperationalHbar("cancel_expired_auction", { force: true });
+          const receipt = await this.contracts.cancelJob(Number(key));
+          job.cancelledOnChain = true;
+          job.cancelledReason = reasonCode;
+          this.setJobByKey(key, job);
+          this.log.info(
+            `[Orchestrator] On-chain cancelJob succeeded for expired job ${key}, tx: ${receipt?.hash ?? "unknown"}`
+          );
+          await this.hcs.publishAuditLog({
+            type: "JOB_CANCELLED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              jobId: key,
+              contractAddress: job.contractAddress,
+              phase: "cancel_expired",
+              reasonCode,
+              txHash: receipt?.hash ?? null,
+            },
+          });
+          return true;
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          lastError = error;
+
+          if (this.isAuctionTerminalError(error)) {
+            // Auction is already terminal on-chain; treat as closed and stop retrying.
+            job.cancelledOnChain = true;
+            job.cancelledReason = `${reasonCode}:already_terminal`;
+            this.setJobByKey(key, job);
+            this.log.info(`[Orchestrator] Expired job ${key} already terminal on-chain during cancel path`);
+            return true;
+          }
+
+          const nonceError = this.isNonceTooLowError(error);
+          const lowFundsError = this.isInsufficientFundsError(error);
+          const transientRpc = this.isTransientRpcError(error);
+          const retriable = nonceError || lowFundsError || transientRpc;
+          if (!retriable || attempt === maxAttempts) break;
+
+          if (lowFundsError) {
+            this.log.warn(
+              `[Orchestrator] cancelJob low-funds precheck for job ${key} ` +
+              `(attempt ${attempt}/${maxAttempts}) — forcing HBAR top-up and retry`
+            );
+            try {
+              await this.ensureOrchestratorOperationalHbar("cancel_expired_auction_retry", { force: true });
+            } catch (topupErr) {
+              this.log.warn(
+                `[Orchestrator] cancelJob top-up retry failed for job ${key}: ` +
+                `${topupErr instanceof Error ? topupErr.message : String(topupErr)}`
+              );
+            }
+          } else if (nonceError) {
+            this.log.warn(
+              `[Orchestrator] cancelJob nonce race for job ${key} ` +
+              `(attempt ${attempt}/${maxAttempts}) — retrying`
+            );
+          } else {
+            this.log.warn(
+              `[Orchestrator] cancelJob transient RPC failure for job ${key} ` +
+              `(attempt ${attempt}/${maxAttempts}) — retrying`
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+        }
+      }
+
+      this.log.warn(`[Orchestrator] On-chain cancelJob failed for expired job ${key}: ${lastError}`);
+      await this.hcs.publishAuditLog({
+        type: "ONCHAIN_TX_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          phase: "cancel_expired",
+          strictLive: this.strictLive,
+          contractAddress: job.contractAddress,
+          jobId: key,
+          reasonCode,
+          error: lastError,
         },
       });
+      return false;
+    };
+
+    if (!this.auctionCloseSingleflightEnabled) {
+      return runClose();
     }
-    this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
+
+    const inflight = runClose().finally(() => {
+      this.inflightCloseJobs.delete(key);
+    });
+    this.inflightCloseJobs.set(key, inflight);
+    return inflight;
+  }
+
+  async reconcileExpiredActiveAuctions() {
+    const getActiveJobs =
+      this.contracts.getActiveJobs?.bind(this.contracts) ??
+      this.contracts.auction?.getActiveJobs?.bind(this.contracts.auction);
+    const getJob =
+      this.contracts.getJob?.bind(this.contracts) ??
+      this.contracts.auction?.getJob?.bind(this.contracts.auction);
+    if (typeof getActiveJobs !== "function" || typeof getJob !== "function") return;
+
+    let activeJobIds = [];
+    try {
+      activeJobIds = await getActiveJobs();
+    } catch (err) {
+      this.log.warn(
+        `[Orchestrator] Active job reconcile skipped: failed to read getActiveJobs: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const nowMs = Date.now();
+    let closeAttempts = 0;
+    for (const rawId of activeJobIds || []) {
+      if (closeAttempts >= this.staleAuctionReconcileMaxPerCycle) break;
+      const key = this.normalizeJobId(rawId);
+      const cooldownUntil = Number(this.reconcileCloseCooldown.get(key) ?? 0);
+      if (cooldownUntil > nowMs) continue;
+      try {
+        const chainJob = await getJob(this.toChainJobId(key));
+        const deadlineSec = Number(chainJob?.auctionDeadline ?? 0);
+        const status = Number(chainJob?.status ?? -1);
+        const isAuctionOpen = status === 0; // JobStatus.AUCTION_OPEN
+        if (!isAuctionOpen) continue;
+        if (!Number.isFinite(deadlineSec) || deadlineSec <= 0) continue;
+        if (deadlineSec > nowSec) continue;
+
+        closeAttempts += 1;
+        const closed = await this.closeExpiredAuction(key, "reconcile_expired_active_job");
+        if (!closed) {
+          this.reconcileCloseCooldown.set(key, nowMs + this.staleAuctionReconcileFailureCooldownMs);
+          this.log.warn(`[Orchestrator] Reconcile failed to close expired active job ${key}`);
+        } else {
+          this.reconcileCloseCooldown.delete(key);
+        }
+      } catch (err) {
+        this.reconcileCloseCooldown.set(key, nowMs + this.staleAuctionReconcileFailureCooldownMs);
+        this.log.warn(
+          `[Orchestrator] Reconcile failed for job ${key}: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
+
+  startStaleAuctionReconcileLoop() {
+    if (!this.staleAuctionReconcileEnabled) return;
+    if (this.staleAuctionReconcileTimer) return;
+
+    this.reconcileExpiredActiveAuctions().catch((err) => {
+      this.log.warn(
+        `[Orchestrator] Initial stale auction reconcile failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+
+    this.staleAuctionReconcileTimer = setInterval(() => {
+      this.reconcileExpiredActiveAuctions().catch((err) => {
+        this.log.warn(
+          `[Orchestrator] Stale auction reconcile iteration failed: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }, this.staleAuctionReconcileIntervalMs);
+    this.staleAuctionReconcileTimer.unref?.();
   }
 
   async selectWinnersOnChain(jobId) {
     const key = this.normalizeJobId(jobId);
-    const job = this.getJobByKey(key);
-    if (!job) return;
-
-    if (!job.bidders || job.bidders.length === 0) {
-      const reason = "No bids collected before winner deadline";
-      this.log.warn(`Winner selection failed for job ${jobId}: ${reason}`);
-      job.failed = true;
-      job.failureReason = reason;
-      this.setJobByKey(key, job);
+    const existingSelect = this.inflightSelectWinnerJobs.get(key);
+    if (this.auctionCloseSingleflightEnabled && existingSelect) {
+      this.log.info(`[Orchestrator] selectWinners single-flight skip for job ${key}`);
       await this.hcs.publishAuditLog({
-        type: "JOB_FAILED",
+        type: "WINNER_SELECTION_SKIPPED",
         agentId: "orchestrator",
         timestamp: now(),
         payload: {
-          jobId,
-          contractAddress: job.contractAddress,
-          phase: "select_winners",
-          error: reason,
+          jobId: key,
+          reasonCode: "close_singleflight_skipped",
         },
+      }).catch(() => { });
+      return existingSelect;
+    }
+
+    const runSelect = async () => {
+      const job = this.getJobByKey(key);
+      if (!job) return;
+
+      if (!job.bidders || job.bidders.length === 0) {
+        const reason = "No bids collected before winner deadline";
+        this.log.warn(`Winner selection failed for job ${jobId}: ${reason}`);
+        job.failed = true;
+        job.failureReason = reason;
+        this.setJobByKey(key, job);
+        await this.hcs.publishAuditLog({
+          type: "JOB_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            jobId,
+            contractAddress: job.contractAddress,
+            phase: "select_winners",
+            error: reason,
+          },
+        });
+        const closed = await this.closeExpiredAuction(key, "no_bids_before_deadline");
+        if (!closed) {
+          this.log.warn(`[Orchestrator] Expired job ${key} remains open on-chain after cancel attempts`);
+        }
+        return;
+      }
+
+      // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
+      const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
+      const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
+
+      const scored = job.bidders.map((b, bidIndex) => {
+        const repScore = ((b.reputation ?? 0) / 100) * 0.55;
+        const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
+        const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
+        return { ...b, bidIndex, score: repScore + priceScore + speedScore };
       });
-      return;
-    }
 
-    // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
-    const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
-    const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
+      scored.sort((a, b) => b.score - a.score);
 
-    const scored = job.bidders.map((b, bidIndex) => {
-      const repScore = ((b.reputation ?? 0) / 100) * 0.55;
-      const priceScore = (1 - (b.bidAmount ?? 0) / maxBid) * 0.25;
-      const speedScore = (1 - (b.estimatedTimeSec ?? 0) / maxTime) * 0.20;
-      return { ...b, bidIndex, score: repScore + priceScore + speedScore };
-    });
+      const selectedWinners = [];
+      const seenWinnerKeys = new Set();
+      for (const bid of scored) {
+        const dedupeKey = bid.evmAddress
+          ? String(bid.evmAddress).toLowerCase()
+          : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
+        if (!dedupeKey || seenWinnerKeys.has(dedupeKey)) continue;
+        seenWinnerKeys.add(dedupeKey);
+        selectedWinners.push(bid);
+        if (selectedWinners.length >= 3) break;
+      }
 
-    scored.sort((a, b) => b.score - a.score);
+      const winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
+      this.log.info(
+        `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
+        `${winnerAddresses.join(", ")}`
+      );
 
-    const selectedWinners = [];
-    const seenWinnerKeys = new Set();
-    for (const bid of scored) {
-      const dedupeKey = bid.evmAddress
-        ? String(bid.evmAddress).toLowerCase()
-        : `agent:${String(bid.agentId ?? "").toLowerCase()}`;
-      if (!dedupeKey || seenWinnerKeys.has(dedupeKey)) continue;
-      seenWinnerKeys.add(dedupeKey);
-      selectedWinners.push(bid);
-      if (selectedWinners.length >= 3) break;
-    }
+      job.winners = winnerAddresses;
 
-    const winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
-    this.log.info(
-      `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
-      `${winnerAddresses.join(", ")}`
-    );
+      // On-chain winner selection only (no HCS fallback path).
+      const winningBidIndices = selectedWinners
+        .map((w) => w.bidIndex)
+        .filter((idx) => Number.isInteger(idx));
+      if (!winningBidIndices.length) {
+        const error = "No valid winning bid indices";
+        this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${error}`);
+        job.failed = true;
+        job.failureReason = error;
+        this.setJobByKey(key, job);
+        await this.hcs.publishAuditLog({
+          type: "ONCHAIN_TX_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            phase: "select_winners",
+            strictLive: this.strictLive,
+            contractAddress: job.contractAddress,
+            jobId,
+            error,
+          },
+        });
+        await this.hcs.publishAuditLog({
+          type: "JOB_FAILED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: {
+            jobId,
+            contractAddress: job.contractAddress,
+            phase: "select_winners",
+            error,
+          },
+        });
+        return;
+      }
 
-    job.winners = winnerAddresses;
+      let lastError = "";
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
+          const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
+          this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+          job.winnerSource = "on-chain";
+          return;
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          lastError = error;
+          const nonceError = this.isNonceTooLowError(error);
+          const lowFundsError = this.isInsufficientFundsError(error);
+          const transientRpc = this.isTransientRpcError(error);
+          const retriable = nonceError || lowFundsError || transientRpc;
+          if (!retriable || attempt === maxAttempts) break;
 
-    // On-chain winner selection only (no HCS fallback path).
-    const winningBidIndices = selectedWinners
-      .map((w) => w.bidIndex)
-      .filter((idx) => Number.isInteger(idx));
-    if (!winningBidIndices.length) {
-      const error = "No valid winning bid indices";
-      this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${error}`);
+          if (lowFundsError) {
+            this.log.warn(
+              `[Orchestrator] selectWinners low-funds precheck for job ${jobId} ` +
+              `(attempt ${attempt}/${maxAttempts}) — forcing HBAR top-up and retry`
+            );
+            try {
+              await this.ensureOrchestratorOperationalHbar("select_winners_retry", { force: true });
+            } catch (topupErr) {
+              this.log.warn(
+                `[Orchestrator] selectWinners top-up retry failed for job ${jobId}: ` +
+                `${topupErr instanceof Error ? topupErr.message : String(topupErr)}`
+              );
+            }
+          } else if (nonceError) {
+            this.log.warn(
+              `[Orchestrator] selectWinners nonce race for job ${jobId} ` +
+              `(attempt ${attempt}/${maxAttempts}) — retrying`
+            );
+          } else {
+            this.log.warn(
+              `[Orchestrator] selectWinners transient RPC failure for job ${jobId} ` +
+              `(attempt ${attempt}/${maxAttempts}) — retrying`
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+        }
+      }
+
+      this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${lastError}`);
       job.failed = true;
-      job.failureReason = error;
+      job.failureReason = lastError;
       this.setJobByKey(key, job);
       await this.hcs.publishAuditLog({
         type: "ONCHAIN_TX_FAILED",
@@ -1078,7 +1656,7 @@ export class OrchestratorAgent {
           strictLive: this.strictLive,
           contractAddress: job.contractAddress,
           jobId,
-          error,
+          error: lastError,
         },
       });
       await this.hcs.publishAuditLog({
@@ -1089,86 +1667,21 @@ export class OrchestratorAgent {
           jobId,
           contractAddress: job.contractAddress,
           phase: "select_winners",
-          error,
+          error: lastError,
         },
       });
       return;
+    };
+
+    if (!this.auctionCloseSingleflightEnabled) {
+      return runSelect();
     }
 
-    let lastError = "";
-    const maxAttempts = 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
-        const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
-        this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
-        job.winnerSource = "on-chain";
-        return;
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        lastError = error;
-        const nonceError = this.isNonceTooLowError(error);
-        const lowFundsError = this.isInsufficientFundsError(error);
-        const transientRpc = this.isTransientRpcError(error);
-        const retriable = nonceError || lowFundsError || transientRpc;
-        if (!retriable || attempt === maxAttempts) break;
-
-        if (lowFundsError) {
-          this.log.warn(
-            `[Orchestrator] selectWinners low-funds precheck for job ${jobId} ` +
-            `(attempt ${attempt}/${maxAttempts}) — forcing HBAR top-up and retry`
-          );
-          try {
-            await this.ensureOrchestratorOperationalHbar("select_winners_retry", { force: true });
-          } catch (topupErr) {
-            this.log.warn(
-              `[Orchestrator] selectWinners top-up retry failed for job ${jobId}: ` +
-              `${topupErr instanceof Error ? topupErr.message : String(topupErr)}`
-            );
-          }
-        } else if (nonceError) {
-          this.log.warn(
-            `[Orchestrator] selectWinners nonce race for job ${jobId} ` +
-            `(attempt ${attempt}/${maxAttempts}) — retrying`
-          );
-        } else {
-          this.log.warn(
-            `[Orchestrator] selectWinners transient RPC failure for job ${jobId} ` +
-            `(attempt ${attempt}/${maxAttempts}) — retrying`
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
-      }
-    }
-
-    this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${lastError}`);
-    job.failed = true;
-    job.failureReason = lastError;
-    this.setJobByKey(key, job);
-    await this.hcs.publishAuditLog({
-      type: "ONCHAIN_TX_FAILED",
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: {
-        phase: "select_winners",
-        strictLive: this.strictLive,
-        contractAddress: job.contractAddress,
-        jobId,
-        error: lastError,
-      },
+    const inflight = runSelect().finally(() => {
+      this.inflightSelectWinnerJobs.delete(key);
     });
-    await this.hcs.publishAuditLog({
-      type: "JOB_FAILED",
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: {
-        jobId,
-        contractAddress: job.contractAddress,
-        phase: "select_winners",
-        error: lastError,
-      },
-    });
-    return;
+    this.inflightSelectWinnerJobs.set(key, inflight);
+    return inflight;
   }
 
   subscribeContractEvents() {

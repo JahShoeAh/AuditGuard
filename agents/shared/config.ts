@@ -6,15 +6,39 @@
  * Falls back to hardcoded values if the file is missing (e.g., in test envs).
  */
 
-import { config as dotenvConfig } from "dotenv";
+import { config as dotenvConfig, parse as dotenvParse } from "dotenv";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, existsSync } from "fs";
 
 const __configDir = dirname(fileURLToPath(import.meta.url));
-// Load root .env first, then optional agents/.env overrides.
-dotenvConfig({ path: join(__configDir, "..", "..", ".env") });
-dotenvConfig({ path: join(__configDir, "..", ".env"), override: true });
+const ROOT_ENV_PATH = join(__configDir, "..", "..", ".env");
+const AGENTS_ENV_PATH = join(__configDir, "..", ".env");
+
+function isCredentialEnvKey(key: string): boolean {
+  if (!key) return false;
+  return (
+    key.endsWith("_ACCOUNT_ID") ||
+    key.endsWith("_PRIVATE_KEY") ||
+    key.endsWith("_PRIVATE_KEY_TYPE")
+  );
+}
+
+// Root .env is authoritative for credentials. agents/.env only overrides non-credential tuning.
+dotenvConfig({ path: ROOT_ENV_PATH });
+if (existsSync(AGENTS_ENV_PATH)) {
+  try {
+    const parsed = dotenvParse(readFileSync(AGENTS_ENV_PATH, "utf-8"));
+    const allowCredentialOverrides =
+      String(process.env.ALLOW_AGENT_ENV_CREDENTIAL_OVERRIDE ?? "").toLowerCase() === "true";
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!allowCredentialOverrides && isCredentialEnvKey(key)) continue;
+      process.env[key] = value;
+    }
+  } catch {
+    // Keep startup resilient; loadSdkConfig() already has defensive fallbacks.
+  }
+}
 
 // ─── Load SDK config.json ──────────────────────────────────────────────────
 
@@ -108,7 +132,7 @@ export const CONFIG = {
   zgInference: {
     rpcUrl: process.env.ZG_RPC_URL ?? "https://evmrpc-testnet.0g.ai",
     providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
-    model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
+    model: process.env.ZG_MODEL ?? "qwen/qwen-2.5-7b-instruct",
     timeoutMs: Number(process.env.ZG_TIMEOUT_MS ?? "30000"),
     requestTimeoutMs: Number(process.env.ZG_REQUEST_TIMEOUT_MS ?? process.env.ZG_TIMEOUT_MS ?? "30000"),
     healthcheckTimeoutMs: Number(process.env.ZG_HEALTHCHECK_TIMEOUT_MS ?? "15000"),

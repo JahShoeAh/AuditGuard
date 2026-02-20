@@ -7,7 +7,7 @@ import {
 } from "./scripts/live-preflight.js";
 
 function modelName(): string {
-  return process.env.ZG_MODEL ?? (CONFIG as any).zgInference?.model ?? "qwen-2.5-7b-instruct";
+  return process.env.ZG_MODEL ?? (CONFIG as any).zgInference?.model ?? "qwen/qwen-2.5-7b-instruct";
 }
 
 async function main(): Promise<void> {

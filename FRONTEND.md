@@ -2460,3 +2460,47 @@ import sdkConfig from '@sdk/config.json';
 3 = slashingProceeds
 4 = subAuctionFees
 ```
+
+---
+
+## Appendix C: Runtime Stabilization Addendum (Live Auctions + Agent Flow)
+
+### Observed issue
+In recent live runs, **Live Auctions appears under-populated** even while backend logs show ongoing job creation, invites, and bids.
+
+### Root-cause analysis
+1. **Frontend selector lag (strict-mode over-filtering)**
+   - `useAuctionData` currently requires every rendered job to be present in `getActiveJobs()` poll results.
+   - `getActiveJobs()` is polled on a fixed interval, while auction windows are short in practice.
+   - Result: jobs can be posted on-chain and still be omitted from the live panel until the next active-job snapshot, and may expire before ever rendering.
+
+2. **Backend expiry/cancel churn reduces visible open-auction time**
+   - Reconcile + deadline-close paths issue many `cancelJob` attempts in parallel windows under RPC instability.
+   - Nonce contention and transient RPC failures add retries, causing rapid state transitions (open -> cancel/terminal) and reducing steady visible live inventory.
+   - Shared payer account between scanner and orchestrator amplifies nonce races because both submit transactions from the same nonce stream.
+
+3. **Terminal duplicate handling in iNFT listener path**
+   - Duplicate terminal events (`JobCancelled`/`JobCompleted`) can re-hit state transitions and emit noisy errors (`CANCELLED -> CANCELLED`), making operational signal harder to trust.
+
+### Fix plan (low-risk, no architecture rewrite)
+1. **Frontend live selector hardening**
+   - Keep on-chain strict mode.
+   - Continue preferring `getActiveJobs()` as canonical active set.
+   - Add bounded visibility grace for freshly observed on-chain `JobPosted` rows (future deadline + not terminal) when active-id polling is stale.
+
+2. **Orchestrator nonce/tx ordering hardening**
+   - Serialize core write tx paths (`createAuditJob`, `selectWinners`, `cancelJob`) through a single write queue in contract client.
+   - Preserve retry behavior; reduce nonce races from overlapping writes.
+
+3. **iNFT terminal transition idempotency**
+   - Make state transition no-op when transition target equals current state.
+   - Keep validation for real illegal transitions.
+
+4. **Strict preflight payer hygiene**
+   - In strict runtime preflight, fail if scanner and orchestrator share the same payer account (current warning is insufficient for stable live runs).
+
+### Expected outcomes
+1. Live Auctions reflects short-lived open jobs consistently.
+2. Fewer nonce-race retries and fewer duplicate cancel/select collisions.
+3. No repeated terminal transition errors in iNFT listeners.
+4. More deterministic startup correctness in strict live mode.

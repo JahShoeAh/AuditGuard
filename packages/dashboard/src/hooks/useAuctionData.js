@@ -1,6 +1,106 @@
 import { useMemo } from 'react';
 import { useContractRead } from './useContractRead';
 import useStore from '../store';
+import { normalizeAuctionType } from '../utils/auction-type';
+
+function normalizeDeadlineSeconds(value) {
+  if (value == null) return null;
+  const raw = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  // Some payloads arrive in milliseconds; normalize to seconds.
+  return raw > 1_000_000_000_000 ? Math.floor(raw / 1000) : Math.floor(raw);
+}
+
+function normalizeTimestampMs(value) {
+  if (value == null) return null;
+  const raw = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  // Accept both seconds and milliseconds.
+  return raw > 1_000_000_000_000 ? Math.floor(raw) : Math.floor(raw * 1000);
+}
+
+export function buildAuctionRows({
+  activeJobs,
+  bids,
+  winners,
+  activeJobIds,
+  useMockEvents,
+  nowSec = Math.floor(Date.now() / 1000),
+}) {
+  const activeIds = new Set(
+    Array.isArray(activeJobIds) ? activeJobIds.map((id) => String(id)) : []
+  );
+  const strictLive = !useMockEvents;
+  const ACTIVE_POLL_LAG_GRACE_MS = 20_000;
+  const nowMs = nowSec * 1000;
+
+  // Start from store's activeJobs (populated by events or mock)
+  const storeJobs = Object.values(activeJobs || {});
+
+  // If we have on-chain job IDs, ensure we're not missing any
+  if (Array.isArray(activeJobIds)) {
+    const storeIds = new Set(storeJobs.map((j) => String(j.jobId)));
+    for (const id of activeJobIds) {
+      const idStr = id.toString();
+      if (!storeIds.has(idStr)) {
+        // Keep a skeleton row if chain is ahead of event ingestion.
+        storeJobs.push({
+          jobId: idStr,
+          contractAddress: null,
+          contractType: 'unknown',
+          initialRiskScore: 0,
+          lineCount: 0,
+          budgetFormatted: '? GUARD',
+          auctionDeadline: null,
+        });
+      }
+    }
+  }
+
+  const includeJob = (job) => {
+    const jobId = String(job.jobId);
+    const deadlineSec = normalizeDeadlineSeconds(job.auctionDeadline);
+    const hasTerminalStatus = Boolean(job?.terminalStatus);
+    const activeSetKnown = activeIds.size > 0;
+    const postedAtMs = normalizeTimestampMs(job?.postedAt) ?? normalizeTimestampMs(job?.updatedAt);
+    const recentlyObserved = postedAtMs != null ? (nowMs - postedAtMs) <= ACTIVE_POLL_LAG_GRACE_MS : false;
+
+    if (!strictLive) {
+      // In mock mode, keep previous permissive behavior.
+      if (activeIds.size > 0 && activeIds.has(jobId)) return true;
+      if (winners?.[jobId]) return true;
+      if (!deadlineSec) return true;
+      return nowSec - deadlineSec <= 300;
+    }
+
+    // Strict live mode: live feed only shows currently active, non-expired auctions.
+    if (hasTerminalStatus) return false;
+    if (!deadlineSec) return false;
+    if (deadlineSec <= nowSec) return false;
+    if (activeIds.has(jobId)) return true;
+    // If active-id polling is stale, keep freshly observed on-chain jobs visible briefly.
+    if (!activeSetKnown || recentlyObserved) return true;
+    return false;
+  };
+
+  const getDeadline = (job) => normalizeDeadlineSeconds(job.auctionDeadline) ?? Number.MAX_SAFE_INTEGER;
+
+  return storeJobs
+    .filter(includeJob)
+    .map((job) => ({
+      job: {
+        ...job,
+        contractType: normalizeAuctionType(job.contractType),
+      },
+      bids: bids?.[job.jobId] || [],
+      winnerData: winners?.[job.jobId] || null,
+    }))
+    .sort((a, b) => {
+      const byDeadline = getDeadline(a.job) - getDeadline(b.job);
+      if (byDeadline !== 0) return byDeadline;
+      return Number(b.job.jobId) - Number(a.job.jobId);
+    });
+}
 
 /**
  * Combines event-driven store data with polled contract reads.
@@ -18,54 +118,26 @@ export function useAuctionData() {
 
   const auctionContract = contracts?.auctionContract || null;
 
+  const activeJobsPollMs = Number(import.meta.env.VITE_ACTIVE_JOBS_POLL_MS || 3_000);
+
   // Poll for active job IDs from the contract (live mode only)
   const { data: activeJobIds } = useContractRead(
     useMockEvents ? null : auctionContract,
     'getActiveJobs',
     [],
-    { refetchInterval: 10_000 },
+    { refetchInterval: activeJobsPollMs },
   );
 
   // Merge store data into enriched auction objects
   const auctions = useMemo(() => {
-    // Start from store's activeJobs (populated by events or mock)
-    const storeJobs = Object.values(activeJobs);
-
-    // If we have on-chain job IDs, ensure we're not missing any
-    if (activeJobIds && Array.isArray(activeJobIds)) {
-      const storeIds = new Set(storeJobs.map((j) => j.jobId));
-      for (const id of activeJobIds) {
-        const idStr = id.toString();
-        if (!storeIds.has(idStr)) {
-          // We know about this job on-chain but don't have event data yet.
-          // Add a skeleton so the UI shows it.
-          storeJobs.push({
-            jobId: idStr,
-            contractAddress: null,
-            contractType: null,
-            initialRiskScore: 0,
-            lineCount: 0,
-            budgetFormatted: '? GUARD',
-            auctionDeadline: null,
-          });
-        }
-      }
-    }
-
-    return storeJobs
-      .map((job) => ({
-        job,
-        bids: bids[job.jobId] || [],
-        winnerData: winners[job.jobId] || null,
-      }))
-      .sort((a, b) => {
-        // Active first, then by jobId desc
-        const aW = a.winnerData ? 1 : 0;
-        const bW = b.winnerData ? 1 : 0;
-        if (aW !== bW) return aW - bW;
-        return Number(b.job.jobId) - Number(a.job.jobId);
-      });
-  }, [activeJobs, bids, winners, activeJobIds]);
+    return buildAuctionRows({
+      activeJobs,
+      bids,
+      winners,
+      activeJobIds,
+      useMockEvents,
+    });
+  }, [activeJobs, bids, winners, activeJobIds, useMockEvents]);
 
   return {
     auctions,

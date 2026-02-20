@@ -12,6 +12,11 @@ const DEFAULT_TIMEOUT_MS = Number(process.env.ZG_HEALTHCHECK_TIMEOUT_MS || "1500
 const REQUEST_TIMEOUT_MS = Number(process.env.ZG_REQUEST_TIMEOUT_MS || process.env.ZG_TIMEOUT_MS || "30000");
 const DEPOSIT_AMOUNT = Number(process.env.ZG_DEPOSIT_AMOUNT || "5");
 const MIN_LEDGER_CREDITS = Number(process.env.ZG_MIN_LEDGER_CREDITS || "1");
+const PROVIDER_MODE = String(process.env.ZG_PROVIDER_MODE || "pinned").trim().toLowerCase();
+const CANONICAL_MODEL_ALIASES = {
+  "qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+  "qwen/qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+};
 
 function fail(reasonCode, message, hint = "") {
   const hintLine = hint ? `\nHint: ${hint}` : "";
@@ -39,6 +44,61 @@ function extractRequestId(response, payload) {
     payload?.id ||
     undefined
   );
+}
+
+function canonicalizeModelId(model) {
+  const trimmed = String(model || "").trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.toLowerCase();
+  return CANONICAL_MODEL_ALIASES[normalized] || trimmed;
+}
+
+function modelsEquivalent(a, b) {
+  const aa = canonicalizeModelId(a);
+  const bb = canonicalizeModelId(b);
+  if (!aa || !bb) return false;
+  return aa.toLowerCase() === bb.toLowerCase();
+}
+
+function resolveInferenceModel(requestedModel, providerModel) {
+  const requested = canonicalizeModelId(requestedModel);
+  const provider = canonicalizeModelId(providerModel);
+  const mode = PROVIDER_MODE === "auto" || PROVIDER_MODE === "hybrid" ? PROVIDER_MODE : "pinned";
+
+  if (!provider) {
+    fail("zg_provider_metadata_failed", "Provider metadata missing model", "Verify provider registration and model config");
+  }
+
+  if (mode === "auto") {
+    return { model: provider, corrected: Boolean(requested) && !modelsEquivalent(requested, provider), mode };
+  }
+
+  if (!requested) {
+    return { model: provider, corrected: false, mode };
+  }
+
+  if (modelsEquivalent(requested, provider)) {
+    return { model: provider, corrected: requested.toLowerCase() !== provider.toLowerCase(), mode };
+  }
+
+  if (mode === "hybrid") {
+    return { model: provider, corrected: true, mode };
+  }
+
+  fail(
+    "zg_model_mismatch",
+    `Configured model '${requestedModel}' does not match provider model '${provider}' in pinned mode`,
+    "Set ZG_MODEL to the provider model or switch ZG_PROVIDER_MODE=hybrid/auto"
+  );
+}
+
+function extractSupportedModelFromHttpError(body) {
+  const raw = String(body || "");
+  const singleQuoted = raw.match(/only\s+'([^']+)'\s+is available/i);
+  if (singleQuoted?.[1]) return canonicalizeModelId(singleQuoted[1]);
+  const doubleQuoted = raw.match(/only\s+\"([^\"]+)\"\s+is available/i);
+  if (doubleQuoted?.[1]) return canonicalizeModelId(doubleQuoted[1]);
+  return "";
 }
 
 async function withTimeout(promise, ms, label, reasonCode) {
@@ -81,8 +141,8 @@ async function main() {
   if (!providerAddress) {
     fail("zg_not_configured", "Missing ZG_PROVIDER_ADDRESS", "Set ZG_PROVIDER_ADDRESS in .env");
   }
-  if (!requestedModel) {
-    fail("zg_not_configured", "Missing ZG_MODEL", "Set ZG_MODEL in .env");
+  if (!requestedModel && PROVIDER_MODE === "pinned") {
+    fail("zg_not_configured", "Missing ZG_MODEL in pinned mode", "Set ZG_MODEL or use ZG_PROVIDER_MODE=auto/hybrid");
   }
 
   console.log("verify-zg-compute: starting preflight");
@@ -160,9 +220,14 @@ async function main() {
     );
 
     const endpoint = String(metadata?.endpoint || "").trim();
-    const model = String(metadata?.model || requestedModel).trim();
+    const providerModel = String(metadata?.model || "").trim();
+    const resolved = resolveInferenceModel(requestedModel, providerModel);
+    let model = resolved.model;
     if (!endpoint || !model) {
       fail("zg_provider_metadata_failed", "Provider metadata missing endpoint/model", "Verify ZG_PROVIDER_ADDRESS points to an active provider");
+    }
+    if (resolved.corrected) {
+      console.log(`verify-zg-compute: model auto-corrected (${requestedModel || "unset"} -> ${model}, mode=${resolved.mode})`);
     }
 
     const headers = await withTimeout(
@@ -181,21 +246,33 @@ async function main() {
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     let response;
+    let raw = "";
     try {
-      response = await fetch(completionUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: "health-check" }],
-          temperature: 0,
-          max_tokens: 32,
-        }),
-        signal: controller.signal,
-      });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        response = await fetch(completionUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...headers,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: "health-check" }],
+            temperature: 0,
+            max_tokens: 32,
+          }),
+          signal: controller.signal,
+        });
+        raw = await readResponseBody(response);
+        if (response.ok) break;
+        const hintedModel = response.status === 400 ? extractSupportedModelFromHttpError(raw) : "";
+        if (attempt === 1 && hintedModel && !modelsEquivalent(model, hintedModel)) {
+          model = hintedModel;
+          console.log(`verify-zg-compute: retrying probe with provider-supported model '${model}'`);
+          continue;
+        }
+        break;
+      }
     } catch (err) {
       if (String(err?.name || "").toLowerCase().includes("abort")) {
         fail("zg_timeout", `Inference probe timed out after ${REQUEST_TIMEOUT_MS}ms`, "Increase ZG_REQUEST_TIMEOUT_MS or check provider/network health");
@@ -205,7 +282,6 @@ async function main() {
       clearTimeout(timeout);
     }
 
-    const raw = await readResponseBody(response);
     if (!response.ok) {
       fail("zg_http_error", `Provider returned ${response.status}: ${raw.slice(0, 220)}`, "Verify provider is healthy and request headers are valid");
     }

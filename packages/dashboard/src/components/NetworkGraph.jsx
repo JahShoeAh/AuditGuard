@@ -127,7 +127,7 @@ function TierRings({ cx, cy, r, tier }) {
 const LEGEND_EDGES = [
   { type: 'MAIN_AUDIT',    label: 'Main Audit'     },
   { type: 'SUB_CONTRACT',  label: 'Sub-Contract'   },
-  { type: 'DATA_PURCHASE', label: 'Data Purchase'  },
+  { type: 'DATA_PURCHASE_NET', label: 'Data Purchase'  },
   { type: 'PLATFORM_FEE',  label: 'Platform Fee'   },
   { type: 'REPORT_FEE',    label: 'Report Fee'     },
 ];

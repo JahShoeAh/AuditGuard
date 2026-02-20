@@ -52,6 +52,7 @@ export default function DebugPanel() {
   const auditLog      = useStore((s) => s.auditLog);
   const resetAll      = useStore((s) => s.resetAll);
   const config        = useStore((s) => s.config);
+  const ingestionHealth = useStore((s) => s.ingestionHealth);
 
   const lastEntry   = auditLog[0];
   const lastEventTs = lastEntry
@@ -136,6 +137,32 @@ export default function DebugPanel() {
               <KV k="On-chain txs"  v={onChainCount} />
               <KV k="Last event"    v={lastEventTs} />
               {lastEntry?.type && <KV k="Last type" v={lastEntry.type} />}
+            </Section>
+
+            <Section title="Ingestion">
+              <KV k="Source mode" v={ingestionHealth?.sourceMode || 'unknown'} />
+              <KV k="Replay mode" v={ingestionHealth?.replayMode || 'unknown'} />
+              <KV k="Agent hydration" v={ingestionHealth?.agentHydrationStatus || 'unknown'} />
+              <KV
+                k="Hydrated at"
+                v={
+                  ingestionHealth?.agentHydrationLastAt
+                    ? fmt.timestamp(ingestionHealth.agentHydrationLastAt)
+                    : '--'
+                }
+              />
+              {ingestionHealth?.agentHydrationError && (
+                <div className="text-[9px] text-guard-red font-mono break-words mt-0.5">
+                  {ingestionHealth.agentHydrationError}
+                </div>
+              )}
+              <KV k="HCS seq (disc)" v={ingestionHealth?.lastHcsSeq?.discovery ?? 0} />
+              <KV k="HCS seq (audit)" v={ingestionHealth?.lastHcsSeq?.auditLog ?? 0} />
+              <KV k="HCS seq (comms)" v={ingestionHealth?.lastHcsSeq?.agentComms ?? 0} />
+              <KV k="Block cursor" v={ingestionHealth?.lastContractBlock ?? 0} />
+              <KV k="Dropped dupes" v={ingestionHealth?.duplicatesDropped ?? 0} />
+              <KV k="Decode fails" v={ingestionHealth?.decodeFailures ?? 0} />
+              <KV k="Pending settles" v={ingestionHealth?.pendingSettlementBreakdowns ?? 0} />
             </Section>
 
             {/* Actions */}

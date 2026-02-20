@@ -35,7 +35,7 @@ export default function FlowSummary() {
 
   const auditAmt   = (flowsByType?.['MAIN_AUDIT']    || 0) + (flowsByType?.['SETTLEMENT'] || 0) + (flowsByType?.['BONUS_SPEED'] || 0);
   const subAmt     = flowsByType?.['SUB_CONTRACT']  || 0;
-  const dataAmt    = flowsByType?.['DATA_PURCHASE'] || 0;
+  const dataAmt    = (flowsByType?.['DATA_PURCHASE_NET'] || 0) + (flowsByType?.['DATA_PURCHASE'] || 0);
   const feeAmt     = flowsByType?.['PLATFORM_FEE']  || 0;
   const reportAmt  = flowsByType?.['REPORT_FEE']    || 0;
 

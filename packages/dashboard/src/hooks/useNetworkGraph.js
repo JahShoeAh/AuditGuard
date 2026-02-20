@@ -3,9 +3,6 @@ import useStore from '../store/index';
 import { fmt } from '../utils/format';
 import { FLOW_COLORS } from './useGuardFlows';
 
-// ── Treasury address (matches mock-events constant) ─────────
-const TREASURY_ADDR = '0xe5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d40005';
-
 // ── Agent color heuristic (reuses PaymentFlow's logic) ──────
 function agentColor(name = '') {
   if (name.includes('Static') || name.includes('Scanner'))          return '#22c55e';
@@ -23,10 +20,10 @@ function canonical(addr) {
 }
 
 // ── Map treasury address → 'treasury' id ────────────────────
-function resolveId(addr) {
+function resolveId(addr, treasuryAddress) {
   if (!addr) return '';
   if (addr === 'vault') return 'vault';
-  if (canonical(addr) === canonical(TREASURY_ADDR)) return 'treasury';
+  if (canonical(addr) === canonical(treasuryAddress)) return 'treasury';
   return canonical(addr);
 }
 
@@ -47,6 +44,11 @@ export function useNetworkGraph() {
   return useMemo(() => {
     const now = Date.now();
     const RECENT_WINDOW = 120_000; // 2 minutes
+
+    const treasuryAddress =
+      config?.contracts?.treasury?.evmAddress ||
+      config?.contracts?.treasury?.address ||
+      'treasury';
 
     // ── Nodes ─────────────────────────────────────────────
 
@@ -114,8 +116,8 @@ export function useNetworkGraph() {
     const edgeMap = new Map();
 
     for (const flow of guardFlows) {
-      const srcId = resolveId(flow.from);
-      const dstId = resolveId(flow.to);
+      const srcId = resolveId(flow.from, treasuryAddress);
+      const dstId = resolveId(flow.to, treasuryAddress);
       if (!srcId || !dstId || srcId === dstId) continue;
 
       // Ensure unknown endpoints have a node

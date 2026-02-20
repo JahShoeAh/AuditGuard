@@ -67,7 +67,6 @@ function spawnAgent(state: AgentState): void {
         env: {
             ...process.env,
             DEMO_MODE: isDemo ? "true" : "false",
-            ...(def.name === "Scanner" ? { TEST_MODE: "true" } : {}),
         },
         stdio: ["ignore", "pipe", "pipe"],
     });

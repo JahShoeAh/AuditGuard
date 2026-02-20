@@ -6,6 +6,7 @@ function makeStoreSpies() {
     addDiscovery: vi.fn(),
     addLogEntry: vi.fn(),
     setJob: vi.fn(),
+    setJobTerminal: vi.fn(),
     addBid: vi.fn(),
     addJobBidStatus: vi.fn(),
     setLlmProviderStatus: vi.fn(),
@@ -43,6 +44,10 @@ describe("EventListenerService", () => {
       auditLog: "0.0.2",
       agentComms: "0.0.3",
     },
+    dashboard: {
+      sourceMode: "onchain_strict",
+      hcsReplayMode: "from_now",
+    },
     seededAgents: {},
   };
 
@@ -75,7 +80,7 @@ describe("EventListenerService", () => {
     });
   });
 
-  it("routes BID_SUBMITTED audit log messages into bid stats", () => {
+  it("in strict mode, keeps BID_SUBMITTED as lifecycle/log only (no canonical bid mutation)", () => {
     const store = makeStoreSpies();
     const svc = new EventListenerService(config, {}, store, null);
 
@@ -89,11 +94,33 @@ describe("EventListenerService", () => {
     });
 
     expect(store.addLogEntry).toHaveBeenCalledTimes(1);
-    expect(store.incrementStat).toHaveBeenCalledWith("totalBids");
+    expect(store.incrementStat).not.toHaveBeenCalledWith("totalBids");
+    expect(store.addBid).not.toHaveBeenCalled();
     expect(store.addJobBidStatus).toHaveBeenCalledWith(
       "123",
       expect.objectContaining({ status: "submitted" })
     );
+  });
+
+  it("in hybrid mode, applies canonical BID_SUBMITTED updates from audit log", () => {
+    const store = makeStoreSpies();
+    const hybridConfig = {
+      ...config,
+      dashboard: { ...config.dashboard, sourceMode: "hybrid" },
+    };
+    const svc = new EventListenerService(hybridConfig, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "BID_SUBMITTED",
+        payload: { jobId: 123, bidAmount: 10, agentId: "static-analysis-047" },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 2,
+    });
+
+    expect(store.addBid).toHaveBeenCalledTimes(1);
+    expect(store.incrementStat).toHaveBeenCalledWith("totalBids");
   });
 
   it("routes BID_SKIPPED messages into job bid lifecycle", () => {
@@ -146,7 +173,59 @@ describe("EventListenerService", () => {
     );
   });
 
-  it("routes AGENT_REGISTERED audit log messages into agent store", () => {
+  it("expands targeted AUCTION_INVITE payloads into per-agent invite lifecycle entries", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("agentComms", {
+      parsedData: {
+        type: "AUCTION_INVITE",
+        payload: {
+          jobId: "91",
+          eligibleAgentIds: ["static-analysis-047", "fuzzer-012"],
+          eligibleEvmAddresses: [
+            "0x00000000000000000000000000000000000000aa",
+            "0x00000000000000000000000000000000000000bb",
+          ],
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 6,
+    });
+
+    expect(store.addJobBidStatus).toHaveBeenCalledTimes(2);
+    expect(store.addJobBidStatus).toHaveBeenNthCalledWith(
+      1,
+      "91",
+      expect.objectContaining({ status: "invite_sent", agentId: "static-analysis-047" })
+    );
+    expect(store.addJobBidStatus).toHaveBeenNthCalledWith(
+      2,
+      "91",
+      expect.objectContaining({ status: "invite_sent", agentId: "fuzzer-012" })
+    );
+  });
+
+  it("flags malformed BID_SUBMITTED payloads and skips bid lifecycle mutation", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "BID_SUBMITTED",
+        payload: { jobId: 123, bidAmount: 0 },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 7,
+    });
+
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "BID_SUBMITTED_MALFORMED" })
+    );
+    expect(store.addJobBidStatus).not.toHaveBeenCalled();
+  });
+
+  it("in strict mode, does not mutate canonical agents from AGENT_REGISTERED audit logs", () => {
     const store = makeStoreSpies();
     const svc = new EventListenerService(config, {}, store, null);
 
@@ -165,17 +244,33 @@ describe("EventListenerService", () => {
       sequenceNumber: 3,
     });
 
-    expect(store.setAgent).toHaveBeenCalledTimes(1);
-    expect(store.setAgent).toHaveBeenCalledWith(
-      "0x00000000000000000000000000000000000000aa",
-      expect.objectContaining({
+    expect(store.setAgent).not.toHaveBeenCalled();
+  });
+
+  it("in hybrid mode, allows AGENT_REGISTERED audit logs to upsert agents", () => {
+    const store = makeStoreSpies();
+    const hybridConfig = {
+      ...config,
+      dashboard: { ...config.dashboard, sourceMode: "hybrid" },
+    };
+    const svc = new EventListenerService(hybridConfig, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "AGENT_REGISTERED",
         agentId: "static-analysis-047",
-        reputation: 75,
-        reputationScore: 7500,
-        status: "ACTIVE",
-        source: "hcs_auditlog",
-      })
-    );
+        payload: {
+          evmAddress: "0x00000000000000000000000000000000000000aa",
+          stake: 100,
+          reputation: 75,
+          specializations: ["lending", "vault"],
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 3,
+    });
+
+    expect(store.setAgent).toHaveBeenCalledTimes(1);
   });
 
   it("routes LLM provider and inference lifecycle events into dedicated store slices", () => {
@@ -291,5 +386,242 @@ describe("EventListenerService", () => {
     );
     expect(store.incrementStat).toHaveBeenCalledWith("totalAuctions");
     expect(store.incrementStat).toHaveBeenCalledWith("totalBids");
+  });
+
+  it("marks terminal metadata from JobCancelled and JobCompleted contract events", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => 220),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const auctionContract = makeContractMock({
+      JobCancelled: [
+        {
+          args: { jobId: 11n },
+          blockNumber: 219,
+          transactionHash: "0xcancelled",
+        },
+      ],
+      JobCompleted: [
+        {
+          args: { jobId: 12n },
+          blockNumber: 219,
+          transactionHash: "0xcompleted",
+        },
+      ],
+    });
+
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 218;
+
+    await svc._pollContractEvents();
+
+    expect(store.setJobTerminal).toHaveBeenCalledWith(
+      "11",
+      expect.objectContaining({ status: "cancelled", txHash: "0xcancelled" })
+    );
+    expect(store.setJobTerminal).toHaveBeenCalledWith(
+      "12",
+      expect.objectContaining({ status: "completed", txHash: "0xcompleted" })
+    );
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "JobCancelled", jobId: "11" })
+    );
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "JobCompleted", jobId: "12" })
+    );
+  });
+
+  it("splits DataPurchased into seller net flow + treasury fee flow", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => 500),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const dataMarketplaceContract = makeContractMock({
+      DataPurchased: [
+        {
+          args: {
+            listingId: 9n,
+            buyer: "0x0000000000000000000000000000000000000bbb",
+            seller: "0x0000000000000000000000000000000000000aaa",
+            pricePaid: 100000000n,
+            platformFee: 10000000n,
+          },
+          blockNumber: 499,
+          transactionHash: "0xdatapurchase",
+        },
+      ],
+    });
+
+    const contracts = {
+      auctionContract: makeContractMock(),
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract,
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const cfg = {
+      ...config,
+      contracts: { treasury: { evmAddress: "0x0000000000000000000000000000000000000fee" } },
+    };
+    const svc = new EventListenerService(cfg, contracts, store, provider);
+    svc.lastProcessedBlock = 498;
+
+    await svc._pollContractEvents();
+
+    expect(store.addDataPurchase).toHaveBeenCalledTimes(1);
+    expect(store.addGuardFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "DATA_PURCHASE_NET",
+        amount: 90000000n,
+        to: "0x0000000000000000000000000000000000000aaa",
+      })
+    );
+    expect(store.addGuardFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "PLATFORM_FEE",
+        amount: 10000000n,
+        to: "0x0000000000000000000000000000000000000fee",
+      })
+    );
+  });
+
+  it("from_now replay mode initializes HCS cursor without replaying historical rows", async () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+    const fetchSpy = vi.spyOn(svc, "fetchHCSMessages")
+      .mockResolvedValueOnce([{ sequenceNumber: 50, timestamp: "1700000000.1", parsedData: { type: "PING" } }])
+      .mockResolvedValueOnce([{ sequenceNumber: 51, timestamp: "1700000001.1", parsedData: { type: "PONG" } }]);
+    const routeSpy = vi.spyOn(svc, "_routeHCSMessage");
+
+    await svc._pollHCSTopic("0.0.2", "auditLog");
+    expect(routeSpy).not.toHaveBeenCalled();
+    expect(svc.lastSeq.auditLog).toBe(50);
+
+    await svc._pollHCSTopic("0.0.2", "auditLog");
+    expect(routeSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("prevents a second EventListenerService instance from starting while one is active", () => {
+    const storeA = makeStoreSpies();
+    const storeB = makeStoreSpies();
+    const svcA = new EventListenerService(config, {}, storeA, null);
+    const svcB = new EventListenerService(config, {}, storeB, null);
+
+    const aHcs = vi.spyOn(svcA, "startHCSPolling").mockImplementation(() => {});
+    const aContract = vi.spyOn(svcA, "startContractEventPolling").mockImplementation(() => {});
+    const bHcs = vi.spyOn(svcB, "startHCSPolling").mockImplementation(() => {});
+    const bContract = vi.spyOn(svcB, "startContractEventPolling").mockImplementation(() => {});
+
+    const stopA = svcA.startAll();
+    const stopB = svcB.startAll();
+
+    expect(aHcs).toHaveBeenCalledTimes(1);
+    expect(aContract).toHaveBeenCalledTimes(1);
+    expect(bHcs).not.toHaveBeenCalled();
+    expect(bContract).not.toHaveBeenCalled();
+
+    stopB?.();
+    stopA?.();
+  });
+
+  it("maps JobSettled payments into canonical payout + fee guard flows", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => 800),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const paymentSettlementContract = makeContractMock({
+      JobSettled: [
+        {
+          args: {
+            settlementId: 3n,
+            jobId: 77n,
+            totalDisbursed: 400000000n,
+            platformFee: 50000000n,
+            reportFees: 10000000n,
+            recipientCount: 1n,
+          },
+          blockNumber: 799,
+          transactionHash: "0xsettle",
+        },
+      ],
+    });
+    paymentSettlementContract.getSettlementPayments = vi.fn(async () => ([
+      {
+        recipient: "0x0000000000000000000000000000000000000abc",
+        basePayment: 300000000n,
+        bonus: 20000000n,
+        reportFee: 10000000n,
+        paymentType: 2, // SUB_AUCTION
+        description: "dependency payout",
+      },
+    ]));
+
+    const contracts = {
+      auctionContract: makeContractMock(),
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract,
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const cfg = {
+      ...config,
+      contracts: { treasury: { evmAddress: "0x0000000000000000000000000000000000000fee" } },
+    };
+    const svc = new EventListenerService(cfg, contracts, store, provider);
+    svc.lastProcessedBlock = 798;
+
+    await svc._pollContractEvents();
+
+    expect(paymentSettlementContract.getSettlementPayments).toHaveBeenCalledWith(3n);
+    expect(store.addSettlement).toHaveBeenCalledWith(
+      expect.objectContaining({ settlementId: "3", jobId: "77" })
+    );
+    expect(store.addGuardFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "SUB_CONTRACT",
+        amount: 310000000n,
+        to: "0x0000000000000000000000000000000000000abc",
+      })
+    );
+    expect(store.addGuardFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "REPORT_FEE",
+        amount: 10000000n,
+        to: "0x0000000000000000000000000000000000000fee",
+      })
+    );
+    expect(store.addGuardFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "PLATFORM_FEE",
+        amount: 50000000n,
+        to: "0x0000000000000000000000000000000000000fee",
+      })
+    );
   });
 });

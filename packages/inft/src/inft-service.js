@@ -398,6 +398,14 @@ class INFTService {
     const now = new Date().toISOString();
     const previousState = metadata.state.current;
 
+    // Idempotent terminal/event replays are expected under mirror-node polling.
+    // Re-applying the same state should be treated as a no-op, not an error.
+    if (previousState === newState) {
+      metadata.updatedAt = now;
+      await this.storage.save("auditJob", serialNumber, metadata);
+      return metadata;
+    }
+
     this._validateAuditJobTransition(previousState, newState);
 
     metadata.state.history.push({

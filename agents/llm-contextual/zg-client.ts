@@ -1,13 +1,19 @@
 import { ethers } from "ethers";
+import { createRequire } from "module";
+import { fileURLToPath } from "url";
 import { CONFIG } from "../shared/config.js";
 
 export type ZGReasonCode =
   | "zg_not_configured"
+  | "missing_runtime_dependency"
+  | "zg_broker_module_interop_error"
   | "zg_broker_init_failed"
   | "zg_ledger_unfunded"
   | "zg_provider_ack_failed"
   | "zg_provider_metadata_failed"
   | "zg_request_headers_failed"
+  | "zg_model_mismatch"
+  | "zg_model_auto_corrected"
   | "zg_timeout"
   | "zg_http_error"
   | "zg_response_invalid";
@@ -51,11 +57,16 @@ export interface ZGInferenceResult {
   model: string;
   requestId?: string;
   verified: boolean;
+  requestedModel?: string;
+  providerModel?: string;
+  modelSource?: string;
+  modelAutoCorrected?: boolean;
 }
 
 let brokerInstance: any = null;
 let brokerInitialized = false;
 let readinessCache: ZGReadinessReport | null = null;
+const localRequire = createRequire(fileURLToPath(import.meta.url));
 
 function getZgConfig() {
   return (CONFIG as any).zgInference ?? {};
@@ -63,6 +74,52 @@ function getZgConfig() {
 
 function normalizeErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isMissingDependencyError(err: unknown, packageName: string): boolean {
+  const message = normalizeErrorMessage(err).toLowerCase();
+  return message.includes(`cannot find package '${packageName.toLowerCase()}'`)
+    || message.includes(`cannot find module '${packageName.toLowerCase()}'`);
+}
+
+function isInteropNamedExportError(err: unknown): boolean {
+  const message = normalizeErrorMessage(err).toLowerCase();
+  return message.includes("does not provide an export named");
+}
+
+type BrokerFactory = (wallet: ethers.Wallet) => Promise<any>;
+
+function validateBrokerFactory(factory: unknown, stage: string): BrokerFactory {
+  if (typeof factory !== "function") {
+    throw new ZGClientError(
+      "zg_broker_module_interop_error",
+      "0g broker module loaded but createZGComputeNetworkBroker export is missing",
+      stage
+    );
+  }
+  return factory as BrokerFactory;
+}
+
+async function loadBrokerFactory(): Promise<BrokerFactory> {
+  const loaderMode = String(process.env.ZG_BROKER_LOADER_MODE ?? "auto").toLowerCase();
+  if (loaderMode === "esm_only") {
+    const esmModule = await import("@0glabs/0g-serving-broker");
+    return validateBrokerFactory((esmModule as any).createZGComputeNetworkBroker, "broker_loader_esm_only");
+  }
+
+  try {
+    const esmModule = await import("@0glabs/0g-serving-broker");
+    return validateBrokerFactory((esmModule as any).createZGComputeNetworkBroker, "broker_loader_esm");
+  } catch (err) {
+    if (isMissingDependencyError(err, "@0glabs/0g-serving-broker")) {
+      throw err;
+    }
+    if (!isInteropNamedExportError(err)) {
+      throw err;
+    }
+    const cjsModule = localRequire("@0glabs/0g-serving-broker");
+    return validateBrokerFactory(cjsModule?.createZGComputeNetworkBroker, "broker_loader_cjs");
+  }
 }
 
 function resolveProviderAddress(): string {
@@ -88,6 +145,83 @@ function resolveHealthcheckTimeoutMs(): number {
 function resolveInitRetries(): number {
   const cfg = getZgConfig();
   return Math.max(1, Number(cfg.maxInitRetries ?? process.env.ZG_MAX_INIT_RETRIES ?? 2));
+}
+
+type ProviderMode = "pinned" | "auto" | "hybrid";
+
+const CANONICAL_MODEL_ALIASES: Record<string, string> = {
+  "qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+  "qwen/qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+};
+
+function normalizeModelKey(model: string): string {
+  return model.trim().toLowerCase();
+}
+
+export function canonicalizeModelId(model: string): string {
+  const trimmed = String(model ?? "").trim();
+  if (!trimmed) return "";
+  const normalized = normalizeModelKey(trimmed);
+  return CANONICAL_MODEL_ALIASES[normalized] ?? trimmed;
+}
+
+export function modelsEquivalent(a: string, b: string): boolean {
+  const aa = canonicalizeModelId(a);
+  const bb = canonicalizeModelId(b);
+  if (!aa || !bb) return false;
+  return normalizeModelKey(aa) === normalizeModelKey(bb);
+}
+
+function resolveProviderMode(): ProviderMode {
+  const cfg = getZgConfig();
+  const raw = String(process.env.ZG_PROVIDER_MODE ?? cfg.providerMode ?? "pinned").trim().toLowerCase();
+  if (raw === "auto" || raw === "hybrid") return raw;
+  return "pinned";
+}
+
+export function resolveInferenceModel(input: {
+  requestedModel?: string;
+  providerModel: string;
+  providerMode?: ProviderMode;
+}): { model: string; source: "requested" | "provider_auto" | "provider_hybrid" | "provider_default"; corrected: boolean } {
+  const providerModel = canonicalizeModelId(input.providerModel);
+  const requestedModelRaw = String(input.requestedModel ?? "");
+  const requestedModel = canonicalizeModelId(requestedModelRaw);
+  const mode = input.providerMode ?? resolveProviderMode();
+
+  if (!providerModel) {
+    throw new ZGClientError("zg_provider_metadata_failed", "Provider metadata did not include a model", "infer_model_resolve");
+  }
+
+  if (mode === "auto") {
+    return {
+      model: providerModel,
+      source: "provider_auto",
+      corrected: requestedModel.length > 0 && !modelsEquivalent(requestedModel, providerModel),
+    };
+  }
+
+  if (!requestedModel) {
+    return { model: providerModel, source: "provider_default", corrected: false };
+  }
+
+  if (modelsEquivalent(requestedModel, providerModel)) {
+    return {
+      model: providerModel,
+      source: "requested",
+      corrected: normalizeModelKey(requestedModelRaw) !== normalizeModelKey(providerModel),
+    };
+  }
+
+  if (mode === "hybrid") {
+    return { model: providerModel, source: "provider_hybrid", corrected: true };
+  }
+
+  throw new ZGClientError(
+    "zg_model_mismatch",
+    `Configured model '${requestedModelRaw || requestedModel}' is not supported by provider; provider exposes '${providerModel}'`,
+    "infer_model_resolve"
+  );
 }
 
 function isTimeoutError(err: unknown): boolean {
@@ -128,6 +262,13 @@ async function withTimeout<T>(
 
 function asZgError(err: unknown, fallbackCode: ZGReasonCode, stage: string): ZGClientError {
   if (err instanceof ZGClientError) return err;
+  if (isMissingDependencyError(err, "@0glabs/0g-serving-broker")) {
+    return new ZGClientError(
+      "missing_runtime_dependency",
+      "Missing runtime dependency '@0glabs/0g-serving-broker'. Run `npm --workspace agents install`.",
+      stage
+    );
+  }
   if (isTimeoutError(err)) {
     return new ZGClientError("zg_timeout", normalizeErrorMessage(err), stage);
   }
@@ -185,6 +326,15 @@ function usagePayload(payload?: ZGInferenceResponse): string | undefined {
   }
 }
 
+function extractSupportedModelFromHttpError(body: string): string | null {
+  if (!body) return null;
+  const singleQuoted = body.match(/only\s+'([^']+)'\s+is available/i);
+  if (singleQuoted?.[1]) return canonicalizeModelId(singleQuoted[1]);
+  const doubleQuoted = body.match(/only\s+"([^"]+)"\s+is available/i);
+  if (doubleQuoted?.[1]) return canonicalizeModelId(doubleQuoted[1]);
+  return null;
+}
+
 function ensureConfigured(): { privateKey: string; providerAddress: string; rpcUrl: string } {
   const privateKey = (process.env.ZG_PRIVATE_KEY ?? "").trim();
   const providerAddress = resolveProviderAddress();
@@ -219,7 +369,7 @@ export async function initBroker(): Promise<any> {
         privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`,
         provider
       );
-      const { createZGComputeNetworkBroker } = await import("@0glabs/0g-serving-broker");
+      const createZGComputeNetworkBroker = await loadBrokerFactory();
       brokerInstance = await withTimeout(
         createZGComputeNetworkBroker(wallet),
         resolveHealthcheckTimeoutMs(),
@@ -230,6 +380,24 @@ export async function initBroker(): Promise<any> {
       brokerInitialized = true;
       return brokerInstance;
     } catch (err) {
+      if (isMissingDependencyError(err, "@0glabs/0g-serving-broker")) {
+        throw new ZGClientError(
+          "missing_runtime_dependency",
+          "Missing runtime dependency '@0glabs/0g-serving-broker'. Run `npm --workspace agents install`.",
+          "init_broker"
+        );
+      }
+      if (isInteropNamedExportError(err)) {
+        throw new ZGClientError(
+          "zg_broker_module_interop_error",
+          `0g broker ESM/CJS interop error: ${normalizeErrorMessage(err)}. ` +
+          "Retry with ZG_BROKER_LOADER_MODE=auto or install a broker package version with valid ESM exports.",
+          "init_broker"
+        );
+      }
+      if (err instanceof ZGClientError && err.code === "zg_broker_module_interop_error") {
+        throw err;
+      }
       lastError = err;
       if (attempt < retries) {
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
@@ -470,52 +638,73 @@ export async function infer(
   }
 
   await initBroker();
-  const { endpoint, model: modelFromMeta } = await getServiceMetadata(providerAddress);
-  const model = req.model || modelFromMeta;
+  const { endpoint, model: modelFromMetaRaw } = await getServiceMetadata(providerAddress);
+  const providerModel = canonicalizeModelId(modelFromMetaRaw);
+  const resolved = resolveInferenceModel({
+    requestedModel: req.model,
+    providerModel,
+    providerMode: resolveProviderMode(),
+  });
+  let model = resolved.model;
+  let correctedViaHttpMismatch = false;
   const contentForBilling = extractContentForBilling(req.messages);
-  const headers = await getRequestHeaders(providerAddress, contentForBilling);
   const url = buildCompletionUrl(endpoint);
   const timeoutMs = Number(opts?.timeoutMs ?? resolveRequestTimeoutMs());
   const { signal, clear } = withAbortTimeout(timeoutMs);
 
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify({
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const headers = await getRequestHeaders(providerAddress, contentForBilling);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify({
+          model,
+          messages: req.messages,
+          temperature: req.temperature,
+          max_tokens: req.max_tokens,
+        }),
+        signal,
+      });
+
+      const rawBody = await readResponseBody(response);
+      if (!response.ok) {
+        const hintedModel = response.status === 400 ? extractSupportedModelFromHttpError(rawBody) : null;
+        if (attempt === 1 && hintedModel && !modelsEquivalent(model, hintedModel)) {
+          model = hintedModel;
+          correctedViaHttpMismatch = true;
+          continue;
+        }
+        throw new ZGClientError("zg_http_error", `0g provider returned ${response.status}: ${rawBody.slice(0, 240)}`, "infer_http");
+      }
+
+      const payload = parseJsonResponse(rawBody, "infer_parse");
+      const content = payload?.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new ZGClientError("zg_response_invalid", "0g provider returned no completion content", "infer_parse");
+      }
+
+      const requestId = extractRequestId(response, payload);
+      const verified = await verifyResponse(providerAddress, requestId, usagePayload(payload));
+
+      return {
+        content,
+        providerAddress,
+        endpoint,
         model,
-        messages: req.messages,
-        temperature: req.temperature,
-        max_tokens: req.max_tokens,
-      }),
-      signal,
-    });
-
-    const rawBody = await readResponseBody(response);
-    if (!response.ok) {
-      throw new ZGClientError("zg_http_error", `0g provider returned ${response.status}: ${rawBody.slice(0, 240)}`, "infer_http");
+        requestId,
+        verified,
+        requestedModel: canonicalizeModelId(req.model ?? ""),
+        providerModel,
+        modelSource: resolved.source,
+        modelAutoCorrected: resolved.corrected || correctedViaHttpMismatch,
+      };
     }
 
-    const payload = parseJsonResponse(rawBody, "infer_parse");
-    const content = payload?.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new ZGClientError("zg_response_invalid", "0g provider returned no completion content", "infer_parse");
-    }
-
-    const requestId = extractRequestId(response, payload);
-    const verified = await verifyResponse(providerAddress, requestId, usagePayload(payload));
-
-    return {
-      content,
-      providerAddress,
-      endpoint,
-      model,
-      requestId,
-      verified,
-    };
+    throw new ZGClientError("zg_model_auto_corrected", "0g model auto-correction retry exceeded", "infer_model_retry");
   } catch (err) {
     if (err instanceof ZGClientError) throw err;
     if (isTimeoutError(err)) {

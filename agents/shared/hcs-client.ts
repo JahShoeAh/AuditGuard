@@ -19,6 +19,7 @@ import type { HCSMessage } from "./types.js";
 
 export class HCSClient {
   private client: Client;
+  private readonly subscribeLookbackMs: number;
 
   /**
    * Create an HCS client from a pre-configured Hedera Client (from wallet.ts).
@@ -47,6 +48,9 @@ export class HCSClient {
       // Preferred: use existing client from wallet
       this.client = clientOrName;
     }
+    const lookbackSecRaw = Number(process.env.HCS_SUBSCRIBE_LOOKBACK_SECONDS ?? "15");
+    const lookbackSec = Number.isFinite(lookbackSecRaw) ? Math.max(0, lookbackSecRaw) : 15;
+    this.subscribeLookbackMs = Math.floor(lookbackSec * 1000);
   }
 
   // ─── Publish ─────────────────────────────────────────────────────────────
@@ -75,9 +79,14 @@ export class HCSClient {
   // ─── Subscribe ───────────────────────────────────────────────────────────
 
   subscribe(topicId: string, callback: (msg: HCSMessage) => void): void {
-    new TopicMessageQuery()
-      .setTopicId(TopicId.fromString(topicId))
-      .subscribe(this.client, null, (topicMessage) => {
+    const query = new TopicMessageQuery()
+      .setTopicId(TopicId.fromString(topicId));
+
+    if (this.subscribeLookbackMs > 0) {
+      query.setStartTime(new Date(Date.now() - this.subscribeLookbackMs));
+    }
+
+    query.subscribe(this.client, null, (topicMessage) => {
         try {
           const raw = Buffer.from(topicMessage.contents).toString("utf-8");
           const parsed: HCSMessage = JSON.parse(raw);

@@ -11,7 +11,10 @@ export default function Countdown({ deadline }) {
   useEffect(() => {
     if (!deadline) return;
 
-    const target = typeof deadline === 'bigint' ? Number(deadline) : Number(deadline);
+    const rawTarget = typeof deadline === 'bigint' ? Number(deadline) : Number(deadline);
+    const target = rawTarget > 1_000_000_000_000
+      ? Math.floor(rawTarget / 1000)
+      : Math.floor(rawTarget);
 
     function tick() {
       const now = Math.floor(Date.now() / 1000);
@@ -32,12 +35,15 @@ export default function Countdown({ deadline }) {
   }
 
   if (remaining <= 0) {
-    return <span className="text-xs font-mono text-guard-red font-semibold">EXPIRED</span>;
+    return <span className="text-xs font-mono text-guard-red font-semibold">CLOSED</span>;
   }
 
-  const mins = Math.floor(remaining / 60);
+  const hours = Math.floor(remaining / 3600);
+  const mins = Math.floor((remaining % 3600) / 60);
   const secs = remaining % 60;
-  const display = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  const display = hours > 0
+    ? `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 
   // Color transitions
   let colorClass = 'text-gray-300';
@@ -45,7 +51,7 @@ export default function Countdown({ deadline }) {
   if (remaining <= 10) {
     colorClass = 'text-guard-red';
     extraClass = 'animate-pulse-glow';
-  } else if (remaining <= 60) {
+  } else if (remaining <= 30) {
     colorClass = 'text-guard-amber';
   }
 

@@ -1,8 +1,10 @@
 const fs = require("fs");
 const path = require("path");
-const dotenv = require("dotenv");
-dotenv.config({ path: path.join(__dirname, "..", ".env") });
-dotenv.config({ path: path.join(__dirname, "..", "agents", ".env"), override: true });
+const { loadRuntimeEnv, summarizeCredentialConflict } = require("./env-policy.js");
+const runtimeEnv = loadRuntimeEnv({
+  allowAgentCredentialOverrides:
+    String(process.env.ALLOW_AGENT_ENV_CREDENTIAL_OVERRIDE || "").toLowerCase() === "true",
+});
 
 const { ethers } = require("ethers");
 const {
@@ -32,6 +34,14 @@ const OPERATOR_HBAR_TARGET = Number(process.env.OPERATOR_HBAR_TARGET || "2.5");
 const OPERATOR_TOPUP_DONOR_MIN_HBAR = Number(process.env.OPERATOR_TOPUP_DONOR_MIN_HBAR || "1.5");
 const ENABLE_OPERATOR_HBAR_AUTOTOPUP = process.env.ENABLE_OPERATOR_HBAR_AUTOTOPUP !== "false";
 const MIN_REGISTRY_HBAR = Number(process.env.MIN_REGISTRY_HBAR || "2");
+const MIN_AGENT_PAYER_HBAR = Number(process.env.MIN_AGENT_PAYER_HBAR || "0.25");
+const TARGET_AGENT_PAYER_HBAR = Number(process.env.TARGET_AGENT_PAYER_HBAR || "1.0");
+const AGENT_ACTIVATION_RETRY_MAX = Number(process.env.AGENT_ACTIVATION_RETRY_MAX || "3");
+const AGENT_ACTIVATION_RETRY_BASE_MS = Number(process.env.AGENT_ACTIVATION_RETRY_BASE_MS || "1200");
+const ACTIVATE_GUARD_TRANSFER_RETRY_MAX = Number(process.env.ACTIVATE_GUARD_TRANSFER_RETRY_MAX || "3");
+const ACTIVATE_GUARD_TRANSFER_RETRY_BASE_MS = Number(process.env.ACTIVATE_GUARD_TRANSFER_RETRY_BASE_MS || "900");
+const ACTIVATE_GUARD_TRANSFER_GAS_LIMIT = BigInt(process.env.ACTIVATE_GUARD_TRANSFER_GAS_LIMIT || "250000");
+const ACTIVATE_GUARD_FALLBACK_HAPI_TRANSFER = process.env.ACTIVATE_GUARD_FALLBACK_HAPI_TRANSFER !== "false";
 const MIRROR_TIMEOUT_MS = Number(process.env.LIVE_PREFLIGHT_MIRROR_TIMEOUT_MS || "8000");
 const DEFAULT_MIRROR_BASE_URL = "https://testnet.mirrornode.hedera.com";
 
@@ -124,6 +134,26 @@ const AGENTS = [
   },
 ];
 
+function logEnvCredentialPolicy() {
+  if (runtimeEnv.ignoredCredentialKeys.length > 0) {
+    console.log(
+      `• Credential authority: root .env (ignored ${runtimeEnv.ignoredCredentialKeys.length} credential override keys from agents/.env)`
+    );
+  } else {
+    console.log("• Credential authority: root .env");
+  }
+  if (runtimeEnv.credentialConflicts.length > 0) {
+    const rendered = runtimeEnv.credentialConflicts
+      .map((entry) => summarizeCredentialConflict(entry))
+      .join(" | ");
+    console.log(`⚠ Credential drift detected between .env and agents/.env: ${rendered}`);
+  }
+}
+
+function sourceForKey(key) {
+  return runtimeEnv.keySources[key] || "process";
+}
+
 function toTokenUnits(amountGuard) {
   return BigInt(Math.floor(Number(amountGuard) * 10 ** GUARD_DECIMALS));
 }
@@ -169,6 +199,18 @@ function getAgentCredentials(spec) {
   return { accountId, privateKey };
 }
 
+function warnOnSharedOperatorAndScannerPayer(operatorAccountIdRaw) {
+  const scannerSpec = AGENTS.find((spec) => spec.agentId === "scanner-001");
+  if (!scannerSpec) return;
+  const scannerCreds = getAgentCredentials(scannerSpec);
+  if (!scannerCreds?.accountId) return;
+  if (String(scannerCreds.accountId) !== String(operatorAccountIdRaw)) return;
+  console.warn(
+    "⚠ scanner-001 shares payer account with orchestrator/operator. " +
+    "This can cause nonce contention and intermittent invite/bid failures."
+  );
+}
+
 function getAgentKeyTypeHint(spec) {
   return (
     getEnvValue(spec.prefix, spec.legacyPrefix, "PRIVATE_KEY_TYPE") ||
@@ -203,6 +245,10 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function parseRpcCandidates() {
   const primary =
     process.env.HEDERA_JSON_RPC_URL ||
@@ -224,7 +270,17 @@ function isNetworkLikeError(reason) {
     normalized.includes("all nodes are unhealthy") ||
     normalized.includes("network connectivity") ||
     normalized.includes("fetch failed") ||
-    normalized.includes("timed out")
+    normalized.includes("timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("server response 502") ||
+    normalized.includes("server response 503") ||
+    normalized.includes("server response 504") ||
+    normalized.includes("gateway") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("429")
   );
 }
 
@@ -599,11 +655,132 @@ async function submitRegisterAgentTx(agentWallet, registryAddress, calldata) {
   return tx;
 }
 
-async function transferGuard(guardTokenContract, targetEvmAddress, amountWei, label) {
-  if (amountWei <= 0n) return;
-  const tx = await guardTokenContract.transfer(targetEvmAddress, amountWei);
-  await tx.wait();
-  console.log(`    ✓ ${label}: funded +${fromTokenUnits(amountWei).toFixed(4)} GUARD`);
+function classifyGuardTransferError(reason) {
+  const normalized = String(reason || "").toLowerCase();
+  if (normalized.includes("insufficient funds")) {
+    return { code: "guard_transfer_operator_insufficient", retryable: false };
+  }
+  if (normalized.includes("execution reverted") && normalized.includes("require(false)") && normalized.includes("estimategas")) {
+    return { code: "guard_transfer_estimate_or_rpc_failure", retryable: true };
+  }
+  if (
+    normalized.includes("nonce too low") ||
+    normalized.includes("replacement fee too low") ||
+    normalized.includes("already known")
+  ) {
+    return { code: "guard_transfer_nonce_conflict", retryable: true };
+  }
+  if (isNetworkLikeError(reason)) {
+    return { code: "guard_transfer_network_failure", retryable: true };
+  }
+  return { code: "guard_transfer_unknown_failure", retryable: false };
+}
+
+function toSafeTokenTransferAmount(amountWei) {
+  if (amountWei > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("token transfer amount exceeds JS safe integer range");
+  }
+  return Number(amountWei);
+}
+
+async function transferGuardResilient({
+  guardTokenContract,
+  targetEvmAddress,
+  targetAccountId,
+  tokenId,
+  operatorId,
+  operatorKey,
+  hederaClient,
+  amountWei,
+  label,
+}) {
+  if (amountWei <= 0n) return { path: "noop" };
+
+  const initialBalance = await guardTokenContract.balanceOf(targetEvmAddress);
+  const expectedMinBalance = initialBalance + amountWei;
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= ACTIVATE_GUARD_TRANSFER_RETRY_MAX; attempt++) {
+    try {
+      const before = await guardTokenContract.balanceOf(targetEvmAddress);
+      if (before >= expectedMinBalance) {
+        console.log(`    • ${label}: funding already satisfied before transfer retry`);
+        return { path: "already_funded" };
+      }
+
+      await guardTokenContract.transfer.staticCall(targetEvmAddress, amountWei);
+      const tx = await guardTokenContract.transfer(targetEvmAddress, amountWei, {
+        gasLimit: ACTIVATE_GUARD_TRANSFER_GAS_LIMIT,
+      });
+      const receipt = await tx.wait();
+      if (!receipt || (receipt.status != null && receipt.status !== 1)) {
+        throw new Error(`tx failed (hash=${tx.hash}, status=${receipt?.status ?? "unknown"})`);
+      }
+
+      const after = await guardTokenContract.balanceOf(targetEvmAddress);
+      if (after < before + amountWei) {
+        throw new Error(
+          `post-transfer balance verification failed (before=${before.toString()} after=${after.toString()} expectedDelta=${amountWei.toString()})`
+        );
+      }
+      console.log(`    ✓ ${label}: funded +${fromTokenUnits(amountWei).toFixed(4)} GUARD (evm transfer)`);
+      return { path: "evm" };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const classification = classifyGuardTransferError(reason);
+      lastFailure = { reason, code: classification.code };
+      if (classification.retryable && attempt < ACTIVATE_GUARD_TRANSFER_RETRY_MAX) {
+        const waitMs = ACTIVATE_GUARD_TRANSFER_RETRY_BASE_MS * attempt;
+        console.log(
+          `    ⚠ ${label}: ${classification.code} during GUARD funding ` +
+          `(attempt ${attempt}/${ACTIVATE_GUARD_TRANSFER_RETRY_MAX}): ${reason}`
+        );
+        console.log(`    • ${label}: retrying GUARD funding in ${waitMs}ms...`);
+        await sleep(waitMs);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (!ACTIVATE_GUARD_FALLBACK_HAPI_TRANSFER) {
+    const detail = lastFailure ? `${lastFailure.code}:${lastFailure.reason}` : "unknown";
+    throw new Error(`guard_transfer_failed_no_fallback:${detail}`);
+  }
+
+  try {
+    const before = await guardTokenContract.balanceOf(targetEvmAddress);
+    if (before >= expectedMinBalance) {
+      console.log(`    • ${label}: funding already satisfied before HAPI fallback`);
+      return { path: "already_funded" };
+    }
+
+    const transferAmount = toSafeTokenTransferAmount(amountWei);
+    const tx = await new TransferTransaction()
+      .addTokenTransfer(tokenId, operatorId, -transferAmount)
+      .addTokenTransfer(targetAccountId, transferAmount)
+      .freezeWith(hederaClient);
+    const signed = await tx.sign(operatorKey);
+    const submit = await signed.execute(hederaClient);
+    const receipt = await submit.getReceipt(hederaClient);
+    const statusText = String(receipt.status);
+    if (statusText !== "SUCCESS") {
+      throw new Error(`HAPI transfer failed with status ${statusText}`);
+    }
+
+    const after = await guardTokenContract.balanceOf(targetEvmAddress);
+    if (after < before + amountWei) {
+      throw new Error(
+        `HAPI post-transfer balance verification failed (before=${before.toString()} after=${after.toString()} expectedDelta=${amountWei.toString()})`
+      );
+    }
+    console.log(`    ✓ ${label}: funded +${fromTokenUnits(amountWei).toFixed(4)} GUARD (hapi fallback)`);
+    return { path: "hapi_fallback" };
+  } catch (err) {
+    const fallbackReason = err instanceof Error ? err.message : String(err);
+    const prior = lastFailure ? `${lastFailure.code}:${lastFailure.reason}` : "unknown";
+    throw new Error(`guard_transfer_hapi_fallback_failed:${fallbackReason}; prior=${prior}`);
+  }
 }
 
 async function maybeSyncDataMarketplaceRegistry(sdk, ownerSignerWallet, expectedRegistryAddress) {
@@ -647,6 +824,37 @@ async function getHbarBalance(client, accountId, label) {
     `${label} HBAR balance`
   );
   return Number(balance?.hbars?.toTinybars?.().toString?.() ?? "0") / 1e8;
+}
+
+async function ensureAgentHbarMinimum(client, operatorId, operatorKey, agentAccountId, label) {
+  const current = await getHbarBalance(client, agentAccountId, `${label} payer`);
+  if (current >= MIN_AGENT_PAYER_HBAR) {
+    console.log(`    • ${label}: HBAR payer balance ok (${current.toFixed(4)} HBAR)`);
+    return current;
+  }
+
+  const deficit = TARGET_AGENT_PAYER_HBAR - current;
+  if (deficit <= 0) return current;
+  if (agentAccountId.toString() === operatorId.toString()) {
+    console.log(
+      `    ⚠ ${label}: HBAR payer balance low (${current.toFixed(4)} < ${MIN_AGENT_PAYER_HBAR.toFixed(4)}), ` +
+      "but account equals operator so top-up is skipped"
+    );
+    return current;
+  }
+
+  const sendTinybars = Math.max(1, Math.ceil(deficit * 1e8));
+  const tx = await new TransferTransaction()
+    .addHbarTransfer(operatorId, Hbar.fromTinybars(-sendTinybars))
+    .addHbarTransfer(agentAccountId, Hbar.fromTinybars(sendTinybars))
+    .freezeWith(client);
+  const signed = await tx.sign(operatorKey);
+  const submit = await signed.execute(client);
+  const receipt = await submit.getReceipt(client);
+  console.log(
+    `    ✓ ${label}: HBAR top-up +${(sendTinybars / 1e8).toFixed(4)} (status=${String(receipt.status)})`
+  );
+  return await getHbarBalance(client, agentAccountId, `${label} payer post-topup`);
 }
 
 async function maybeTopupOperatorHbar(operatorId, minimumHbar) {
@@ -697,6 +905,7 @@ async function maybeTopupOperatorHbar(operatorId, minimumHbar) {
 }
 
 async function main() {
+  logEnvCredentialPolicy();
   const sdk = loadSdkConfig();
   const guardTokenId = sdk?.guardTokenId;
   const guardTokenEvm = sdk?.guardTokenEvmAddress;
@@ -715,6 +924,25 @@ async function main() {
   const operatorKeyRaw = process.env.HEDERA_PRIVATE_KEY || process.env.OPERATOR_PRIVATE_KEY;
   if (!operatorIdRaw || !operatorKeyRaw) {
     throw new Error("Set HEDERA_ACCOUNT_ID/HEDERA_PRIVATE_KEY (or OPERATOR_*) in .env");
+  }
+  warnOnSharedOperatorAndScannerPayer(operatorIdRaw);
+
+  const scannerSpec = AGENTS.find((spec) => spec.agentId === "scanner-001");
+  if (scannerSpec) {
+    const scannerCreds = getAgentCredentials(scannerSpec);
+    if (scannerCreds?.privateKey && scannerCreds.accountId) {
+      try {
+        const scannerAddress = deriveAddressFromPrivateKey(scannerCreds.privateKey);
+        console.log(
+          `• scanner-001 resolved credentials: account=${scannerCreds.accountId} evm=${scannerAddress} ` +
+          `(account source=${sourceForKey("SCANNER_ACCOUNT_ID")}, key source=${sourceForKey("SCANNER_PRIVATE_KEY")})`
+        );
+      } catch (err) {
+        console.log(
+          `⚠ scanner-001 credential derivation failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
   }
 
   const operatorId = AccountId.fromString(operatorIdRaw);
@@ -1054,114 +1282,154 @@ async function main() {
       continue;
     }
 
-    let agentClient = null;
-    try {
-      const agentAccountId = AccountId.fromString(creds.accountId);
-      const agentHederaKey = parsePrivateKey(
-        creds.privateKey,
-        process.env[`${spec.prefix}_PRIVATE_KEY_TYPE`] || process.env.AGENT_PRIVATE_KEY_TYPE
-      );
-      agentClient = createHederaClient(agentAccountId, agentHederaKey);
-      const agentEvmWallet = new ethers.Wallet(normalizeEvmPrivateKey(creds.privateKey), provider);
-      const registryFromAgent = registry.connect(agentEvmWallet);
-      const guardFromAgent = guardToken.connect(agentEvmWallet);
-      const stakeWei = toTokenUnits(spec.stakeGuard);
-      const minLiquidWei = toTokenUnits(spec.minLiquidGuard);
-      const minTotalWei = stakeWei + minLiquidWei;
-      const endpoint = process.env[spec.endpointEnv] || spec.defaultEndpoint;
-
-      console.log(`• ${spec.agentId} (${agentEvmWallet.address})`);
-
-      await associateTokenForAgent(agentClient, tokenId, agentAccountId, agentHederaKey, spec.agentId);
-
-      let balanceWei = await guardToken.balanceOf(agentEvmWallet.address);
-      if (balanceWei < minTotalWei) {
-        const topup = minTotalWei - balanceWei;
-        if (agentAccountId.toString() === operatorId.toString()) {
-          console.log(
-            `    ⚠ ${spec.agentId}: balance below desired target (${fromTokenUnits(balanceWei).toFixed(4)} < ` +
-            `${fromTokenUnits(minTotalWei).toFixed(4)} GUARD), but account equals operator so top-up is skipped`
-          );
-        } else {
-          await transferGuard(
-            guardToken,
-            agentEvmWallet.address,
-            topup,
-            spec.agentId
-          );
-          balanceWei = await guardToken.balanceOf(agentEvmWallet.address);
-        }
-      } else {
-        console.log(`    • ${spec.agentId}: balance ok (${fromTokenUnits(balanceWei).toFixed(4)} GUARD)`);
-      }
-
+    let completed = false;
+    for (let attempt = 1; attempt <= AGENT_ACTIVATION_RETRY_MAX; attempt++) {
+      let agentClient = null;
       try {
-        const allowance = await guardFromAgent.allowance(agentEvmWallet.address, agentRegistryAddress);
-        if (allowance < stakeWei) {
-          const tx = await guardFromAgent.approve(agentRegistryAddress, stakeWei);
-          await tx.wait();
-          console.log(`    ✓ ${spec.agentId}: approved ${spec.stakeGuard} GUARD to AgentRegistry`);
-        } else {
-          console.log(`    • ${spec.agentId}: allowance already set`);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(`    ⚠ ${spec.agentId}: approve skipped (${msg})`);
-      }
+        const agentAccountId = AccountId.fromString(creds.accountId);
+        const agentHederaKey = parsePrivateKey(
+          creds.privateKey,
+          process.env[`${spec.prefix}_PRIVATE_KEY_TYPE`] || process.env.AGENT_PRIVATE_KEY_TYPE
+        );
+        agentClient = createHederaClient(agentAccountId, agentHederaKey);
+        const agentEvmWallet = new ethers.Wallet(normalizeEvmPrivateKey(creds.privateKey), provider);
+        const registryFromAgent = registry.connect(agentEvmWallet);
+        const guardFromAgent = guardToken.connect(agentEvmWallet);
+        const stakeWei = toTokenUnits(spec.stakeGuard);
+        const minLiquidWei = toTokenUnits(spec.minLiquidGuard);
+        const minTotalWei = stakeWei + minLiquidWei;
+        const endpoint = process.env[spec.endpointEnv] || spec.defaultEndpoint;
 
-      let registerErrorMessage = "";
-      let active = await registry.isActiveAgent(agentEvmWallet.address);
-      if (!active) {
-        try {
-          const registerCalldata = buildRegisterAgentCalldata(
-            registryFromAgent,
-            spec.agentId,
-            endpoint,
-            spec.specializations,
-            stakeWei
+        console.log(`• ${spec.agentId} (${agentEvmWallet.address})`);
+
+        const finalHbar = await ensureAgentHbarMinimum(
+          hederaClient,
+          operatorId,
+          operatorKey,
+          agentAccountId,
+          spec.agentId
+        );
+        if (finalHbar < MIN_AGENT_PAYER_HBAR && spec.required) {
+          hasFailure = true;
+          requiredFailures.push(
+            `${spec.agentId}:insufficient_payer_hbar_after_topup:${finalHbar.toFixed(4)}<${MIN_AGENT_PAYER_HBAR.toFixed(4)}`
           );
-          const tx = await submitRegisterAgentTx(agentEvmWallet, agentRegistryAddress, registerCalldata);
-          console.log(`    • ${spec.agentId}: registerAgent tx.to=${tx.to} tx.data=${tx.data || "<empty>"}`);
-          console.log(`    ✓ ${spec.agentId}: on-chain registration succeeded`);
+        }
+
+        await associateTokenForAgent(agentClient, tokenId, agentAccountId, agentHederaKey, spec.agentId);
+
+        let balanceWei = await guardToken.balanceOf(agentEvmWallet.address);
+        if (balanceWei < minTotalWei) {
+          const topup = minTotalWei - balanceWei;
+          if (agentAccountId.toString() === operatorId.toString()) {
+            console.log(
+              `    ⚠ ${spec.agentId}: balance below desired target (${fromTokenUnits(balanceWei).toFixed(4)} < ` +
+              `${fromTokenUnits(minTotalWei).toFixed(4)} GUARD), but account equals operator so top-up is skipped`
+            );
+          } else {
+            await transferGuardResilient({
+              guardTokenContract: guardToken,
+              targetEvmAddress: agentEvmWallet.address,
+              targetAccountId: agentAccountId,
+              tokenId,
+              operatorId,
+              operatorKey,
+              hederaClient,
+              amountWei: topup,
+              label: spec.agentId,
+            });
+            balanceWei = await guardToken.balanceOf(agentEvmWallet.address);
+          }
+        } else {
+          console.log(`    • ${spec.agentId}: balance ok (${fromTokenUnits(balanceWei).toFixed(4)} GUARD)`);
+        }
+
+        try {
+          const allowance = await guardFromAgent.allowance(agentEvmWallet.address, agentRegistryAddress);
+          if (allowance < stakeWei) {
+            const tx = await guardFromAgent.approve(agentRegistryAddress, stakeWei);
+            await tx.wait();
+            console.log(`    ✓ ${spec.agentId}: approved ${spec.stakeGuard} GUARD to AgentRegistry`);
+          } else {
+            console.log(`    • ${spec.agentId}: allowance already set`);
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          registerErrorMessage = msg;
-          if (msg.toLowerCase().includes("agentregistry: hts transfer failed")) {
-            htsTransferFailedAgents.add(spec.agentId);
-          }
-          console.log(`    ⚠ ${spec.agentId}: registerAgent attempt returned: ${msg}`);
+          console.log(`    ⚠ ${spec.agentId}: approve skipped (${msg})`);
         }
-        active = await registry.isActiveAgent(agentEvmWallet.address);
-      } else {
-        console.log(`    • ${spec.agentId}: already active`);
-      }
 
-      const finalBalanceWei = await guardToken.balanceOf(agentEvmWallet.address);
-      const ok = active && finalBalanceWei > 0n;
-      if (!ok && spec.required) {
-        hasFailure = true;
-        const reason = !active
-          ? (
-            registerErrorMessage
-              ? `inactive_agent_after_registration:register_error:${registerErrorMessage}`
-              : "inactive_agent_after_registration"
-          )
-          : "zero_guard_balance_after_topup";
-        requiredFailures.push(`${spec.agentId}:${reason}`);
+        let registerErrorMessage = "";
+        let active = await registry.isActiveAgent(agentEvmWallet.address);
+        if (!active) {
+          try {
+            const registerCalldata = buildRegisterAgentCalldata(
+              registryFromAgent,
+              spec.agentId,
+              endpoint,
+              spec.specializations,
+              stakeWei
+            );
+            const tx = await submitRegisterAgentTx(agentEvmWallet, agentRegistryAddress, registerCalldata);
+            console.log(`    • ${spec.agentId}: registerAgent tx.to=${tx.to} tx.data=${tx.data || "<empty>"}`);
+            console.log(`    ✓ ${spec.agentId}: on-chain registration succeeded`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            registerErrorMessage = msg;
+            if (msg.toLowerCase().includes("agentregistry: hts transfer failed")) {
+              htsTransferFailedAgents.add(spec.agentId);
+            }
+            console.log(`    ⚠ ${spec.agentId}: registerAgent attempt returned: ${msg}`);
+          }
+          active = await registry.isActiveAgent(agentEvmWallet.address);
+        } else {
+          console.log(`    • ${spec.agentId}: already active`);
+        }
+
+        const finalBalanceWei = await guardToken.balanceOf(agentEvmWallet.address);
+        const ok = active && finalBalanceWei > 0n;
+        if (!ok && spec.required) {
+          hasFailure = true;
+          const reason = !active
+            ? (
+              registerErrorMessage
+                ? `inactive_agent_after_registration:register_error:${registerErrorMessage}`
+                : "inactive_agent_after_registration"
+            )
+            : "zero_guard_balance_after_topup";
+          requiredFailures.push(`${spec.agentId}:${reason}`);
+        }
+        console.log(
+          `${ok ? "OK " : "ERR"}  ${spec.agentId.padEnd(28)} active=${active} guard=${fromTokenUnits(finalBalanceWei).toFixed(4)}`
+        );
+        completed = true;
+        break;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        const transient = isNetworkLikeError(reason);
+        if (transient && attempt < AGENT_ACTIVATION_RETRY_MAX) {
+          const waitMs = AGENT_ACTIVATION_RETRY_BASE_MS * attempt;
+          console.log(
+            `    ⚠ ${spec.agentId}: transient RPC error during activation ` +
+            `(attempt ${attempt}/${AGENT_ACTIVATION_RETRY_MAX}): ${reason}`
+          );
+          console.log(`    • ${spec.agentId}: retrying activation in ${waitMs}ms...`);
+          await sleep(waitMs);
+          continue;
+        }
+
+        if (spec.required) hasFailure = true;
+        if (spec.required) {
+          const category = transient ? "network_or_dns_failure" : "activation_error";
+          requiredFailures.push(`${spec.agentId}:${category}:${reason}`);
+        }
+        console.log(`ERR  ${spec.agentId.padEnd(28)} ${reason}`);
+        break;
+      } finally {
+        agentClient?.close();
       }
-      console.log(
-        `${ok ? "OK " : "ERR"}  ${spec.agentId.padEnd(28)} active=${active} guard=${fromTokenUnits(finalBalanceWei).toFixed(4)}`
-      );
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      if (spec.required) hasFailure = true;
-      if (spec.required) {
-        const category = isNetworkLikeError(reason) ? "network_or_dns_failure" : "activation_error";
-        requiredFailures.push(`${spec.agentId}:${category}:${reason}`);
-      }
-      console.log(`ERR  ${spec.agentId.padEnd(28)} ${reason}`);
-    } finally {
-      agentClient?.close();
+    }
+    if (!completed && !spec.required) {
+      console.log(`SKIP ${spec.agentId}: activation not completed (optional agent)`);
     }
   }
 

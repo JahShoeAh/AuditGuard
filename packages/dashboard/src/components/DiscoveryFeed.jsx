@@ -5,22 +5,7 @@ import useStore from '../store';
 import { shortenAddress } from '../services/event-listener';
 import { hashscan } from '../utils/hashscan';
 import { useAutoScroll } from '../hooks/useAutoScroll';
-
-// ── Contract type config ───────────────────────────────────
-
-const TYPE_COLORS = {
-  lending_protocol: 'var(--accent-amber)',
-  dex: 'var(--accent-amber)',
-  staking_pool: 'var(--accent-purple)',
-  yield_aggregator: 'var(--accent-green)',
-};
-
-const TYPE_LABELS = {
-  lending_protocol: 'LENDING',
-  dex: 'DEX',
-  staking_pool: 'STAKING',
-  yield_aggregator: 'YIELD AGG',
-};
+import { auctionTypeColor, auctionTypeLabel } from '../utils/auction-type';
 
 // ── Risk bar ───────────────────────────────────────────────
 
@@ -94,8 +79,8 @@ function DiscoveryCard({ discovery }) {
     timestamp,
   } = discovery;
 
-  const accentColor = TYPE_COLORS[contractType] || 'var(--accent-amber)';
-  const typeLabel = TYPE_LABELS[contractType] || contractType?.toUpperCase() || 'UNKNOWN';
+  const accentColor = auctionTypeColor(contractType);
+  const typeLabel = auctionTypeLabel(contractType);
   const ts = discoveryTimestamp || timestamp;
 
   const [copied, setCopied] = useState(false);

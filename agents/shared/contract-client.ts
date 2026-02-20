@@ -100,7 +100,7 @@ export const ListingType = {
 
 // ─── Contract Client ───────────────────────────────────────────────────────
 
-const HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
+const DEFAULT_HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
 const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 
 function assertAddress(value: string, label: string): string {
@@ -175,13 +175,47 @@ export class ContractClient {
    * Create a ContractClient from a raw private key hex string.
    */
   static fromPrivateKey(privateKey: string): ContractClient {
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, HEDERA_NETWORK, {
-      batchMaxCount: 1,
-      staticNetwork: true,
-    });
+    const provider = ContractClient.buildProviderWithFallback();
     const key = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(key, provider);
     return new ContractClient(wallet);
+  }
+
+  private static parseRpcCandidates(): string[] {
+    const primary =
+      process.env.HEDERA_JSON_RPC_URL ||
+      process.env.HEDERA_RPC_URL ||
+      DEFAULT_HEDERA_TESTNET_RPC;
+    const fallbackRaw = process.env.HEDERA_JSON_RPC_FALLBACK_URLS || "";
+    const fallbacks = fallbackRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    return Array.from(new Set([primary, ...fallbacks]));
+  }
+
+  private static buildProviderWithFallback(): ethers.AbstractProvider {
+    const candidates = ContractClient.parseRpcCandidates();
+    const providers = candidates.map((rpcUrl) => {
+      const provider = new ethers.JsonRpcProvider(rpcUrl, HEDERA_NETWORK, {
+        batchMaxCount: 1,
+        staticNetwork: true,
+      });
+      provider.pollingInterval = 5000;
+      return provider;
+    });
+    if (providers.length === 1) return providers[0];
+
+    return new ethers.FallbackProvider(
+      providers.map((provider, index) => ({
+        provider,
+        priority: index + 1,
+        weight: 1,
+        stallTimeout: 2500,
+      })),
+      HEDERA_NETWORK,
+      { quorum: 1, pollingInterval: 5000 }
+    );
   }
 
   getAddress(): string {

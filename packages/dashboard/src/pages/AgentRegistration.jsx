@@ -4,18 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Header from '../components/Header';
 import WalletButton from '../components/wallet/WalletButton';
 import useWalletStore from '../store/wallet';
-import { useConnection } from '../hooks/useConnection';
-import { useEventListeners } from '../hooks/useEventListeners';
 import StepIdentity,       { validateStep1 } from '../components/agent-register/StepIdentity';
 import StepUCP,            { validateStep2 } from '../components/agent-register/StepUCP';
 import StepSpecialization, { validateStep3 } from '../components/agent-register/StepSpecialization';
 import StepDeploy from '../components/agent-register/StepDeploy';
-
-// ── Bootstrap hook ─────────────────────────────────────────
-function useBootstrap() {
-  const conn = useConnection();
-  useEventListeners(conn);
-}
 
 // ── Step metadata ──────────────────────────────────────────
 
@@ -116,8 +108,6 @@ function initialFormData() {
 // ── AgentRegistration page ─────────────────────────────────
 
 export default function AgentRegistration() {
-  useBootstrap();
-
   const connected    = useWalletStore((s) => s.connectionStatus === 'connected');
   const guardBalance = useWalletStore((s) => s.guardBalance);
 

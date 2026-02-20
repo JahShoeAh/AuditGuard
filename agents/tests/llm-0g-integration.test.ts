@@ -22,7 +22,7 @@ vi.mock("../shared/index.js", () => ({
     zgInference: {
       rpcUrl: "https://evmrpc-testnet.0g.ai",
       providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
-      model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
+      model: process.env.ZG_MODEL ?? "qwen/qwen-2.5-7b-instruct",
       timeoutMs: 30000,
       depositAmount: 5,
       requiredInLive: (process.env.ZG_REQUIRED_IN_LIVE ?? "true") !== "false",
@@ -72,7 +72,7 @@ vi.mock("../shared/config.js", () => ({
     zgInference: {
       rpcUrl: "https://evmrpc-testnet.0g.ai",
       providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
-      model: process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct",
+      model: process.env.ZG_MODEL ?? "qwen/qwen-2.5-7b-instruct",
       timeoutMs: 30000,
       depositAmount: 5,
       requiredInLive: (process.env.ZG_REQUIRED_IN_LIVE ?? "true") !== "false",
@@ -89,7 +89,7 @@ const mockBroker = {
     listService: vi.fn().mockResolvedValue([]),
     getServiceMetadata: vi.fn().mockResolvedValue({
       endpoint: "https://mock-provider.0g.ai",
-      model: "qwen-2.5-7b-instruct",
+      model: "qwen/qwen-2.5-7b-instruct",
     }),
     getRequestHeaders: vi.fn().mockResolvedValue({
       "X-0G-Auth": "mock-signed-header",
@@ -123,7 +123,7 @@ describe("zg-client.ts", () => {
     process.env.ZG_RPC_URL = "https://evmrpc-testnet.0g.ai";
     mockBroker.inference.getServiceMetadata.mockResolvedValue({
       endpoint: "https://mock-provider.0g.ai",
-      model: "qwen-2.5-7b-instruct",
+      model: "qwen/qwen-2.5-7b-instruct",
     });
     mockBroker.inference.getRequestHeaders.mockResolvedValue({
       "X-0G-Auth": "mock-signed-header",
@@ -138,16 +138,83 @@ describe("zg-client.ts", () => {
     delete process.env.ZG_PRIVATE_KEY;
     delete process.env.ZG_PROVIDER_ADDRESS;
     delete process.env.ZG_RPC_URL;
+    delete process.env.ZG_PROVIDER_MODE;
   });
 
   const makeRequest = () => ({
-    model: "qwen-2.5-7b-instruct",
+    model: "qwen/qwen-2.5-7b-instruct",
     messages: [
       { role: "system" as const, content: "You are an auditor." },
       { role: "user" as const, content: "Analyze this contract." },
     ],
     temperature: 0.3,
     max_tokens: 2000,
+  });
+
+  it("canonicalizes model aliases and treats equivalent models as equal", async () => {
+    const { canonicalizeModelId, modelsEquivalent } = await import("../llm-contextual/zg-client.js");
+    expect(canonicalizeModelId("qwen-2.5-7b-instruct")).toBe("qwen/qwen-2.5-7b-instruct");
+    expect(modelsEquivalent("qwen-2.5-7b-instruct", "qwen/qwen-2.5-7b-instruct")).toBe(true);
+  });
+
+  it("resolves hybrid mode to provider model on mismatch", async () => {
+    const { resolveInferenceModel } = await import("../llm-contextual/zg-client.js");
+    const result = resolveInferenceModel({
+      requestedModel: "some-other-model",
+      providerModel: "qwen/qwen-2.5-7b-instruct",
+      providerMode: "hybrid",
+    });
+    expect(result.model).toBe("qwen/qwen-2.5-7b-instruct");
+    expect(result.corrected).toBe(true);
+  });
+
+  it("throws zg_model_mismatch in pinned mode on true mismatch", async () => {
+    const { resolveInferenceModel, ZGClientError } = await import("../llm-contextual/zg-client.js");
+    try {
+      resolveInferenceModel({
+        requestedModel: "some-other-model",
+        providerModel: "qwen/qwen-2.5-7b-instruct",
+        providerMode: "pinned",
+      });
+      expect.unreachable("expected mismatch throw");
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(ZGClientError);
+      expect(err.code).toBe("zg_model_mismatch");
+    }
+  });
+
+  it("auto-corrects once when provider returns explicit model-not-supported error", async () => {
+    process.env.ZG_PROVIDER_MODE = "auto";
+    mockBroker.inference.getServiceMetadata.mockResolvedValue({
+      endpoint: "https://mock-provider.0g.ai",
+      model: "unsupported-model",
+    });
+    let callCount = 0;
+    const fetchSpy = vi.fn().mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          ok: false,
+          status: 400,
+          text: () => Promise.resolve("{\"error\":\"model not supported: requested 'qwen-2.5-7b-instruct', only 'qwen/qwen-2.5-7b-instruct' is available for this service\"}"),
+        };
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"),
+        headers: {
+          get: vi.fn().mockReturnValue("req-1"),
+        },
+      };
+    });
+    globalThis.fetch = fetchSpy as any;
+
+    const { infer, _resetBroker } = await import("../llm-contextual/zg-client.js");
+    _resetBroker();
+    const out = await infer(makeRequest());
+    expect(out.model).toBe("qwen/qwen-2.5-7b-instruct");
+    expect(out.modelAutoCorrected).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("returns choices[0].message.content on 200 response", async () => {
@@ -616,7 +683,7 @@ describe("analyzeWithAI()", () => {
         content: goodLlmResponse,
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-1",
         verified: true,
       }),
@@ -635,7 +702,7 @@ describe("analyzeWithAI()", () => {
         content: goodLlmResponse,
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-2",
         verified: true,
       }),
@@ -673,7 +740,7 @@ describe("analyzeWithAI()", () => {
         content: "This is not JSON at all",
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-3",
         verified: true,
       }),
@@ -700,7 +767,7 @@ describe("analyzeWithAI()", () => {
             content: goodLlmResponse,
             providerAddress: "0xa48f01MockProvider",
             endpoint: "https://mock-provider.0g.ai",
-            model: "qwen-2.5-7b-instruct",
+            model: "qwen/qwen-2.5-7b-instruct",
             requestId: "req-4",
             verified: true,
           };
@@ -740,7 +807,7 @@ describe("analyzeWithAI()", () => {
         content: goodLlmResponse,
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-shape",
         verified: true,
       }),
@@ -765,7 +832,7 @@ describe("analyzeWithAI()", () => {
       content: goodLlmResponse,
       providerAddress: "0xa48f01MockProvider",
       endpoint: "https://mock-provider.0g.ai",
-      model: "qwen-2.5-7b-instruct",
+      model: "qwen/qwen-2.5-7b-instruct",
       requestId: "req-5",
       verified: true,
     });
@@ -786,7 +853,7 @@ describe("analyzeWithAI()", () => {
       content: goodLlmResponse,
       providerAddress: "0xa48f01MockProvider",
       endpoint: "https://mock-provider.0g.ai",
-      model: "qwen-2.5-7b-instruct",
+      model: "qwen/qwen-2.5-7b-instruct",
       requestId: "req-6",
       verified: true,
     });
@@ -817,7 +884,7 @@ describe("analyzeWithAI()", () => {
         content: goodLlmResponse,
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-7",
         verified: true,
       }),
@@ -849,7 +916,7 @@ describe("analyzeWithAI()", () => {
         content: goodLlmResponse,
         providerAddress: "0xa48f01MockProvider",
         endpoint: "https://mock-provider.0g.ai",
-        model: "qwen-2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         requestId: "req-8",
         verified: true,
       }),

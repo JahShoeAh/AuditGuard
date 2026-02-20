@@ -5,20 +5,12 @@ import Header from '../components/Header';
 import WalletButton from '../components/wallet/WalletButton';
 import useStore from '../store/index';
 import useWalletStore from '../store/wallet';
-import { useConnection } from '../hooks/useConnection';
-import { useEventListeners } from '../hooks/useEventListeners';
 import ReportCard from '../components/reports/ReportCard';
 import PurchaseModal from '../components/reports/PurchaseModal';
 import ReportViewer from '../components/reports/ReportViewer';
 import PurchaseHistory from '../components/reports/PurchaseHistory';
 import { HUMAN_FILTER_TABS, HUMAN_CATEGORY_IDS, fmtGuard } from '../components/reports/reportConstants';
 import { fmt } from '../utils/format';
-
-// ── Bootstrap ──────────────────────────────────────────────
-function useBootstrap() {
-  const conn = useConnection();
-  useEventListeners(conn);
-}
 
 // ── Filter pill ────────────────────────────────────────────
 function FilterPill({ label, icon, active, count, onClick }) {
@@ -103,8 +95,6 @@ function EmptyState({ contractSearch }) {
 // ── Main page ──────────────────────────────────────────────
 
 export default function ReportMarketplace() {
-  useBootstrap();
-
   const [searchParams, setSearchParams] = useSearchParams();
   const [contractSearch, setContractSearch] = useState(() => searchParams.get('contract') || '');
   const [catFilter,  setCatFilter]  = useState(null); // null = ALL, otherwise category id

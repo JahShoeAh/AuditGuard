@@ -1,6 +1,10 @@
 const fs = require("fs");
 const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { loadRuntimeEnv, summarizeCredentialConflict } = require("./env-policy.js");
+const runtimeEnv = loadRuntimeEnv({
+  allowAgentCredentialOverrides:
+    String(process.env.ALLOW_AGENT_ENV_CREDENTIAL_OVERRIDE || "").toLowerCase() === "true",
+});
 
 const { ethers } = require("ethers");
 const {
@@ -26,6 +30,22 @@ const AGENTS = [
   { prefix: "REPORT", required: false, id: "report-aggregator-001" },
   { prefix: "ALERT", required: false, id: "alert-sentinel-001" },
 ];
+
+function logEnvCredentialPolicy() {
+  if (runtimeEnv.ignoredCredentialKeys.length > 0) {
+    console.log(
+      `• Credential authority: root .env (ignored ${runtimeEnv.ignoredCredentialKeys.length} credential override keys from agents/.env)`
+    );
+  } else {
+    console.log("• Credential authority: root .env");
+  }
+  if (runtimeEnv.credentialConflicts.length > 0) {
+    const rendered = runtimeEnv.credentialConflicts
+      .map((entry) => summarizeCredentialConflict(entry))
+      .join(" | ");
+    console.log(`⚠ Credential drift detected between .env and agents/.env: ${rendered}`);
+  }
+}
 
 function parsePrivateKey(rawKey, keyTypeHint = "") {
   const key = String(rawKey || "").trim().replace(/^['"]|['"]$/g, "");
@@ -80,13 +100,21 @@ async function withTimeout(promise, timeoutMs, label) {
 function classifyFailure(reason) {
   const normalized = String(reason || "").toLowerCase();
   if (normalized.includes("all nodes are unhealthy")) return "network_unhealthy";
+  if (normalized.includes("bad gateway")) return "network_unhealthy";
+  if (normalized.includes("server response 502")) return "network_unhealthy";
+  if (normalized.includes("service unavailable")) return "network_unhealthy";
   if (normalized.includes("timed out")) return "network_timeout";
   if (normalized.includes("network connectivity")) return "network_unhealthy";
+  if (normalized.includes("insufficient funds for transfer")) return "insufficient_payer_hbar";
+  if (normalized.includes("insufficient_payer_balance")) return "insufficient_payer_hbar";
+  if (normalized.includes("nonce too low")) return "nonce_too_low";
+  if (normalized.includes("missing_credentials")) return "missing_credentials";
   if (normalized.includes("invalid")) return "invalid_input";
   return "unknown_failure";
 }
 
 async function main() {
+  logEnvCredentialPolicy();
   const sdk = loadSdkConfig();
   const guardTokenId = sdk?.guardTokenId;
   const agentRegistry = sdk?.contracts?.agentRegistry?.evmAddress;
@@ -120,11 +148,12 @@ async function main() {
     const creds = getAgentCredentials(spec);
     if (!creds) {
       const msg = `${spec.id}: missing ${spec.prefix}_ACCOUNT_ID/PRIVATE_KEY`;
+      const reasonCode = "missing_credentials";
       if (spec.required) {
         hasFailure = true;
-        results.push({ agentId: spec.id, ok: false, reason: `missing_credentials: ${msg}` });
+        results.push({ agentId: spec.id, ok: false, required: true, reasonCode, reason: `missing_credentials: ${msg}` });
       } else {
-        results.push({ agentId: spec.id, ok: true, reason: `skipped: ${msg}` });
+        results.push({ agentId: spec.id, ok: true, required: false, reasonCode: "skipped", reason: `skipped: ${msg}` });
       }
       continue;
     }
@@ -150,17 +179,22 @@ async function main() {
       let reasonCode = "ready";
       if (!isActive) reasonCode = "agent_inactive";
       else if (guardRaw <= 0) reasonCode = "unfunded_guard";
+      const inactiveWithBalanceHint = !isActive && guardRaw > 0 ? " hint=inactive_with_balance" : "";
 
       results.push({
         agentId: spec.id,
         ok,
-        reason: `${reasonCode}: address=${wallet.address} active=${isActive} guard=${guard.toFixed(4)}`,
+        required: !!spec.required,
+        reasonCode,
+        reason:
+          `${reasonCode}: account=${accountId.toString()} address=${wallet.address} ` +
+          `active=${isActive} guard=${guard.toFixed(4)}${inactiveWithBalanceHint}`,
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const reasonCode = classifyFailure(reason);
       if (spec.required) hasFailure = true;
-      results.push({ agentId: spec.id, ok: false, reason: `${reasonCode}: ${reason}` });
+      results.push({ agentId: spec.id, ok: false, required: !!spec.required, reasonCode, reason: `${reasonCode}: ${reason}` });
     }
   }
 
@@ -169,10 +203,32 @@ async function main() {
     console.log(`${mark}  ${row.agentId.padEnd(28)} ${row.reason}`);
   }
 
+  const reasonSummary = new Map();
+  for (const row of results) {
+    const key = row.reasonCode || (row.ok ? "ready" : "unknown_failure");
+    const curr = reasonSummary.get(key) || { total: 0, required: 0, agents: [] };
+    curr.total += 1;
+    if (!row.ok && row.required) curr.required += 1;
+    curr.agents.push(row.agentId);
+    reasonSummary.set(key, curr);
+  }
+
+  console.log("\nReason summary:");
+  for (const [reasonCode, info] of Array.from(reasonSummary.entries()).sort((a, b) => b[1].total - a[1].total)) {
+    console.log(
+      `• ${reasonCode.padEnd(26)} total=${String(info.total).padStart(2)} ` +
+      `required_failures=${String(info.required).padStart(2)} agents=${info.agents.join(", ")}`
+    );
+  }
+
   hederaClient.close();
 
   if (hasFailure) {
-    throw new Error("verify-live-agents failed: one or more required agents are missing, unfunded, or inactive");
+    const requiredFailures = results.filter((row) => !row.ok && row.required);
+    const detail = requiredFailures.map((row) => `${row.agentId}:${row.reasonCode}`).join(" | ");
+    throw new Error(
+      `verify-live-agents failed: one or more required agents are missing, unfunded, or inactive. Details: ${detail}`
+    );
   }
   console.log("\nverify-live-agents passed");
 }

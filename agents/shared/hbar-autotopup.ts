@@ -1,5 +1,4 @@
 import { ethers } from "ethers";
-import { CONFIG } from "./config.js";
 import { ContractClient } from "./contract-client.js";
 
 type LoggerLike = {
@@ -7,27 +6,28 @@ type LoggerLike = {
   warn?: (message: string) => void;
 };
 
-export interface EnsureBidCollateralBalanceInput {
+export interface EnsureOperationalHbarInput {
   contracts: ContractClient;
   recipientAddress: string;
   requiredWei: bigint;
   logger?: LoggerLike;
 }
 
-export interface EnsureBidCollateralBalanceResult {
+export interface EnsureOperationalHbarResult {
   ok: boolean;
   balanceWei: bigint;
   attemptedTopUp: boolean;
   toppedUpWei: bigint;
   reason?: string;
+  reasonCode?: "insufficient_payer_hbar" | "insufficient_payer_hbar_after_topup" | "hbar_topup_failed";
   donorAddressesUsed?: string[];
 }
 
-const GUARD_DECIMALS = 8;
-const TOP_UP_ENABLED = (process.env.BID_GUARD_AUTO_TOPUP_ENABLED ?? "true") !== "false";
-const TOP_UP_BUFFER_WEI = parseGuardUnits(process.env.BID_GUARD_AUTO_TOPUP_BUFFER_GUARD ?? "50");
-const DONOR_MIN_RESERVE_WEI = parseGuardUnits(process.env.BID_GUARD_AUTO_TOPUP_DONOR_MIN_GUARD ?? "200");
-const TOP_UP_MAX_TRANSFER_WEI = parseGuardUnits(process.env.BID_GUARD_AUTO_TOPUP_MAX_TRANSFER_GUARD ?? "500");
+const TOP_UP_ENABLED = (process.env.BID_HBAR_AUTO_TOPUP_ENABLED ?? "true") !== "false";
+const MIN_REQUIRED_WEI = parseHbarUnits(process.env.BID_HBAR_AUTO_TOPUP_MIN_HBAR ?? "0.25");
+const TARGET_BALANCE_WEI = parseHbarUnits(process.env.BID_HBAR_AUTO_TOPUP_TARGET_HBAR ?? "1.00");
+const DONOR_MIN_RESERVE_WEI = parseHbarUnits(process.env.BID_HBAR_AUTO_TOPUP_DONOR_MIN_HBAR ?? "1.50");
+const TOP_UP_MAX_TRANSFER_WEI = parseHbarUnits(process.env.BID_HBAR_AUTO_TOPUP_MAX_TRANSFER_HBAR ?? "2.00");
 const DEFAULT_DONOR_KEY_ENV_NAMES = [
   "SCANNER_PRIVATE_KEY",
   "STATIC_PRIVATE_KEY",
@@ -41,9 +41,9 @@ const DEFAULT_DONOR_KEY_ENV_NAMES = [
   "HEDERA_PRIVATE_KEY",
 ];
 
-function parseGuardUnits(value: string): bigint {
+function parseHbarUnits(value: string): bigint {
   try {
-    return ethers.parseUnits(value, GUARD_DECIMALS);
+    return ethers.parseEther(value);
   } catch {
     return 0n;
   }
@@ -58,7 +58,7 @@ function asPrivateKey(raw: string): string | null {
 }
 
 function resolveDonorKeys(): string[] {
-  const custom = (process.env.BID_GUARD_AUTO_TOPUP_DONOR_KEYS ?? "")
+  const custom = (process.env.BID_HBAR_AUTO_TOPUP_DONOR_KEYS ?? "")
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
@@ -92,17 +92,51 @@ function resolveDonorAddresses(keys: string[]): string[] {
   return [...addresses];
 }
 
-export async function ensureBidCollateralBalance(
-  input: EnsureBidCollateralBalanceInput
-): Promise<EnsureBidCollateralBalanceResult> {
+export function getHbarTopUpConfig() {
+  const donorKeys = resolveDonorKeys();
+  const donorAddresses = resolveDonorAddresses(donorKeys);
+  const donorWarning = donorAddresses.length === 0
+    ? "No valid donor wallets resolved for HBAR top-up"
+    : donorAddresses.length === 1
+      ? "Only one unique donor wallet resolved for HBAR top-up"
+      : undefined;
+  return {
+    enabled: TOP_UP_ENABLED,
+    minRequiredWei: MIN_REQUIRED_WEI,
+    targetWei: TARGET_BALANCE_WEI,
+    donorsConfigured: donorAddresses.length,
+    donorAddressesMasked: donorAddresses.map(maskAddress),
+    donorWarning,
+  };
+}
+
+export async function ensureOperationalHbar(
+  input: EnsureOperationalHbarInput
+): Promise<EnsureOperationalHbarResult> {
   const { contracts, recipientAddress, requiredWei, logger } = input;
-  const initialBalance = await contracts.getGuardBalance(recipientAddress);
-  if (initialBalance >= requiredWei) {
+  const provider = contracts.wallet.provider;
+  if (!provider) {
+    return {
+      ok: false,
+      balanceWei: 0n,
+      attemptedTopUp: false,
+      toppedUpWei: 0n,
+      reason: "HBAR top-up unavailable: missing provider",
+      reasonCode: "hbar_topup_failed",
+      donorAddressesUsed: [],
+    };
+  }
+
+  const required = requiredWei > 0n ? requiredWei : MIN_REQUIRED_WEI;
+  const target = TARGET_BALANCE_WEI > required ? TARGET_BALANCE_WEI : required;
+  const initialBalance = await provider.getBalance(recipientAddress);
+  if (initialBalance >= required) {
     return {
       ok: true,
       balanceWei: initialBalance,
       attemptedTopUp: false,
       toppedUpWei: 0n,
+      donorAddressesUsed: [],
     };
   }
 
@@ -112,7 +146,9 @@ export async function ensureBidCollateralBalance(
       balanceWei: initialBalance,
       attemptedTopUp: false,
       toppedUpWei: 0n,
-      reason: "Insufficient GUARD balance for bid collateral",
+      reason: "Insufficient payer HBAR for transaction fees",
+      reasonCode: "insufficient_payer_hbar",
+      donorAddressesUsed: [],
     };
   }
 
@@ -124,7 +160,8 @@ export async function ensureBidCollateralBalance(
       balanceWei: initialBalance,
       attemptedTopUp: true,
       toppedUpWei: 0n,
-      reason: "Insufficient GUARD balance and no valid top-up donor keys configured",
+      reason: "Insufficient payer HBAR and no valid top-up donor keys configured",
+      reasonCode: "hbar_topup_failed",
       donorAddressesUsed: [],
     };
   }
@@ -132,23 +169,22 @@ export async function ensureBidCollateralBalance(
   let currentBalance = initialBalance;
   let toppedUpWei = 0n;
   const recipientLower = recipientAddress.toLowerCase();
-  const desiredTarget = requiredWei + TOP_UP_BUFFER_WEI;
 
   for (const donorKey of donorKeys) {
-    if (currentBalance >= requiredWei) break;
-    let donor: ContractClient;
+    if (currentBalance >= required) break;
+    let donorWallet: ethers.Wallet;
     try {
-      donor = ContractClient.fromPrivateKey(donorKey);
+      donorWallet = new ethers.Wallet(donorKey, provider);
     } catch {
       continue;
     }
-    const donorAddress = donor.getAddress();
-    if (donorAddress.toLowerCase() === recipientLower) continue;
-    donorAddressesUsed.add(donorAddress.toLowerCase());
+    const donorAddress = donorWallet.address.toLowerCase();
+    if (donorAddress === recipientLower) continue;
+    donorAddressesUsed.add(donorAddress);
 
     let donorBalance = 0n;
     try {
-      donorBalance = await donor.getGuardBalance(donorAddress);
+      donorBalance = await provider.getBalance(donorAddress);
     } catch {
       continue;
     }
@@ -158,7 +194,7 @@ export async function ensureBidCollateralBalance(
       : 0n;
     if (available <= 0n) continue;
 
-    const missing = desiredTarget > currentBalance ? desiredTarget - currentBalance : 0n;
+    const missing = target > currentBalance ? target - currentBalance : 0n;
     if (missing <= 0n) break;
 
     let transferAmount = missing;
@@ -172,20 +208,23 @@ export async function ensureBidCollateralBalance(
 
     try {
       logger?.info?.(
-        `[TopUp] Funding collateral wallet from ${donorAddress.slice(0, 10)}... ` +
-        `(+${ethers.formatUnits(transferAmount, GUARD_DECIMALS)} GUARD)`
+        `[HBAR TopUp] Funding payer wallet from ${donorAddress.slice(0, 10)}... ` +
+        `(+${ethers.formatEther(transferAmount)} HBAR)`
       );
-      const tx = await donor.transferGuard(recipientAddress, transferAmount);
+      const tx = await donorWallet.sendTransaction({
+        to: recipientAddress,
+        value: transferAmount,
+      });
       await tx.wait();
       toppedUpWei += transferAmount;
-      currentBalance = await contracts.getGuardBalance(recipientAddress);
+      currentBalance = await provider.getBalance(recipientAddress);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      logger?.warn?.(`[TopUp] Transfer failed from ${donorAddress.slice(0, 10)}...: ${error}`);
+      logger?.warn?.(`[HBAR TopUp] Transfer failed from ${donorAddress.slice(0, 10)}...: ${error}`);
     }
   }
 
-  if (currentBalance >= requiredWei) {
+  if (currentBalance >= required) {
     return {
       ok: true,
       balanceWei: currentBalance,
@@ -200,24 +239,8 @@ export async function ensureBidCollateralBalance(
     balanceWei: currentBalance,
     attemptedTopUp: true,
     toppedUpWei,
-    reason: "Insufficient GUARD balance for bid collateral after auto top-up attempt (donors exhausted or unable to pay transfer fees)",
+    reason: "Insufficient payer HBAR for transaction fees after auto top-up attempt (donors exhausted or unable to fund gas)",
+    reasonCode: "insufficient_payer_hbar_after_topup",
     donorAddressesUsed: [...donorAddressesUsed],
-  };
-}
-
-export function getBidCollateralTopUpConfig() {
-  const donorKeys = resolveDonorKeys();
-  const donorAddresses = resolveDonorAddresses(donorKeys);
-  const donorWarning = donorAddresses.length === 0
-    ? "No valid donor wallets resolved for GUARD top-up"
-    : donorAddresses.length === 1
-      ? "Only one unique donor wallet resolved for GUARD top-up"
-      : undefined;
-  return {
-    enabled: TOP_UP_ENABLED,
-    donorsConfigured: donorAddresses.length,
-    donorAddressesMasked: donorAddresses.map(maskAddress),
-    donorWarning,
-    minBidCollateralGuard: CONFIG.bidPolicy.minCollateralGuard,
   };
 }

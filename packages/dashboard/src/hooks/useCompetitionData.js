@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import useStore from '../store/index';
 import { fmt } from '../utils/format';
+import { normalizeAuctionType } from '../utils/auction-type';
 
 // ── Agent color heuristic (matches PaymentFlow / useGuardFlows) ─
 function agentColor(name = '') {
@@ -119,6 +120,53 @@ export function useCompetitionData() {
     );
 
     const maxComp = Math.max(...Object.values(coCompetition), 1);
+
+    // ── Agent × ContractType matrix ────────────────────────
+
+    const jobTypes = {};
+    for (const [jobId, job] of Object.entries(activeJobs || {})) {
+      const type = normalizeAuctionType(job?.contractType);
+      jobTypes[jobId] = type || 'unknown';
+    }
+
+    const contractTypeSet = new Set(Object.values(jobTypes));
+    for (const [jobId, jobBids] of Object.entries(bids || {})) {
+      const fallbackType = normalizeAuctionType(jobBids?.[0]?.contractType);
+      contractTypeSet.add(jobTypes[jobId] || fallbackType || 'unknown');
+    }
+    const dynamicContractTypes = [...contractTypeSet].filter(Boolean).sort();
+
+    const agentVsTypeStats = {};
+    for (const agent of agentList) {
+      agentVsTypeStats[agent.address] = {};
+      for (const type of dynamicContractTypes) {
+        agentVsTypeStats[agent.address][type] = { bids: 0, wins: 0, winRate: 0 };
+      }
+    }
+
+    for (const [jobId, jobBids] of Object.entries(bids || {})) {
+      const type = jobTypes[jobId] || normalizeAuctionType(jobBids?.[0]?.contractType);
+      const winnerSet = new Set((winners[jobId]?.agents || []).map((a) => a.toLowerCase()));
+      for (const bid of jobBids || []) {
+        const addr = bid.agent?.toLowerCase();
+        if (!addr || !agentVsTypeStats[addr]) continue;
+        if (!agentVsTypeStats[addr][type]) {
+          agentVsTypeStats[addr][type] = { bids: 0, wins: 0, winRate: 0 };
+        }
+        agentVsTypeStats[addr][type].bids += 1;
+        if (winnerSet.has(addr)) {
+          agentVsTypeStats[addr][type].wins += 1;
+        }
+      }
+    }
+
+    const agentVsTypeMatrix = agentList.map((agent) =>
+      dynamicContractTypes.map((type) => {
+        const cell = agentVsTypeStats[agent.address]?.[type] || { bids: 0, wins: 0, winRate: 0 };
+        const winRate = cell.bids > 0 ? cell.wins / cell.bids : 0;
+        return { ...cell, winRate };
+      })
+    );
 
     // ── Spec × ContractType matrix ─────────────────────────
 
@@ -242,6 +290,8 @@ export function useCompetitionData() {
       agents: agentList,
       matrix,
       maxComp,
+      agentVsTypeMatrix,
+      dynamicContractTypes,
       specs,
       contractTypes,
       specVsType,

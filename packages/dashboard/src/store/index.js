@@ -27,6 +27,26 @@ const useStore = create((set) => ({
   activeJobs: {},
   setJob: (id, job) =>
     set((s) => ({ activeJobs: { ...s.activeJobs, [id]: job } })),
+  jobTerminal: {},
+  setJobTerminal: (jobId, terminal) =>
+    set((s) => {
+      const key = String(jobId);
+      const existingJob = s.activeJobs[key];
+      return {
+        jobTerminal: { ...s.jobTerminal, [key]: terminal },
+        activeJobs: existingJob
+          ? {
+            ...s.activeJobs,
+            [key]: {
+              ...existingJob,
+              terminalStatus: terminal?.status ?? existingJob.terminalStatus ?? null,
+              endedAt: terminal?.endedAt ?? existingJob.endedAt ?? null,
+              terminalTxHash: terminal?.txHash ?? existingJob.terminalTxHash ?? null,
+            },
+          }
+          : s.activeJobs,
+      };
+    }),
 
   // ── Bids (from AuditAuction.BidSubmitted events) ─────────
   bids: {},
@@ -38,12 +58,24 @@ const useStore = create((set) => ({
   // ── Bid lifecycle visibility (from HCS audit log) ────────
   jobBidStatus: {},
   addJobBidStatus: (jobId, status) =>
-    set((s) => ({
-      jobBidStatus: {
-        ...s.jobBidStatus,
-        [jobId]: [status, ...(s.jobBidStatus[jobId] || [])].slice(0, 100),
-      },
-    })),
+    set((s) => {
+      const key = String(jobId);
+      const existing = s.jobBidStatus[key] || [];
+      if (status?.eventId) {
+        const duplicate = existing.some((item) =>
+          item?.eventId === status.eventId &&
+          item?.status === status.status &&
+          item?.agentId === status.agentId
+        );
+        if (duplicate) return s;
+      }
+      return {
+        jobBidStatus: {
+          ...s.jobBidStatus,
+          [key]: [status, ...existing].slice(0, 100),
+        },
+      };
+    }),
 
   // ── LLM provider + inference lifecycle ───────────────────
   llmProviderStatus: {},
@@ -72,6 +104,33 @@ const useStore = create((set) => ({
   auditLog: [],
   addLogEntry: (entry) =>
     set((s) => ({ auditLog: [entry, ...s.auditLog].slice(0, 200) })),
+  eventIndex: {},
+  upsertEvent: (entry) => {
+    const eventId = entry?.eventId;
+    if (!eventId) {
+      set((s) => ({ auditLog: [entry, ...s.auditLog].slice(0, 200) }));
+      return true;
+    }
+    let inserted = false;
+    set((s) => {
+      if (s.eventIndex[eventId]) {
+        return {
+          ingestionHealth: {
+            ...s.ingestionHealth,
+            duplicatesDropped: (s.ingestionHealth?.duplicatesDropped || 0) + 1,
+          },
+        };
+      }
+      inserted = true;
+      const nextLog = [entry, ...s.auditLog].slice(0, 200);
+      const nextIndex = {};
+      for (const item of nextLog) {
+        if (item?.eventId) nextIndex[item.eventId] = true;
+      }
+      return { auditLog: nextLog, eventIndex: nextIndex };
+    });
+    return inserted;
+  },
 
   // ── Report metadata (from HCS REPORT_METADATA messages) ─
   reportMetadata: {},
@@ -156,6 +215,58 @@ const useStore = create((set) => ({
   addGuardFlow: (flow) => set((s) => ({
     guardFlows: [flow, ...s.guardFlows].slice(0, 500),
   })),
+  flowIndex: {},
+  upsertGuardFlow: (flow) => {
+    const flowId = flow?.flowId;
+    if (!flowId) {
+      set((s) => ({ guardFlows: [flow, ...s.guardFlows].slice(0, 500) }));
+      return true;
+    }
+    let inserted = false;
+    set((s) => {
+      if (s.flowIndex[flowId]) {
+        return {
+          ingestionHealth: {
+            ...s.ingestionHealth,
+            duplicatesDropped: (s.ingestionHealth?.duplicatesDropped || 0) + 1,
+          },
+        };
+      }
+      inserted = true;
+      const nextFlows = [flow, ...s.guardFlows].slice(0, 500);
+      const nextIndex = {};
+      for (const item of nextFlows) {
+        if (item?.flowId) nextIndex[item.flowId] = true;
+      }
+      return { guardFlows: nextFlows, flowIndex: nextIndex };
+    });
+    return inserted;
+  },
+
+  // ── Ingestion observability ───────────────────────────────
+  ingestionHealth: {
+    sourceMode: 'onchain_strict',
+    replayMode: 'from_now',
+    lastHcsSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
+    lastContractBlock: 0,
+    duplicatesDropped: 0,
+    decodeFailures: 0,
+    pendingSettlementBreakdowns: 0,
+    agentHydrationStatus: 'degraded',
+    agentHydrationError: null,
+    agentHydrationLastAt: 0,
+  },
+  setIngestionHealth: (patch) =>
+    set((s) => ({
+      ingestionHealth: {
+        ...s.ingestionHealth,
+        ...patch,
+        lastHcsSeq: {
+          ...(s.ingestionHealth?.lastHcsSeq || {}),
+          ...(patch?.lastHcsSeq || {}),
+        },
+      },
+    })),
 
   // ── Live stats ───────────────────────────────────────────
   stats: {
@@ -258,11 +369,12 @@ const useStore = create((set) => ({
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,
-    discoveries: [], activeJobs: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
+    discoveries: [], activeJobs: {}, jobTerminal: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
     reportMetadata: {},
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],
+    eventIndex: {}, flowIndex: {},
     agentProfiles: {}, reputationHistory: {}, contractHealth: {},
     slashEvents: [], treasuryDistributions: [], stakeHistory: {},
     treasuryRevenue: {
@@ -274,6 +386,18 @@ const useStore = create((set) => ({
       totalDiscoveries: 0, totalAuctions: 0, totalBids: 0,
       guardTransacted: 0, totalSubAuctions: 0, totalDataSales: 0,
       totalSettlements: 0, totalGuardTransacted: 0,
+    },
+    ingestionHealth: {
+      sourceMode: 'onchain_strict',
+      replayMode: 'from_now',
+      lastHcsSeq: { discovery: 0, auditLog: 0, agentComms: 0 },
+      lastContractBlock: 0,
+      duplicatesDropped: 0,
+      decodeFailures: 0,
+      pendingSettlementBreakdowns: 0,
+      agentHydrationStatus: 'degraded',
+      agentHydrationError: null,
+      agentHydrationLastAt: 0,
     },
   }),
 }));

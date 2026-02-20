@@ -16,6 +16,10 @@ export {
   ensureBidCollateralBalance,
   getBidCollateralTopUpConfig,
 } from "./guard-autotopup.js";
+export {
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
+} from "./hbar-autotopup.js";
 export type {
   StrategyBid,
   BidPolicy,
