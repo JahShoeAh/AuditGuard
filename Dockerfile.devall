@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+
+FROM node:20.19.0-bookworm-slim
+
+WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/JahShoeAh/AuditGuard"
+LABEL org.opencontainers.image.description="AuditGuard backend runtime (orchestrator + agents + iNFT listeners)"
+
+# Use dumb-init for proper signal forwarding/shutdown of all child processes.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dumb-init \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace manifests first for better layer caching.
+COPY package.json package-lock.json ./
+COPY agents/package.json agents/package.json
+COPY orchestrator/package.json orchestrator/package.json
+COPY packages/dashboard/package.json packages/dashboard/package.json
+COPY packages/inft/package.json packages/inft/package.json
+COPY packages/cloudflare-api/package.json packages/cloudflare-api/package.json
+
+# Install all workspace dependencies required by dev:all.
+RUN npm ci --workspaces --include-workspace-root
+
+# Copy full source after dependency install.
+COPY . .
+
+ENV NODE_ENV=development
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["npm", "run", "dev:backend"]
