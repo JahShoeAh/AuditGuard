@@ -73,15 +73,52 @@ Tag strategy in workflow:
 2. Commit SHA tag (`sha-<commit>`)
 3. `latest` on default branch
 
-## 5. Run on EC2
+### 4.1 GitHub Secrets required for backend CI/CD
 
-### 5.1 Log in to GHCR on EC2
+Set these repository secrets before relying on automatic deploy:
+
+1. `EC2_HOST` - EC2 public hostname or IPv4.
+2. `EC2_USERNAME` - SSH username (for Ubuntu AMI, usually `ubuntu`).
+3. `EC2_SSH_KEY` - private SSH key content used by Actions to connect.
+4. `EC2_PORT` - SSH port (typically `22`).
+5. `EC2_ENV_FILE` - absolute path on EC2 to runtime env file (example `/opt/auditguard/.env`).
+6. `EC2_CONTAINER_NAME` - container name (example `auditguard-devall`).
+7. `GHCR_USERNAME` - GitHub username used for package login.
+8. `GHCR_READ_TOKEN` - token with package read permission for pulling from GHCR.
+
+### 4.2 Backend deployment behavior
+
+1. On push to `main`/`integration`, image is built and pushed to GHCR.
+2. On push to `main`, workflow automatically SSHes to EC2 and redeploys:
+   1. Pulls image `ghcr.io/<owner>/<repo>-devall:sha-<commit>`.
+   2. Stops/removes existing container.
+   3. Starts new container with `--env-file`.
+
+## 5. Frontend CI/CD (Cloudflare)
+
+Workflow file: `.github/workflows/deploy-dashboard-cloudflare.yml`
+
+### 5.1 GitHub Secrets required for frontend CI/CD
+
+1. `CLOUDFLARE_API_TOKEN` - token with Workers deploy permissions.
+2. `CLOUDFLARE_ACCOUNT_ID` - target Cloudflare account ID.
+
+### 5.2 Frontend deployment behavior
+
+1. On push to `main` with dashboard-related file changes, workflow:
+   1. Installs dependencies.
+   2. Builds dashboard.
+   3. Runs `npm --prefix packages/dashboard run deploy:cf`.
+
+## 6. Run on EC2 (manual fallback)
+
+### 6.1 Log in to GHCR on EC2
 
 ```bash
 echo "<GHCR_PAT>" | docker login ghcr.io -u "<GHCR_USERNAME>" --password-stdin
 ```
 
-### 5.2 Pull and run container
+### 6.2 Pull and run container
 
 Use the provided script:
 
@@ -117,7 +154,7 @@ ENV_FILE="/opt/auditguard/.env" \
 ~/run-devall-container.sh
 ```
 
-## 6. Cloudflare integration checks
+## 7. Cloudflare integration checks
 
 After container starts:
 
@@ -134,7 +171,7 @@ curl "https://<your-cloudflare-api-domain>/api/events?limit=20"
 https://<your-cloudflare-dashboard-domain>/
 ```
 
-## 7. Upgrade and rollback
+## 8. Upgrade and rollback
 
 ### Upgrade
 
@@ -145,13 +182,13 @@ https://<your-cloudflare-dashboard-domain>/
 
 1. Re-run `run-devall-container.sh` with a previous known-good SHA tag.
 
-## 8. Operational notes
+## 9. Operational notes
 
 1. This container does not run the dashboard frontend; frontend stays on Cloudflare.
 2. For production hardening later, split backend processes into separate services.
 3. Keep `EVENT_RELAY_TOKEN` rotated and never commit runtime `.env` files.
 
-## 9. Official references
+## 10. Official references
 
 1. GitHub Actions variables and contexts: https://docs.github.com/actions/learn-github-actions/variables
 2. GitHub Actions encrypted secrets: https://docs.github.com/actions/security-guides/encrypted-secrets
