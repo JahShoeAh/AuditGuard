@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { parseUnits, Contract } from 'ethers';
+import { parseUnits } from 'ethers';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import useStore from '../../store/index';
-import useWalletStore from '../../store/wallet';
-import { loadConfig } from '../../services/hedera-connection';
+import useWalletStore, { hbarEquivalent } from '../../store/wallet';
+import { useHbarSwap } from '../../hooks/useHbarSwap';
 import { hashscan } from '../../utils/hashscan';
 import { AVATAR_OPTIONS } from './StepIdentity';
 import { TIERS, SPECIALIZATIONS } from './StepSpecialization';
@@ -13,22 +13,6 @@ import { TIERS, SPECIALIZATIONS } from './StepSpecialization';
 
 // AgentRegistry uses 8-decimal GUARD amounts (same as DelegatedStaking).
 const GUARD_DECIMALS = 8;
-
-const ERC20_ABI = [
-  'function allowance(address owner, address spender) view returns (uint256)',
-  'function approve(address spender, uint256 amount) returns (bool)',
-];
-
-// ── Tx phase states ────────────────────────────────────────
-
-const PHASE = {
-  IDLE:       'idle',
-  APPROVING:  'approving',
-  APPROVED:   'approved',
-  REGISTERING:'registering',
-  SUCCESS:    'success',
-  ERROR:      'error',
-};
 
 // ── Confetti ───────────────────────────────────────────────
 
@@ -87,7 +71,7 @@ function TxRow({ label, done, active }) {
 
 // ── SuccessScreen ──────────────────────────────────────────
 
-function SuccessScreen({ formData, agentAddress }) {
+function SuccessScreen({ formData, agentAddress, stakeAmountHuman, stakeInHbar }) {
   const tierDef  = TIERS.find((t) => t.id === formData.tier) || TIERS[0];
   const avatarDef = AVATAR_OPTIONS.find((a) => a.id === formData.identity.avatar);
 
@@ -120,7 +104,9 @@ function SuccessScreen({ formData, agentAddress }) {
           <span className="text-gray-500">Address</span>
           <span className="text-cyan-400 text-right truncate">{agentAddress}</span>
           <span className="text-gray-500">Stake</span>
-          <span className="text-amber-300 text-right">{tierDef.stake} GUARD</span>
+          <span className="text-amber-300 text-right">{stakeAmountHuman} GUARD</span>
+          <span className="text-gray-500">Paid</span>
+          <span className="text-cyan-300 text-right">≈ {stakeInHbar} HBAR (converted to {stakeAmountHuman} GUARD)</span>
           <span className="text-gray-500">Starting reputation</span>
           <span className="text-green-400 text-right">50.00</span>
           <span className="text-gray-500">Specializations</span>
@@ -189,69 +175,67 @@ function parseError(err) {
  */
 export default function StepDeploy({ formData, onReset, guardBalance }) {
   const contracts  = useStore((s) => s.contracts);
-  const signer     = useWalletStore((s) => s.signer);
   const address    = useWalletStore((s) => s.address);
+  const hbarPerGuard = useWalletStore((s) => s.hbarPerGuard);
   const refreshBal = useWalletStore((s) => s.refreshBalances);
+  const { swapAndExecute, swapStep, isSwapping, swapError, reset } = useHbarSwap();
 
   const [riskChecked, setRiskChecked] = useState(false);
-  const [phase,       setPhase]       = useState(PHASE.IDLE);
+  const [deployStep,  setDeployStep]  = useState('idle');
   const [txError,     setTxError]     = useState(null);
   const [agentAddress, setAgentAddress] = useState(null);
 
   const tierDef      = TIERS.find((t) => t.id === formData.tier) || TIERS[0];
+  const stakeAmountHuman = String(tierDef?.stake ?? 100);
+  const stakeInHbar = hbarEquivalent(stakeAmountHuman, hbarPerGuard);
   const stakeRaw     = parseUnits(tierDef.stake.toString(), GUARD_DECIMALS);
   const balanceAfter = (parseFloat(guardBalance) || 0) - tierDef.stake;
 
-  const isRunning = phase === PHASE.APPROVING || phase === PHASE.REGISTERING;
-  const isDone    = phase === PHASE.SUCCESS;
-  const hasError  = phase === PHASE.ERROR;
+  const isDone    = deployStep === 'success';
+  const hasError  = deployStep === 'error';
 
   const handleDeploy = async () => {
     const registry = contracts?.agentRegistryContract;
-    if (!registry || !signer || !address) {
+    if (!registry || !address) {
       setTxError('Wallet or contracts not ready. Refresh and try again.');
-      setPhase(PHASE.ERROR);
+      setDeployStep('error');
       return;
     }
 
+    reset();
     setTxError(null);
 
     try {
-      // ── 1/2: Approve GUARD transfer ──────────────────────
-      setPhase(PHASE.APPROVING);
-      const config       = loadConfig();
-      const guardToken   = new Contract(config.guardTokenEvmAddress, ERC20_ABI, signer);
-      const registryAddr = await registry.getAddress();
-
-      const currentAllowance = await guardToken.allowance(address, registryAddr);
-      if (currentAllowance < stakeRaw) {
-        const approveTx = await guardToken.approve(registryAddr, stakeRaw);
-        await approveTx.wait();
-      }
-      setPhase(PHASE.APPROVED);
-
-      // ── 2/2: Register agent ───────────────────────────────
-      setPhase(PHASE.REGISTERING);
-      const writableRegistry = registry.connect(signer);
-      const regTx = await writableRegistry.registerAgent(
-        formData.identity.agentId,
-        formData.ucp.ucpEndpoint,
-        formData.specializations,
-        stakeRaw
+      await swapAndExecute(
+        stakeAmountHuman,
+        registry,
+        'registerAgent',
+        [
+          formData.identity.agentId,
+          formData.ucp.ucpEndpoint,
+          formData.specializations,
+          stakeRaw,
+        ]
       );
-      await regTx.wait();
 
       setAgentAddress(address);
-      setPhase(PHASE.SUCCESS);
+      setDeployStep('success');
       refreshBal();
     } catch (err) {
       setTxError(parseError(err));
-      setPhase(PHASE.ERROR);
+      setDeployStep('error');
     }
   };
 
   if (isDone && agentAddress) {
-    return <SuccessScreen formData={formData} agentAddress={agentAddress} />;
+    return (
+      <SuccessScreen
+        formData={formData}
+        agentAddress={agentAddress}
+        stakeAmountHuman={stakeAmountHuman}
+        stakeInHbar={stakeInHbar}
+      />
+    );
   }
 
   const isAgentIdTaken = txError?.includes('Agent ID already taken');
@@ -278,6 +262,11 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
           valueClass={tierDef.id === 'PREMIUM' ? 'text-amber-300' : tierDef.id === 'SPECIALIZED' ? 'text-cyan-300' : 'text-gray-300'}
         />
         <SummaryRow
+          label="Stake required"
+          value={`${stakeAmountHuman} GUARD  (≈ ${stakeInHbar} HBAR)`}
+          valueClass="text-amber-300"
+        />
+        <SummaryRow
           label="Connectivity"
           value={
             formData.ucp.testStatus === 'ok'   ? '✓ Verified' :
@@ -295,7 +284,7 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
         </p>
         <SummaryRow
           label="Staking (held as collateral)"
-          value={`${tierDef.stake.toLocaleString()}.00 GUARD`}
+          value={`${tierDef.stake.toLocaleString()}.00 GUARD  (≈ ${stakeInHbar} HBAR)`}
           valueClass="text-amber-300"
         />
         <SummaryRow
@@ -337,27 +326,37 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
           Transactions
         </p>
         <TxRow
-          label="1/2 — Approve GUARD transfer"
-          done={phase === PHASE.APPROVED || phase === PHASE.REGISTERING || phase === PHASE.SUCCESS}
-          active={phase === PHASE.APPROVING}
+          label="Checking GUARD exchange rate..."
+          done={['swapping', 'approving', 'executing', 'done'].includes(swapStep)}
+          active={swapStep === 'quoting'}
         />
         <TxRow
-          label="2/2 — Register agent on-chain"
-          done={phase === PHASE.SUCCESS}
-          active={phase === PHASE.REGISTERING}
+          label="1/3 — Converting HBAR to GUARD..."
+          done={['approving', 'executing', 'done'].includes(swapStep)}
+          active={swapStep === 'swapping'}
+        />
+        <TxRow
+          label="2/3 — Approving GUARD for registry..."
+          done={['executing', 'done'].includes(swapStep)}
+          active={swapStep === 'approving'}
+        />
+        <TxRow
+          label="3/3 — Registering agent on-chain..."
+          done={swapStep === 'done'}
+          active={swapStep === 'executing'}
         />
       </div>
 
       {/* Error */}
       <AnimatePresence>
-        {hasError && txError && (
+        {hasError && (swapError || txError) && (
           <motion.div
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             className="border border-red-500/40 rounded-xl p-4 bg-red-500/5"
           >
-            <p className="text-xs font-mono text-red-300 leading-relaxed">✗ {txError}</p>
+            <p className="text-xs font-mono text-red-300 leading-relaxed">✗ {swapError || txError}</p>
             {isAgentIdTaken && (
               <button
                 onClick={onReset}
@@ -374,18 +373,20 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
       <button
         type="button"
         onClick={handleDeploy}
-        disabled={!riskChecked || isRunning}
+        disabled={!riskChecked || isSwapping}
         className={[
           'w-full py-3 rounded-xl text-sm font-bold font-mono uppercase tracking-wider transition-all',
-          !riskChecked || isRunning
+          !riskChecked || isSwapping
             ? 'bg-gray-800 border border-gray-700 text-gray-600 cursor-not-allowed'
             : 'bg-green-500/15 border-2 border-green-500/60 text-green-300 hover:bg-green-500/25 shadow-[0_0_20px_rgba(34,197,94,0.1)]',
         ].join(' ')}
       >
-        {isRunning
-          ? phase === PHASE.APPROVING   ? '⏳ Approving GUARD transfer…'
-          : phase === PHASE.REGISTERING ? '⏳ Registering agent on-chain…'
-          : '⏳ Processing…'
+        {isSwapping
+          ? swapStep === 'quoting'   ? '⏳ Checking GUARD exchange rate...'
+          : swapStep === 'swapping'  ? '⏳ 1/3 Converting HBAR to GUARD...'
+          : swapStep === 'approving' ? '⏳ 2/3 Approving GUARD for registry...'
+          : swapStep === 'executing' ? '⏳ 3/3 Registering agent on-chain...'
+          : '⏳ Processing...'
           : '🚀 Deploy Agent'}
       </button>
     </div>

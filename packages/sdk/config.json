@@ -51,6 +51,12 @@
       "address": "0x67d67C1c721241f9350d3ecA0C0a1B6D53E69860",
       "evmAddress": "0x67d67c1c721241f9350d3eca0c0a1b6d53e69860",
       "deployedAt": "2026-02-19T04:40:23.961Z"
+    },
+    "guardExchange": {
+      "evmAddress": "0xC93f9096FDa8996C988Ad1b32665BBFc8CA571fE",
+      "deployedAt": "2026-02-20T01:35:30.431Z",
+      "seedHbar": "100",
+      "seedGuard": "10000"
     }
   },
   "testContracts": [

@@ -2,11 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { parseUnits, formatUnits } from 'ethers';
 import { motion, AnimatePresence } from 'framer-motion';
 import useStore from '../../store/index';
-import useWalletStore from '../../store/wallet';
-import { useGuardApproval } from '../../hooks/useContractWrite';
+import useWalletStore, { hbarEquivalent } from '../../store/wallet';
+import { useHbarSwap } from '../../hooks/useHbarSwap';
 import { useToast } from '../ui/Toast';
 import { fmt } from '../../utils/format';
-import { loadConfig } from '../../services/hedera-connection';
 
 const MIN_AMOUNT   = 10;     // GUARD
 const EXAMPLE_EARN = 50;     // GUARD, used for reward preview
@@ -215,7 +214,16 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
 
 // ── Step 2: Set Amount ─────────────────────────────────────
 
-function Step2Amount({ guardBalance, amount, setAmount, pool, onBack, onNext }) {
+function Step2Amount({
+  guardBalance,
+  hbarPerGuard,
+  hbarCostEstimate,
+  amount,
+  setAmount,
+  pool,
+  onBack,
+  onNext,
+}) {
   const presets = [10, 25, 50, 100];
   const balNum  = parseFloat(guardBalance) || 0;
   const amtNum  = parseFloat(amount) || 0;
@@ -240,7 +248,9 @@ function Step2Amount({ guardBalance, amount, setAmount, pool, onBack, onNext }) 
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="flex items-center justify-between font-mono">
           <span className="text-xs text-gray-400">Your balance</span>
-          <span className="text-sm font-bold text-amber-300">{parseFloat(guardBalance).toFixed(2)} GUARD</span>
+          <span className="text-sm font-bold text-amber-300">
+            {parseFloat(guardBalance).toFixed(2)} GUARD ({hbarEquivalent(String(guardBalance), hbarPerGuard)} HBAR)
+          </span>
         </div>
       </div>
 
@@ -267,6 +277,11 @@ function Step2Amount({ guardBalance, amount, setAmount, pool, onBack, onNext }) 
             MAX
           </button>
         </div>
+        {hbarCostEstimate && parseFloat(hbarCostEstimate) > 0 && (
+          <p className="text-xs font-mono text-amber-400 mt-1">
+            ≈ {hbarCostEstimate} HBAR required
+          </p>
+        )}
 
         {/* Preset percentage buttons */}
         <div className="flex gap-1.5 mt-2">
@@ -337,12 +352,12 @@ function Step2Amount({ guardBalance, amount, setAmount, pool, onBack, onNext }) 
 // ── Step 3: Confirm & Execute ──────────────────────────────
 
 const TX_STEP_LABELS = {
-  idle:      null,
-  approving: '1/2 Approving GUARD transfer…',
-  approved:  '✓ Approved',
-  delegating:'2/2 Delegating…',
-  success:   '✓ Delegated!',
-  error:     null,
+  quoting: 'Checking exchange rate...',
+  swapping: '1/3 Swapping HBAR → GUARD...',
+  approving: '2/3 Approving GUARD transfer...',
+  executing: (agentName) => `3/3 Delegating to ${agentName}...`,
+  done: '✓ Delegated successfully!',
+  error: null,
 };
 
 function TxProgressRow({ label, done, active }) {
@@ -361,12 +376,29 @@ function TxProgressRow({ label, done, active }) {
   );
 }
 
-function Step3Confirm({ agentName, amount, pool, agentProfile, txPhase, txError, onBack, onExecute, onClose }) {
+function Step3Confirm({
+  agentName,
+  amount,
+  hbarCostEstimate,
+  pool,
+  agentProfile,
+  swapStep,
+  swapError,
+  isSwapping,
+  onBack,
+  onExecute,
+  onClose,
+}) {
   const shareRate  = fmtShareRate(pool?.rewardShareBps);
-  const isRunning  = txPhase === 'approving' || txPhase === 'delegating';
-  const isDone     = txPhase === 'success';
-  const hasError   = txPhase === 'error';
+  const isRunning  = isSwapping;
+  const isDone     = swapStep === 'done';
+  const hasError   = swapStep === 'error';
   const tier       = agentProfile?.tier ?? 0;
+  const activeIdx = { quoting: 1, swapping: 2, approving: 3, executing: 4, done: 5, error: 0 }[swapStep] || 0;
+  const txStepLabel =
+    swapStep === 'executing'
+      ? TX_STEP_LABELS.executing(agentName)
+      : TX_STEP_LABELS[swapStep];
 
   return (
     <div className="space-y-4">
@@ -387,6 +419,12 @@ function Step3Confirm({ agentName, amount, pool, agentProfile, txPhase, txError,
           <span className="text-amber-300 font-bold">{parseFloat(amount).toFixed(2)} GUARD</span>
         </div>
         <div className="flex justify-between">
+          <span className="text-gray-500">Payment method</span>
+          <span className="text-cyan-300 font-semibold">
+            {hbarCostEstimate || '0'} HBAR (auto-converted to {parseFloat(amount || 0).toFixed(2)} GUARD)
+          </span>
+        </div>
+        <div className="flex justify-between">
           <span className="text-gray-500">Reward share</span>
           <span className="text-green-400 font-semibold">{shareRate}</span>
         </div>
@@ -401,39 +439,49 @@ function Step3Confirm({ agentName, amount, pool, agentProfile, txPhase, txError,
         ⚠ This delegation is subject to slashing if the agent is penalized.
       </div>
 
-      {/* Two transactions explanation */}
+      {/* Auto-swap transaction flow */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="text-[10px] font-mono text-gray-500 uppercase tracking-wider mb-2">
-          Two transactions required
+          Auto-swap flow
         </div>
         <TxProgressRow
-          label="Approve GUARD spending"
-          done={txPhase === 'approved' || txPhase === 'delegating' || txPhase === 'success'}
-          active={txPhase === 'approving'}
+          label="Checking exchange rate..."
+          done={activeIdx > 1 || swapStep === 'done'}
+          active={swapStep === 'quoting'}
         />
         <TxProgressRow
-          label={`Delegate to ${agentName}`}
-          done={txPhase === 'success'}
-          active={txPhase === 'delegating'}
+          label="1/3 Swapping HBAR → GUARD..."
+          done={activeIdx > 2 || swapStep === 'done'}
+          active={swapStep === 'swapping'}
+        />
+        <TxProgressRow
+          label="2/3 Approving GUARD transfer..."
+          done={activeIdx > 3 || swapStep === 'done'}
+          active={swapStep === 'approving'}
+        />
+        <TxProgressRow
+          label={`3/3 Delegating to ${agentName}...`}
+          done={swapStep === 'done'}
+          active={swapStep === 'executing'}
         />
       </div>
 
       {/* Tx phase label */}
-      {TX_STEP_LABELS[txPhase] && (
+      {txStepLabel && (
         <motion.p
-          key={txPhase}
+          key={swapStep}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className={`text-xs font-mono text-center font-semibold ${txPhase === 'success' ? 'text-green-400' : 'text-cyan-300'}`}
+          className={`text-xs font-mono text-center font-semibold ${swapStep === 'done' ? 'text-green-400' : 'text-cyan-300'}`}
         >
-          {TX_STEP_LABELS[txPhase]}
+          {txStepLabel}
         </motion.p>
       )}
 
       {/* Error */}
-      {hasError && txError && (
+      {hasError && swapError && (
         <div className="border border-red-500/30 rounded-lg p-3 bg-red-500/5 text-xs font-mono text-red-300">
-          ✗ {txError}
+          ✗ {swapError}
         </div>
       )}
 
@@ -449,10 +497,10 @@ function Step3Confirm({ agentName, amount, pool, agentProfile, txPhase, txError,
           </button>
           <button
             onClick={onExecute}
-            disabled={isRunning}
+            disabled={isSwapping}
             className="flex-1 text-xs font-bold font-mono py-2 rounded border border-green-500/50 bg-green-500/15 text-green-300 hover:bg-green-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {isRunning ? '⏳ Processing…' : '⚡ Approve & Delegate'}
+            {isSwapping ? '⏳ Processing…' : '⚡ Confirm Delegation'}
           </button>
         </div>
       ) : (
@@ -481,18 +529,19 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
   const contracts   = useStore((s) => s.contracts);
   const agents      = useStore((s) => s.agents);
   const guardBalance = useWalletStore((s) => s.guardBalance);
+  const hbarPerGuard = useWalletStore((s) => s.hbarPerGuard);
   const address      = useWalletStore((s) => s.address);
   const refreshBals  = useWalletStore((s) => s.refreshBalances);
   const openWallet   = useWalletStore((s) => s.openWalletModal);
   const connected    = useWalletStore((s) => s.connectionStatus === 'connected');
+  const { quoteHbarCost, swapAndExecute, swapStep, isSwapping, swapError, reset } = useHbarSwap();
   const toast        = useToast();
 
   const [step,    setStep]    = useState(1);
   const [amount,  setAmount]  = useState('');
   const [pool,    setPool]    = useState(null);
   const [existingDelegation, setExistingDelegation] = useState(null);
-  const [txPhase, setTxPhase] = useState('idle'); // idle|approving|approved|delegating|success|error
-  const [txError, setTxError] = useState(null);
+  const [hbarCostEstimate, setHbarCostEstimate] = useState('');
   const [showConfetti, setShowConfetti] = useState(false);
 
   const ds = contracts?.delegatedStakingContract;
@@ -503,16 +552,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
 
   const agentName = agentProfile?.name || agentProfile?.agentId
     || (agentAddress ? fmt.address(agentAddress) : '—');
-
-  const spenderAddress = loadConfig()?.contracts?.delegatedStaking?.evmAddress;
-
-  // Use GUARD's 8-decimal precision for all contract amounts.
-  // parseUnits("50", 8) = 5_000_000_000n, which fits inside uint96 and int64.
-  const amountBigInt = amount
-    ? (() => { try { return parseUnits(amount, GUARD_DECIMALS); } catch { return null; } })()
-    : null;
-
-  const { approve } = useGuardApproval(spenderAddress, amountBigInt);
 
   // Fetch pool data for selected agent
   const fetchPoolData = useCallback(async () => {
@@ -538,28 +577,34 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
   useEffect(() => {
     setStep(1);
     setAmount('');
-    setTxPhase('idle');
-    setTxError(null);
+    setHbarCostEstimate('');
+    reset();
     fetchPoolData();
-  }, [agentAddress, fetchPoolData]);
+  }, [agentAddress, fetchPoolData, reset]);
+
+  useEffect(() => {
+    if (!amount || parseFloat(amount) <= 0) {
+      setHbarCostEstimate('');
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const cost = await quoteHbarCost(amount);
+      setHbarCostEstimate(cost);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [amount, quoteHbarCost]);
 
   const handleExecute = async () => {
-    if (!ds || !agentAddress || !amountBigInt) return;
+    if (!ds || !agentAddress || !amount) return;
 
-    setTxError(null);
+    reset();
     try {
-      // Step 1: Approve
-      setTxPhase('approving');
-      await approve();
-      setTxPhase('approved');
-
-      // Step 2: Delegate
-      setTxPhase('delegating');
-      const writableDs = ds.connect(useWalletStore.getState().signer);
-      const tx = await writableDs.delegate(agentAddress, amountBigInt);
-      await tx.wait();
-
-      setTxPhase('success');
+      await swapAndExecute(
+        amount,
+        ds,
+        'delegate',
+        [agentAddress, parseUnits(amount, GUARD_DECIMALS)]
+      );
       setShowConfetti(true);
       setTimeout(() => setShowConfetti(false), 2000);
       toast.success(`✓ Delegated ${parseFloat(amount).toFixed(2)} GUARD to ${agentName}`);
@@ -567,8 +612,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
       onSuccess?.();
     } catch (err) {
       const msg = err?.reason || err?.message?.slice(0, 100) || 'Transaction failed';
-      setTxPhase('error');
-      setTxError(msg);
       toast.error(`✗ Delegation failed: ${msg}`);
     }
   };
@@ -655,11 +698,13 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
             <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
               <Step2Amount
                 guardBalance={guardBalance ?? 0}
+                hbarPerGuard={hbarPerGuard}
+                hbarCostEstimate={hbarCostEstimate}
                 amount={amount}
                 setAmount={setAmount}
                 pool={pool}
                 onBack={() => setStep(1)}
-                onNext={() => { setTxPhase('idle'); setTxError(null); setStep(3); }}
+                onNext={() => { reset(); setStep(3); }}
               />
             </motion.div>
           )}
@@ -668,13 +713,15 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
               <Step3Confirm
                 agentName={agentName}
                 amount={amount}
+                hbarCostEstimate={hbarCostEstimate}
                 pool={pool}
                 agentProfile={{ ...agentProfile, tier: agentProfile?.tier ?? 0 }}
-                txPhase={txPhase}
-                txError={txError}
+                swapStep={swapStep}
+                swapError={swapError}
+                isSwapping={isSwapping}
                 onBack={() => setStep(2)}
                 onExecute={handleExecute}
-                onClose={() => { setStep(1); setAmount(''); setTxPhase('idle'); onClose?.(); }}
+                onClose={() => { setStep(1); setAmount(''); setHbarCostEstimate(''); reset(); onClose?.(); }}
               />
             </motion.div>
           )}
