@@ -150,12 +150,12 @@ function TierCard({ tier, selected, canAfford, shortfall, onClick }) {
         {selected && <span className="text-green-400 text-sm font-bold">✓ Selected</span>}
       </div>
       <div className={`text-lg font-bold font-mono ${canAfford ? ac.text : 'text-gray-600'}`}>
-        {tier.stake.toLocaleString()} GUARD
+        {(tier.stake / 100).toFixed(2)} HBAR
       </div>
       <p className="text-xs font-mono text-gray-400 mt-1 leading-snug">{tier.desc}</p>
       {!canAfford && shortfall > 0 && (
         <p className="text-[11px] font-mono text-red-400 mt-2">
-          Insufficient balance (need {shortfall.toFixed(2)} more GUARD)
+          Insufficient balance (need {shortfall.toFixed(4)} more HBAR)
         </p>
       )}
     </motion.button>
@@ -171,10 +171,10 @@ function TierCard({ tier, selected, canAfford, shortfall, onClick }) {
  *   data       { specializations: string[], tier: 'COMMODITY'|'SPECIALIZED'|'PREMIUM' }
  *   setData    (patch) => void
  *   errors     { specializations? }
- *   guardBalance  number (human-readable GUARD amount from wallet store)
+ *   hbarBalance  number (human-readable HBAR amount from wallet store)
  */
-export default function StepSpecialization({ data, setData, errors, guardBalance }) {
-  const balance = parseFloat(guardBalance) || 0;
+export default function StepSpecialization({ data, setData, errors, hbarBalance }) {
+  const balance = parseFloat(hbarBalance) || 0;
 
   const toggleSpec = (id) => {
     const next = data.specializations.includes(id)
@@ -201,9 +201,9 @@ export default function StepSpecialization({ data, setData, errors, guardBalance
       <div className="flex items-center gap-3 border border-gray-700 rounded-lg px-4 py-3 bg-gray-900">
         <span className="text-amber-400 text-lg">💰</span>
         <div>
-          <p className="text-xs font-mono text-gray-400">Your GUARD balance</p>
+          <p className="text-xs font-mono text-gray-400">Your HBAR balance</p>
           <p className="text-base font-bold font-mono text-amber-300">
-            {balance.toFixed(2)} GUARD
+            {balance.toFixed(4)} HBAR
           </p>
         </div>
       </div>
@@ -248,8 +248,9 @@ export default function StepSpecialization({ data, setData, errors, guardBalance
         </p>
         <div className="grid grid-cols-3 gap-3">
           {TIERS.map((tier) => {
-            const canAfford = balance >= tier.stake;
-            const shortfall = tier.stake - balance;
+            const stakeInHbar = tier.stake / 100; // 100 GUARD = 1 HBAR
+            const canAfford = balance >= stakeInHbar;
+            const shortfall = stakeInHbar - balance;
             return (
               <TierCard
                 key={tier.id}

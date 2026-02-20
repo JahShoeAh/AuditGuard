@@ -1,35 +1,44 @@
 import { useState, useEffect, useCallback } from 'react';
-import { parseUnits, formatUnits } from 'ethers';
+import { ethers, formatUnits } from 'ethers';
 import { motion, AnimatePresence } from 'framer-motion';
 import useStore from '../../store/index';
-import useWalletStore, { hbarEquivalent } from '../../store/wallet';
-import { useHbarSwap } from '../../hooks/useHbarSwap';
+import useWalletStore from '../../store/wallet';
 import { useToast } from '../ui/Toast';
 import { fmt } from '../../utils/format';
 
-const MIN_HBAR_AMOUNT = 10;  // HBAR minimum for delegation
-const EXAMPLE_EARN = 50;     // GUARD, used for reward preview
+// Fixed rate: 1 HBAR = 100 GUARD
+const RATE = 100;
+const MIN_HBAR_AMOUNT = 0.1;   // 0.1 HBAR = 10 GUARD (contract minimum)
+const EXAMPLE_EARN = 50;       // GUARD, for reward preview
+const GUARD_DECIMALS = 8;
 
 // ── Helpers ────────────────────────────────────────────────
-
-// GUARD uses 8 decimal places on Hedera (minDelegation = 10 * 10**8).
-// All amounts passed to / returned from DelegatedStaking are in 8-decimal units.
-const GUARD_DECIMALS = 8;
 
 function fmtG(raw) {
   if (raw == null) return '0.00';
   try { return parseFloat(formatUnits(BigInt(raw.toString()), GUARD_DECIMALS)).toFixed(2); } catch { return '0.00'; }
 }
 
+/** Format GUARD raw value as HBAR (divide by 100) */
+function fmtHbar(raw) {
+  if (raw == null) return '0.00';
+  try {
+    const guard = parseFloat(formatUnits(BigInt(raw.toString()), GUARD_DECIMALS));
+    return (guard / RATE).toFixed(4);
+  } catch { return '0.00'; }
+}
+
 function fmtShareRate(bps) {
   return `${(Number(bps ?? 0) / 100).toFixed(Number(bps ?? 0) % 100 === 0 ? 0 : 1)}%`;
 }
 
-function calcEstimatedReward(amountStr, poolTotalRaw, shareRateBps) {
-  const amount    = parseFloat(amountStr) || 0;
-  const poolTotal = parseFloat(fmtG(poolTotalRaw)) + amount; // include new stake
+function calcEstimatedReward(hbarStr, poolTotalRaw, shareRateBps) {
+  const hbar    = parseFloat(hbarStr) || 0;
+  const guardAmt = hbar * RATE;
+  const poolTotal = parseFloat(fmtG(poolTotalRaw)) + guardAmt;
   if (!poolTotal || !shareRateBps) return null;
-  return ((amount / poolTotal) * EXAMPLE_EARN * (Number(shareRateBps) / 10000)).toFixed(2);
+  const rewardGuard = ((guardAmt / poolTotal) * EXAMPLE_EARN * (Number(shareRateBps) / 10000));
+  return (rewardGuard / RATE).toFixed(4); // return as HBAR
 }
 
 const TIER_LABELS  = ['COMMODITY', 'SPECIALIZED', 'PREMIUM'];
@@ -103,15 +112,14 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
   const shareRate      = pool && pool.totalDelegated > 0n
     ? fmtShareRate(pool.rewardShareBps)
     : '10%';
-  const totalDelegated = fmtG(pool?.totalDelegated);
+  const totalDelegatedHbar = fmtHbar(pool?.totalDelegated);
   const delegatorCount = pool?.delegatorCount ?? 0;
-  const myExisting     = fmtG(existingDelegation?.amount);
+  const myExistingHbar = fmtHbar(existingDelegation?.amount);
   const slashCount     = agentProfile?.slashCount ?? 0;
   const fpRate         = agentProfile?.falsePositives ?? 0;
 
   return (
     <div className="space-y-4">
-      {/* Agent profile summary */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -134,7 +142,6 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
         )}
       </div>
 
-      {/* Reward share */}
       <div className="border border-green-500/30 rounded-lg p-3 bg-green-500/5">
         <div className="text-xs font-bold font-mono text-green-400 uppercase tracking-wider mb-1">
           Reward Share
@@ -145,7 +152,6 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
         </p>
       </div>
 
-      {/* Risk factors */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="text-xs font-bold font-mono text-gray-500 uppercase tracking-wider mb-2">
           Risk Factors
@@ -167,19 +173,18 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
         )}
       </div>
 
-      {/* Pool stats */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="text-xs font-bold font-mono text-gray-500 uppercase tracking-wider mb-2">
           Delegation Pool
         </div>
         <div className="grid grid-cols-2 gap-1 text-xs font-mono">
           <span className="text-gray-500">Total delegated</span>
-          <span className="text-right text-amber-300">{totalDelegated} GUARD</span>
+          <span className="text-right text-amber-300">{totalDelegatedHbar} HBAR</span>
           <span className="text-gray-500">Delegators</span>
           <span className="text-right text-gray-300">{delegatorCount}</span>
           <span className="text-gray-500">Your stake</span>
-          <span className={`text-right font-semibold ${parseFloat(myExisting) > 0 ? 'text-cyan-300' : 'text-gray-600'}`}>
-            {parseFloat(myExisting) > 0 ? `${myExisting} GUARD` : 'None yet'}
+          <span className={`text-right font-semibold ${parseFloat(myExistingHbar) > 0 ? 'text-cyan-300' : 'text-gray-600'}`}>
+            {parseFloat(myExistingHbar) > 0 ? `${myExistingHbar} HBAR` : 'None yet'}
           </span>
         </div>
       </div>
@@ -202,75 +207,32 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
   );
 }
 
-// ── Step 2: Set Amount ─────────────────────────────────────
+// ── Step 2: Set Amount (HBAR only) ────────────────────────
 
 function Step2Amount({
   hbarBalance,
-  guardBalance,
-  paymentMethod,
-  setPaymentMethod,
-  guardEstimate,
-  guardQuoteError,
   amount,
   setAmount,
   pool,
   onBack,
   onNext,
 }) {
-  const presets = paymentMethod === 'HBAR' ? [10, 25, 50, 100] : [10, 25, 50, 100];
+  const presets = [0.5, 1, 5, 10];
   const hbarBalNum = parseFloat(hbarBalance) || 0;
-  const guardBalNum = parseFloat(guardBalance) || 0;
   const amtNum = parseFloat(amount) || 0;
 
-  const isHbarPayment = paymentMethod === 'HBAR';
-  const maxBalance = isHbarPayment ? hbarBalNum : guardBalNum;
-  const minAmount = isHbarPayment ? MIN_HBAR_AMOUNT : MIN_HBAR_AMOUNT;
+  const isOverBalance = amtNum > hbarBalNum;
+  const isUnderMin = amtNum > 0 && amtNum < MIN_HBAR_AMOUNT;
+  const isHighPortion = amtNum > 0 && hbarBalNum > 0 && amtNum / hbarBalNum > 0.5;
+  const canProceed = amtNum >= MIN_HBAR_AMOUNT && !isOverBalance;
 
-  const isOverBalance = amtNum > maxBalance;
-  const isUnderMin = amtNum > 0 && amtNum < minAmount;
-  const isHighPortion = amtNum > 0 && maxBalance > 0 && amtNum / maxBalance > 0.5;
-  const canProceed = amtNum >= minAmount && !isOverBalance;
-
-  const estimatedGuard = guardEstimate && parseFloat(guardEstimate) > 0 ? guardEstimate : null;
-  const estimatedReward = estimatedGuard && canProceed
-    ? calcEstimatedReward(estimatedGuard, pool?.totalDelegated, pool?.rewardShareBps)
+  const guardBacking = amtNum > 0 ? (amtNum * RATE).toFixed(2) : null;
+  const estimatedReward = canProceed
+    ? calcEstimatedReward(amount, pool?.totalDelegated, pool?.rewardShareBps)
     : null;
-
-  const handlePreset = (amt) => {
-    setAmount(amt.toFixed(2));
-  };
 
   return (
     <div className="space-y-4">
-      {/* Payment Method Selector */}
-      <div className="border border-cyan-500/30 rounded-lg p-3 bg-cyan-500/5">
-        <label className="text-xs font-mono text-gray-400 uppercase tracking-wider block mb-2">
-          Payment Method
-        </label>
-        <div className="flex gap-2">
-          <button
-            onClick={() => { setPaymentMethod('HBAR'); setAmount(''); }}
-            className={`flex-1 text-xs font-bold font-mono py-2 rounded border transition-colors ${
-              paymentMethod === 'HBAR'
-                ? 'border-amber-500 bg-amber-500/20 text-amber-300'
-                : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
-            }`}
-          >
-            Pay with HBAR
-          </button>
-          <button
-            onClick={() => { setPaymentMethod('GUARD'); setAmount(''); }}
-            className={`flex-1 text-xs font-bold font-mono py-2 rounded border transition-colors ${
-              paymentMethod === 'GUARD'
-                ? 'border-green-500 bg-green-500/20 text-green-300'
-                : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
-            }`}
-          >
-            Use existing GUARD
-          </button>
-        </div>
-      </div>
-
       {/* Balance */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="flex items-center justify-between font-mono">
@@ -279,24 +241,18 @@ function Step2Amount({
             {hbarBalNum.toFixed(2)} HBAR
           </span>
         </div>
-        <div className="flex items-center justify-between font-mono mt-1">
-          <span className="text-xs text-gray-400">Your GUARD balance</span>
-          <span className="text-sm font-bold text-green-400">
-            {guardBalNum.toFixed(2)} GUARD
-          </span>
-        </div>
       </div>
 
       {/* Amount input */}
       <div>
         <label className="text-xs font-mono text-gray-400 uppercase tracking-wider block mb-1.5">
-          {isHbarPayment ? 'HBAR Amount to Delegate' : 'GUARD Amount to Delegate'}
+          HBAR Amount to Delegate
         </label>
         <div className="flex gap-1">
           <input
             type="number"
-            min={minAmount}
-            max={maxBalance}
+            min={MIN_HBAR_AMOUNT}
+            max={hbarBalNum}
             step="0.01"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -304,32 +260,27 @@ function Step2Amount({
             className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-colors"
           />
           <button
-            onClick={() => setAmount(maxBalance.toFixed(2))}
+            onClick={() => setAmount(hbarBalNum.toFixed(2))}
             className="px-3 py-2 text-[10px] font-bold font-mono uppercase tracking-wider rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors"
           >
             MAX
           </button>
         </div>
-        {isHbarPayment && estimatedGuard && (
+        {guardBacking && (
           <p className="text-xs font-mono text-green-400 mt-1">
-            ≈ {parseFloat(estimatedGuard).toFixed(2)} GUARD will be delegated
-          </p>
-        )}
-        {isHbarPayment && guardQuoteError && (
-          <p className="text-xs font-mono text-red-400 mt-1">
-            ⚠ {guardQuoteError}
+            = {guardBacking} GUARD backing (internal)
           </p>
         )}
 
-        {/* Preset amount buttons */}
+        {/* Preset buttons */}
         <div className="flex gap-1.5 mt-2">
           {presets.map((amt) => (
             <button
               key={amt}
-              onClick={() => handlePreset(amt)}
+              onClick={() => setAmount(amt.toFixed(2))}
               className="flex-1 text-[10px] font-bold font-mono py-1.5 rounded border border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition-colors"
             >
-              {amt} {isHbarPayment ? 'HBAR' : 'GUARD'}
+              {amt} HBAR
             </button>
           ))}
         </div>
@@ -340,19 +291,19 @@ function Step2Amount({
         {isOverBalance && (
           <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="text-xs font-mono text-red-400 border border-red-500/30 rounded p-2 bg-red-500/5">
-            ✗ Amount exceeds your {isHbarPayment ? 'HBAR' : 'GUARD'} balance.
+            ✗ Amount exceeds your HBAR balance.
           </motion.p>
         )}
         {isUnderMin && !isOverBalance && (
           <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="text-xs font-mono text-amber-400 border border-amber-500/30 rounded p-2 bg-amber-500/5">
-            ⚠ Minimum delegation is {minAmount} {isHbarPayment ? 'HBAR' : 'GUARD'}.
+            ⚠ Minimum delegation is {MIN_HBAR_AMOUNT} HBAR.
           </motion.p>
         )}
         {isHighPortion && !isOverBalance && (
           <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="text-xs font-mono text-amber-400 border border-amber-500/30 rounded p-2 bg-amber-500/5">
-            ⚠ This is a significant portion of your {isHbarPayment ? 'HBAR' : 'GUARD'} balance.
+            ⚠ This is a significant portion of your HBAR balance.
           </motion.p>
         )}
       </AnimatePresence>
@@ -361,7 +312,7 @@ function Step2Amount({
       {estimatedReward && (
         <div className="border border-green-500/20 rounded-lg p-3 bg-green-500/5 text-xs font-mono">
           <span className="text-gray-400">If this agent earns {EXAMPLE_EARN} GUARD on their next audit, your estimated reward: </span>
-          <span className="text-green-400 font-bold">~{estimatedReward} GUARD</span>
+          <span className="text-green-400 font-bold">~{estimatedReward} HBAR</span>
           <span className="text-gray-600 block mt-1 text-[10px]">
             (based on {fmtShareRate(pool?.rewardShareBps)} share rate and current pool size)
           </span>
@@ -389,41 +340,14 @@ function Step2Amount({
 
 // ── Step 3: Confirm & Execute ──────────────────────────────
 
-const TX_STEP_LABELS = {
-  quoting: 'Checking exchange rate...',
-  swapping: '1/3 Swapping HBAR → GUARD...',
-  approving: '2/3 Approving GUARD transfer...',
-  executing: (agentName) => `3/3 Delegating to ${agentName}...`,
-  done: '✓ Delegated successfully!',
-  error: null,
-};
-
-function TxProgressRow({ label, done, active }) {
-  return (
-    <div className={[
-      'flex items-center gap-2 text-xs font-mono py-1',
-      done   ? 'text-green-400' :
-      active ? 'text-cyan-300' :
-      'text-gray-600',
-    ].join(' ')}>
-      {done   && <span className="w-4">✓</span>}
-      {active && <span className="w-4 animate-spin inline-block">◌</span>}
-      {!done && !active && <span className="w-4">○</span>}
-      {label}
-    </div>
-  );
-}
-
 function Step3Confirm({
   agentName,
   amount,
-  paymentMethod,
-  guardEstimate,
   pool,
   agentProfile,
-  swapStep,
-  swapError,
-  isSwapping,
+  txStep,
+  txError,
+  isProcessing,
   onBack,
   onExecute,
   onClose,
@@ -431,15 +355,10 @@ function Step3Confirm({
   const shareRate  = pool && pool.totalDelegated > 0n
     ? fmtShareRate(pool.rewardShareBps)
     : '10%';
-  const isRunning  = isSwapping;
-  const isDone     = swapStep === 'done';
-  const hasError   = swapStep === 'error';
+  const isDone     = txStep === 'done';
+  const hasError   = txStep === 'error';
   const tier       = agentProfile?.tier ?? 0;
-  const activeIdx = { quoting: 1, swapping: 2, approving: 3, executing: 4, done: 5, error: 0 }[swapStep] || 0;
-  const txStepLabel =
-    swapStep === 'executing'
-      ? TX_STEP_LABELS.executing(agentName)
-      : TX_STEP_LABELS[swapStep];
+  const guardAmount = (parseFloat(amount) * RATE).toFixed(2);
 
   return (
     <div className="space-y-4">
@@ -455,25 +374,16 @@ function Step3Confirm({
             {TIER_LABELS[tier] || 'COMMODITY'}
           </span>
         </div>
-        {paymentMethod === 'HBAR' ? (
-          <>
-            <div className="flex justify-between">
-              <span className="text-gray-500">HBAR Payment</span>
-              <span className="text-amber-300 font-bold">{parseFloat(amount).toFixed(2)} HBAR</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-500">GUARD Delegated</span>
-              <span className="text-green-400 font-semibold">
-                ≈ {parseFloat(guardEstimate || 0).toFixed(2)} GUARD
-              </span>
-            </div>
-          </>
-        ) : (
-          <div className="flex justify-between">
-            <span className="text-gray-500">Amount</span>
-            <span className="text-green-400 font-bold">{parseFloat(amount).toFixed(2)} GUARD</span>
-          </div>
-        )}
+        <div className="flex justify-between">
+          <span className="text-gray-500">HBAR Amount</span>
+          <span className="text-amber-300 font-bold">{parseFloat(amount).toFixed(2)} HBAR</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-500">GUARD Backing</span>
+          <span className="text-green-400 font-semibold text-[10px]">
+            = {guardAmount} GUARD (internal)
+          </span>
+        </div>
         <div className="flex justify-between">
           <span className="text-gray-500">Reward share</span>
           <span className="text-green-400 font-semibold">{shareRate}</span>
@@ -489,49 +399,48 @@ function Step3Confirm({
         ⚠ This delegation is subject to slashing if the agent is penalized.
       </div>
 
-      {/* Auto-swap transaction flow */}
+      {/* Single transaction progress */}
       <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
         <div className="text-[10px] font-mono text-gray-500 uppercase tracking-wider mb-2">
-          Auto-swap flow
+          Transaction
         </div>
-        <TxProgressRow
-          label="Checking exchange rate..."
-          done={activeIdx > 1 || swapStep === 'done'}
-          active={swapStep === 'quoting'}
-        />
-        <TxProgressRow
-          label="1/3 Swapping HBAR → GUARD..."
-          done={activeIdx > 2 || swapStep === 'done'}
-          active={swapStep === 'swapping'}
-        />
-        <TxProgressRow
-          label="2/3 Approving GUARD transfer..."
-          done={activeIdx > 3 || swapStep === 'done'}
-          active={swapStep === 'approving'}
-        />
-        <TxProgressRow
-          label={`3/3 Delegating to ${agentName}...`}
-          done={swapStep === 'done'}
-          active={swapStep === 'executing'}
-        />
+        <div className={[
+          'flex items-center gap-2 text-xs font-mono py-1',
+          isDone   ? 'text-green-400' :
+          isProcessing ? 'text-cyan-300' :
+          'text-gray-600',
+        ].join(' ')}>
+          {isDone   && <span className="w-4">✓</span>}
+          {isProcessing && <span className="w-4 animate-spin inline-block">◌</span>}
+          {!isDone && !isProcessing && <span className="w-4">○</span>}
+          Delegating {parseFloat(amount).toFixed(2)} HBAR to {agentName}
+        </div>
       </div>
 
-      {/* Tx phase label */}
-      {txStepLabel && (
+      {/* Status label */}
+      {isProcessing && (
         <motion.p
-          key={swapStep}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className={`text-xs font-mono text-center font-semibold ${swapStep === 'done' ? 'text-green-400' : 'text-cyan-300'}`}
+          className="text-xs font-mono text-center font-semibold text-cyan-300"
         >
-          {txStepLabel}
+          Delegating...
+        </motion.p>
+      )}
+      {isDone && (
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-xs font-mono text-center font-semibold text-green-400"
+        >
+          ✓ Delegated successfully!
         </motion.p>
       )}
 
       {/* Error */}
-      {hasError && swapError && (
+      {hasError && txError && (
         <div className="border border-red-500/30 rounded-lg p-3 bg-red-500/5 text-xs font-mono text-red-300">
-          ✗ {swapError}
+          ✗ {txError}
         </div>
       )}
 
@@ -540,17 +449,17 @@ function Step3Confirm({
         <div className="flex gap-2 pt-1">
           <button
             onClick={onBack}
-            disabled={isRunning}
+            disabled={isProcessing}
             className="flex-1 text-xs font-mono py-2 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 disabled:opacity-40 transition-colors"
           >
             ← Back
           </button>
           <button
             onClick={onExecute}
-            disabled={isSwapping}
+            disabled={isProcessing}
             className="flex-1 text-xs font-bold font-mono py-2 rounded border border-green-500/50 bg-green-500/15 text-green-300 hover:bg-green-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {isSwapping ? '⏳ Processing…' : '⚡ Confirm Delegation'}
+            {isProcessing ? '⏳ Processing…' : '⚡ Confirm Delegation'}
           </button>
         </div>
       ) : (
@@ -567,34 +476,27 @@ function Step3Confirm({
 
 // ── Main DelegationWizard ──────────────────────────────────
 
-/**
- * DelegationWizard — right panel, 3-step delegation flow.
- *
- * Props:
- *   agentAddress   string | null   pre-selected agent EVM address
- *   onClose        () => void      close the panel
- *   onSuccess      () => void      called after successful delegation (refresh portfolio)
- */
 export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
   const contracts   = useStore((s) => s.contracts);
   const agents      = useStore((s) => s.agents);
-  const guardBalance = useWalletStore((s) => s.guardBalance);
   const hbarBalance  = useWalletStore((s) => s.hbarBalance);
   const address      = useWalletStore((s) => s.address);
+  const signer       = useWalletStore((s) => s.signer);
   const refreshBals  = useWalletStore((s) => s.refreshBalances);
   const openWallet   = useWalletStore((s) => s.openWalletModal);
   const connected    = useWalletStore((s) => s.connectionStatus === 'connected');
-  const { quoteGuardOut, quoteHbarCost, swapHbarAndExecute, swapAndExecute, swapStep, isSwapping, swapError, reset } = useHbarSwap();
   const toast        = useToast();
 
   const [step,    setStep]    = useState(1);
-  const [paymentMethod, setPaymentMethod] = useState('HBAR'); // 'HBAR' or 'GUARD'
   const [amount,  setAmount]  = useState('');
   const [pool,    setPool]    = useState(null);
   const [existingDelegation, setExistingDelegation] = useState(null);
-  const [guardEstimate, setGuardEstimate] = useState('');
-  const [guardQuoteError, setGuardQuoteError] = useState(null);
   const [showConfetti, setShowConfetti] = useState(false);
+
+  // Transaction state
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [txStep, setTxStep] = useState(null);
+  const [txError, setTxError] = useState(null);
 
   const ds = contracts?.delegatedStakingContract;
 
@@ -605,7 +507,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
   const agentName = agentProfile?.name || agentProfile?.agentId
     || (agentAddress ? fmt.address(agentAddress) : '—');
 
-  // Fetch pool data for selected agent
   const fetchPoolData = useCallback(async () => {
     if (!ds || !agentAddress) return;
     try {
@@ -628,87 +529,46 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
   useEffect(() => {
     setStep(1);
     setAmount('');
-    setGuardEstimate('');
-    setGuardQuoteError(null);
-    reset();
+    setIsProcessing(false);
+    setTxStep(null);
+    setTxError(null);
     fetchPoolData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentAddress]);
 
-  useEffect(() => {
-    if (!amount || parseFloat(amount) <= 0) {
-      setGuardEstimate('');
-      setGuardQuoteError(null);
-      return;
-    }
-
-    // Only quote if paying with HBAR
-    if (paymentMethod !== 'HBAR') {
-      setGuardEstimate('');
-      setGuardQuoteError(null);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      try {
-        console.log('[DelegationWizard] Requesting quote for', amount, 'HBAR');
-        const guardOut = await quoteGuardOut(amount);
-        if (guardOut === '0' || !guardOut) {
-          setGuardQuoteError('Unable to calculate GUARD output. Exchange may not be initialized.');
-          setGuardEstimate('');
-        } else {
-          setGuardEstimate(guardOut);
-          setGuardQuoteError(null);
-        }
-      } catch (err) {
-        console.error('[DelegationWizard] Quote error:', err);
-        setGuardQuoteError(err.message || 'Failed to get exchange rate');
-        setGuardEstimate('');
-      }
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [amount, paymentMethod, quoteGuardOut]);
-
   const handleExecute = async () => {
-    if (!ds || !agentAddress || !amount) return;
+    if (!ds || !agentAddress || !amount || !signer) return;
 
-    reset();
+    setIsProcessing(true);
+    setTxStep('delegating');
+    setTxError(null);
+
     try {
-      if (paymentMethod === 'HBAR') {
-        // HBAR payment: swap HBAR to GUARD, then delegate
-        if (!guardEstimate) return;
-        const guardBaseUnits = parseUnits(guardEstimate, GUARD_DECIMALS);
-        await swapHbarAndExecute(
-          amount, // HBAR amount
-          ds,
-          'delegate',
-          [agentAddress, guardBaseUnits]
-        );
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 2000);
-        toast.success(`✓ Swapped ${parseFloat(amount).toFixed(2)} HBAR and delegated GUARD to ${agentName}`);
-      } else {
-        // GUARD payment: direct delegation (no swap needed)
-        const guardBaseUnits = parseUnits(amount, GUARD_DECIMALS);
-        await swapAndExecute(
-          amount, // GUARD amount
-          ds,
-          'delegate',
-          [agentAddress, guardBaseUnits]
-        );
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 2000);
-        toast.success(`✓ Delegated ${parseFloat(amount).toFixed(2)} GUARD to ${agentName}`);
-      }
+      // Single payable transaction: delegateWithHbar
+      const hbarWei = ethers.parseEther(amount);
+      const tx = await ds.connect(signer).delegateWithHbar(agentAddress, {
+        value: hbarWei,
+        gasLimit: 500_000,
+      });
+      await tx.wait();
+
+      setTxStep('done');
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 2000);
+      toast.success(`✓ Delegated ${parseFloat(amount).toFixed(2)} HBAR to ${agentName}`);
       await refreshBals();
       onSuccess?.();
     } catch (err) {
+      setTxStep('error');
       const msg = err?.reason || err?.message?.slice(0, 100) || 'Transaction failed';
+      setTxError(msg);
       toast.error(`✗ Delegation failed: ${msg}`);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Empty state (no agent selected)
+  // Empty state
   if (!agentAddress) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-center px-6">
@@ -717,13 +577,13 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
           Select an Agent
         </h3>
         <p className="text-xs font-mono text-gray-500">
-          Choose an agent from the browser to start delegating GUARD.
+          Choose an agent from the browser to start delegating HBAR.
         </p>
       </div>
     );
   }
 
-  // Not connected state
+  // Not connected
   if (!connected) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-center px-6">
@@ -732,7 +592,7 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
           Wallet Required
         </h3>
         <p className="text-xs font-mono text-gray-500 mb-4">
-          Connect your wallet to delegate GUARD to {agentName}.
+          Connect your wallet to delegate HBAR to {agentName}.
         </p>
         <button
           onClick={() => openWallet({ action: 'delegate stake' })}
@@ -750,7 +610,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
     <div className="h-full flex flex-col min-h-0">
       {showConfetti && <Confetti />}
 
-      {/* Wizard header */}
       <div className="flex-shrink-0 border-b border-gray-800 px-4 py-3">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-xs font-bold font-mono uppercase tracking-widest text-gray-100">
@@ -772,7 +631,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
         </div>
       </div>
 
-      {/* Step content */}
       <div className="flex-1 overflow-y-auto min-h-0 p-4">
         <AnimatePresence mode="wait">
           {step === 1 && (
@@ -790,16 +648,11 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
             <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
               <Step2Amount
                 hbarBalance={hbarBalance ?? 0}
-                guardBalance={guardBalance ?? 0}
-                paymentMethod={paymentMethod}
-                setPaymentMethod={setPaymentMethod}
-                guardEstimate={guardEstimate}
-                guardQuoteError={guardQuoteError}
                 amount={amount}
                 setAmount={setAmount}
                 pool={pool}
                 onBack={() => setStep(1)}
-                onNext={() => { reset(); setStep(3); }}
+                onNext={() => { setTxStep(null); setTxError(null); setStep(3); }}
               />
             </motion.div>
           )}
@@ -808,16 +661,14 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
               <Step3Confirm
                 agentName={agentName}
                 amount={amount}
-                paymentMethod={paymentMethod}
-                guardEstimate={guardEstimate}
                 pool={pool}
                 agentProfile={{ ...agentProfile, tier: agentProfile?.tier ?? 0 }}
-                swapStep={swapStep}
-                swapError={swapError}
-                isSwapping={isSwapping}
+                txStep={txStep}
+                txError={txError}
+                isProcessing={isProcessing}
                 onBack={() => setStep(2)}
                 onExecute={handleExecute}
-                onClose={() => { setStep(1); setAmount(''); setGuardEstimate(''); reset(); onClose?.(); }}
+                onClose={() => { setStep(1); setAmount(''); setTxStep(null); setTxError(null); onClose?.(); }}
               />
             </motion.div>
           )}

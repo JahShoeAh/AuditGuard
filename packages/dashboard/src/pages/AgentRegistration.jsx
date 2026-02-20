@@ -119,7 +119,7 @@ export default function AgentRegistration() {
   useBootstrap();
 
   const connected    = useWalletStore((s) => s.connectionStatus === 'connected');
-  const guardBalance = useWalletStore((s) => s.guardBalance);
+  const hbarBalance  = useWalletStore((s) => s.hbarBalance);
 
   const [step,       setStep]       = useState(1);
   const [formData,   setFormData]   = useState(initialFormData);
@@ -261,7 +261,7 @@ export default function AgentRegistration() {
                       data={formData}
                       setData={patchSpecialization}
                       errors={errors}
-                      guardBalance={guardBalance}
+                      hbarBalance={hbarBalance}
                     />
                   </motion.div>
                 )}
@@ -277,7 +277,7 @@ export default function AgentRegistration() {
                     <StepDeploy
                       formData={formData}
                       onReset={handleReset}
-                      guardBalance={guardBalance}
+                      hbarBalance={hbarBalance}
                     />
                   </motion.div>
                 )}
