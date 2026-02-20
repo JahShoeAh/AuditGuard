@@ -84,16 +84,10 @@ const FINDING_TITLES: Record<ContractType, string[]> = {
     "Strategy migration rug vector",
     "Unauthorized strategy update",
   ],
-  unknown: [
-    "Uninitialized proxy storage",
-    "Access control missing on admin function",
-    "Selfdestruct in implementation",
-    "Unchecked low-level call",
-  ],
 };
 
 export function randomFindingTitle(contractType: ContractType): string {
-  const titles = FINDING_TITLES[contractType] || FINDING_TITLES.unknown;
+  const titles = FINDING_TITLES[contractType] || FINDING_TITLES.lending;
   return randomChoice(titles);
 }
 

@@ -25,7 +25,6 @@ export interface ContractDiscoveryEvent extends HCSMessage {
     budget: number;
     txHash: string;
     sourceRef?: string;
-    // ── New fields ──
     evmType?: string;
     standards?: string[];
     contractName?: string | null;
