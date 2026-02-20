@@ -38,6 +38,11 @@
     "inft:listen:events": "npm --prefix packages/inft run listen:events",
     "orchestrator": "node orchestrator/src/index.js",
     "orchestrator:test": "npm --prefix orchestrator test",
+    "dashboard:deploy:cf": "npm --prefix packages/dashboard run deploy:cf",
+    "cf-api:dev": "npm --workspace packages/cloudflare-api run dev",
+    "cf-api:deploy": "npm --workspace packages/cloudflare-api run deploy:cf",
+    "cf-api:db:migrate:local": "npm --workspace packages/cloudflare-api run db:migrate:local",
+    "cf-api:db:migrate:remote": "npm --workspace packages/cloudflare-api run db:migrate:remote",
     "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",
     "deploy:audit-scheduler": "HARDHAT_CONFIG=packages/contracts/hardhat.config.js npx hardhat run scripts/deploy-audit-scheduler.js --network hedera_testnet",
     "deploy:exchange": "hardhat run scripts/deploy-guard-exchange.js --network hedera_testnet"

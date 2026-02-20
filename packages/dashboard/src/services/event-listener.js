@@ -1,16 +1,18 @@
 /**
  * EventListenerService
  *
- * Unified event ingestion — manages both HCS mirror-node polling
+ * Unified event ingestion — manages Cloudflare events API polling
  * and ethers.js contract-event polling, routing everything into
  * the Zustand store.
  */
 
-const MIRROR_NODE = import.meta.env.VITE_HEDERA_MIRROR_NODE
-  || 'https://testnet.mirrornode.hedera.com';
+const EVENTS_API_BASE_URL = (
+  import.meta.env.VITE_EVENTS_API_BASE_URL || '/api'
+).replace(/\/$/, '');
 
 const HCS_POLL_MS = 4_000;       // 4 s for HCS topics
 const CONTRACT_POLL_MS = 5_000;  // 5 s for on-chain events
+const EVENT_FETCH_LIMIT = 500;
 
 // ── DataMarketplace enum mappings ───────────────────────────
 const DATA_CATEGORIES = [
@@ -68,18 +70,10 @@ export class EventListenerService {
         .filter(Boolean)
     );
     this.seenTestDiscoveries = new Set();
-    this.hcsHistorySkipped = {
-      discovery: false,
-      auditLog: false,
-      agentComms: false,
-    };
-
-    // HCS state — last seen sequence number per topic
-    this.lastSeq = {
-      discovery:  0,
-      auditLog:   0,
-      agentComms: 0,
-    };
+    this.seenEventIds = new Set();
+    this.maxSeenEventIds = 5_000;
+    this.syntheticSequence = 0;
+    this.eventsBacklogSkipped = false;
 
     // Contract event state
     this.lastProcessedBlock = null;
@@ -135,82 +129,115 @@ export class EventListenerService {
   // ── HCS polling ──────────────────────────────────────────
 
   startHCSPolling() {
-    const topics = this.config.hcsTopics;
-    if (!topics) {
-      console.warn('[EventListener] No HCS topics in config — skipping HCS polling');
+    if (!this.config?.hcsTopics) {
+      console.warn('[EventListener] No HCS topics in config — skipping event polling');
       return;
     }
 
-    // Discovery topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.discovery, 'discovery');
-    }, HCS_POLL_MS));
+    // Initial poll to reduce startup latency.
+    this._pollCloudflareEvents().catch((err) => {
+      console.warn('[EventListener] Initial Cloudflare event poll failed:', err.message);
+    });
 
-    // AuditLog topic
     this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.auditLog, 'auditLog');
-    }, HCS_POLL_MS));
-
-    // AgentComms topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.agentComms, 'agentComms');
+      this._pollCloudflareEvents();
     }, HCS_POLL_MS));
   }
 
-  async _pollHCSTopic(topicId, topicKey) {
+  async _pollCloudflareEvents() {
     try {
-      if (this.onlyTestDiscoveries && !this.hcsHistorySkipped[topicKey]) {
-        const history = await this.fetchHCSMessages(topicId, 0);
-        if (history.length > 0) {
-          this.lastSeq[topicKey] = history[history.length - 1].sequenceNumber;
+      const messages = await this.fetchCloudflareEvents();
+
+      if (this.onlyTestDiscoveries && !this.eventsBacklogSkipped) {
+        for (const msg of messages) {
+          this.seenEventIds.add(msg.eventId);
         }
-        this.hcsHistorySkipped[topicKey] = true;
+        this.eventsBacklogSkipped = true;
         return;
       }
 
-      const messages = await this.fetchHCSMessages(topicId, this.lastSeq[topicKey]);
       if (messages.length === 0) return;
 
       for (const msg of messages) {
-        this.lastSeq[topicKey] = msg.sequenceNumber;
-        this._routeHCSMessage(topicKey, msg);
+        if (this.seenEventIds.has(msg.eventId)) continue;
+        this._rememberEventId(msg.eventId);
+        this._routeHCSMessage(msg.topicKey, msg);
       }
     } catch (err) {
-      console.warn(`[EventListener] HCS poll error (${topicKey}):`, err.message);
+      console.warn('[EventListener] Cloudflare events poll error:', err.message);
     }
   }
 
-  /**
-   * Fetch new HCS messages from the mirror node REST API.
-   * Returns array of { sequenceNumber, timestamp, parsedData }.
-   */
-  async fetchHCSMessages(topicId, afterSequence) {
-    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages?order=desc&limit=100`;
+  _rememberEventId(eventId) {
+    this.seenEventIds.add(eventId);
+    if (this.seenEventIds.size <= this.maxSeenEventIds) return;
 
+    const oldest = this.seenEventIds.values().next().value;
+    if (oldest) {
+      this.seenEventIds.delete(oldest);
+    }
+  }
+
+  async fetchCloudflareEvents() {
+    const url = `${EVENTS_API_BASE_URL}/events?limit=${EVENT_FETCH_LIMIT}`;
     const res = await fetch(url);
     if (!res.ok) {
-      // 404 is normal for topics with no messages yet
-      if (res.status === 404) return [];
-      throw new Error(`Mirror node responded ${res.status}`);
+      throw new Error(`Events API responded ${res.status}`);
     }
 
     const json = await res.json();
-    const items = (json.messages || [])
-      .filter((m) => Number(m.sequence_number) > Number(afterSequence || 0))
-      .sort((a, b) => Number(a.sequence_number) - Number(b.sequence_number));
+    const events = Array.isArray(json?.data?.events) ? json.data.events : [];
 
-    return items.map((m) => {
-      let parsedData = {};
-      try {
-        const decoded = atob(m.message);
-        parsedData = JSON.parse(decoded);
-      } catch {
-        parsedData = { raw: m.message };
-      }
+    return events
+      .filter((event) => typeof event?.id === 'string' && event.id.length > 0)
+      .map((event) => {
+        const rawMessage = event?.rawMessage && typeof event.rawMessage === 'object'
+          ? event.rawMessage
+          : null;
+        const parsedData = rawMessage || {
+          type: event?.messageType || 'UNKNOWN',
+          agentId: event?.agentId || 'unknown',
+          timestamp: event?.messageTimestamp || Date.now(),
+          payload: event?.payload && typeof event.payload === 'object' ? event.payload : {},
+        };
+        const topicKey = this._topicKeyFromTopicId(event?.topicId);
+        this.syntheticSequence += 1;
+
+        return {
+          eventId: event.id,
+          topicKey,
+          sequenceNumber: this.syntheticSequence,
+          timestamp: event?.receivedAt || String(Date.now()),
+          parsedData,
+        };
+      })
+      .filter((event) => event.topicKey !== null)
+      .sort((a, b) => {
+        const aTs = Number(new Date(a.timestamp).getTime()) || 0;
+        const bTs = Number(new Date(b.timestamp).getTime()) || 0;
+        return aTs - bTs;
+      });
+  }
+
+  _topicKeyFromTopicId(topicId) {
+    const normalized = String(topicId || '');
+    const topics = this.config?.hcsTopics || {};
+    if (normalized === topics.discovery) return 'discovery';
+    if (normalized === topics.auditLog) return 'auditLog';
+    if (normalized === topics.agentComms) return 'agentComms';
+    return null;
+  }
+
+  /**
+   * Compatibility shim for older tests/imports.
+   * Returns the same shape as `fetchCloudflareEvents()`.
+   */
+  async fetchHCSMessages() {
+    return this.fetchCloudflareEvents().map((event) => {
       return {
-        sequenceNumber: m.sequence_number,
-        timestamp: m.consensus_timestamp,
-        parsedData,
+        sequenceNumber: event.sequenceNumber,
+        timestamp: event.timestamp,
+        parsedData: event.parsedData,
       };
     });
   }
