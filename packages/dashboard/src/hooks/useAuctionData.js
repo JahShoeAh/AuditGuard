@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useContractRead } from './useContractRead';
 import useStore from '../store';
 import { normalizeAuctionType } from '../utils/auction-type';
@@ -57,6 +57,9 @@ export function buildAuctionRows({
     }
   }
 
+  // Completed jobs stay visible this long so winners have time to render.
+  const WINNER_GRACE_MS = 8_000;
+
   const includeJob = (job) => {
     const jobId = String(job.jobId);
     const deadlineSec = normalizeDeadlineSeconds(job.auctionDeadline);
@@ -74,7 +77,14 @@ export function buildAuctionRows({
     }
 
     // Strict live mode: live feed only shows currently active, non-expired auctions.
-    if (hasTerminalStatus) return false;
+    if (hasTerminalStatus) {
+      // Keep completed jobs visible briefly so winners state is shown before the card disappears.
+      if (job.terminalStatus === 'completed') {
+        const endedAtMs = normalizeTimestampMs(job.endedAt);
+        return endedAtMs != null && (nowMs - endedAtMs) < WINNER_GRACE_MS;
+      }
+      return false;
+    }
     if (!deadlineSec) return false;
     if (deadlineSec <= nowSec) return false;
     if (activeIds.has(jobId)) return true;
@@ -135,6 +145,15 @@ export function useAuctionData() {
     ? activeJobIds.map((id) => String(id))
     : [];
 
+  // Drive re-renders while completed jobs are in the grace window so they auto-expire.
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const hasCompleted = Object.values(activeJobs).some((j) => j?.terminalStatus === 'completed');
+    if (!hasCompleted) return;
+    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 2_000);
+    return () => clearInterval(id);
+  }, [activeJobs]);
+
   // Merge store data into enriched auction objects
   const auctions = useMemo(() => {
     return buildAuctionRows({
@@ -143,8 +162,9 @@ export function useAuctionData() {
       winners,
       activeJobIds: normalizedActiveJobIds,
       useMockEvents,
+      nowSec,
     });
-  }, [activeJobs, bids, winners, normalizedActiveJobIds, useMockEvents]);
+  }, [activeJobs, bids, winners, normalizedActiveJobIds, useMockEvents, nowSec]);
 
   return {
     auctions,
