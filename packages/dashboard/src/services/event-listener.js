@@ -144,6 +144,11 @@ export class EventListenerService {
     this._intervals = [];
     this._running = false;
 
+    console.log(
+      `[EventListener] mode=${this.sourceMode} replay=${this.hcsReplayMode} ` +
+      `testFilter=${this.onlyTestDiscoveries ? "on" : "off"} ` +
+      `allowlist=${this.allowedDiscoveryContracts.size}`
+    );
     if (this.onlyTestDiscoveries) {
       console.log(
         `[EventListener] TEST_MODE discovery filter enabled ` +
@@ -482,8 +487,52 @@ export class EventListenerService {
     };
 
     if (topicKey === 'discovery') {
+      const normalizedRiskScore = Number(
+        payload.initialRiskScore
+        ?? payload.riskScore
+        ?? entry.initialRiskScore
+        ?? entry.riskScore
+        ?? 0
+      );
+      const normalizedLineCount = Number(
+        payload.estimatedLineCount
+        ?? payload.estimatedLOC
+        ?? entry.estimatedLineCount
+        ?? entry.estimatedLOC
+        ?? 0
+      );
+      const classifierMetadata =
+        (payload.classifier && typeof payload.classifier === "object")
+          ? payload.classifier
+          : (
+            payload.riskSource != null ||
+            payload.riskModel != null ||
+            payload.topRiskFactors != null ||
+            payload.evmType != null ||
+            payload.isProxy != null
+          )
+            ? {
+              riskSource: payload.riskSource ?? null,
+              riskModel: payload.riskModel ?? null,
+              topRiskFactors: Array.isArray(payload.topRiskFactors) ? payload.topRiskFactors : [],
+              evmType: payload.evmType ?? null,
+              isProxy: payload.isProxy ?? null,
+              contractName: payload.contractName ?? null,
+              standards: Array.isArray(payload.standards) ? payload.standards : [],
+              sourceOrigin: payload.sourceOrigin ?? null,
+            }
+            : null;
+      const normalizedDiscovery = {
+        ...entry,
+        riskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
+        initialRiskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
+        estimatedLOC: Number.isFinite(normalizedLineCount) ? normalizedLineCount : 0,
+        estimatedLineCount: Number.isFinite(normalizedLineCount) ? normalizedLineCount : 0,
+        classifier: classifierMetadata,
+      };
+
       if (this.onlyTestDiscoveries) {
-        const contractAddress = String(entry.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
+        const contractAddress = String(normalizedDiscovery.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
         if (!contractAddress) return;
         if (
           this.allowedDiscoveryContracts.size > 0 &&
@@ -495,9 +544,9 @@ export class EventListenerService {
         this.seenTestDiscoveries.add(contractAddress);
       }
 
-      this.store.addDiscovery(entry);
+      this.store.addDiscovery(normalizedDiscovery);
       this.store.incrementStat('totalDiscoveries');
-      this._addLogEntry({ ...entry, source: 'discovery' }, eventId);
+      this._addLogEntry({ ...normalizedDiscovery, source: 'discovery' }, eventId);
       return;
     }
 
@@ -609,6 +658,27 @@ export class EventListenerService {
       }
 
       const jobId = String(payload.jobId ?? sequenceNumber);
+      const classifierMetadata =
+        (payload.classifier && typeof payload.classifier === "object")
+          ? payload.classifier
+          : (
+            payload.riskSource != null ||
+            payload.riskModel != null ||
+            payload.topRiskFactors != null ||
+            payload.evmType != null ||
+            payload.isProxy != null
+          )
+            ? {
+              riskSource: payload.riskSource ?? null,
+              riskModel: payload.riskModel ?? null,
+              topRiskFactors: Array.isArray(payload.topRiskFactors) ? payload.topRiskFactors : [],
+              evmType: payload.evmType ?? null,
+              isProxy: payload.isProxy ?? null,
+              contractName: payload.contractName ?? null,
+              standards: Array.isArray(payload.standards) ? payload.standards : [],
+              sourceOrigin: payload.sourceOrigin ?? null,
+            }
+            : null;
       this.store.setJob(jobId, {
         jobId,
         contractAddress: payload.contractAddress,
@@ -618,6 +688,7 @@ export class EventListenerService {
         budgetFormatted: parseGuardAmount(payload.budget ?? 0),
         initialRiskScore: Number(payload.riskScore ?? 0),
         lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        classifier: classifierMetadata,
         postedAt: Date.now(),
       });
       this.store.incrementStat('totalAuctions');
@@ -697,6 +768,18 @@ export class EventListenerService {
 
     if (topicKey === 'agentComms' && parsedData.type === 'AUCTION_INVITE') {
       const jobId = String(payload.jobId ?? sequenceNumber);
+      if (payload.classifierHints && typeof payload.classifierHints === 'object') {
+        const existing = this.store.activeJobs?.[jobId] || {};
+        this.store.setJob?.(jobId, {
+          ...existing,
+          jobId,
+          contractAddress: existing.contractAddress ?? payload.contractAddress,
+          classifier: {
+            ...(existing.classifier || {}),
+            ...payload.classifierHints,
+          },
+        });
+      }
       const targetedIds = Array.isArray(payload.eligibleAgentIds)
         ? payload.eligibleAgentIds.map((value) => String(value))
         : [];

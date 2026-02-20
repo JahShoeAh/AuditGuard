@@ -29,6 +29,10 @@
     "test:zg:integration": "node --import tsx test-zg-integration.ts",
     "test:zg:model-update": "node --import tsx test-model-update.ts"
   },
+  "engines": {
+    "node": "24.0.2",
+    "npm": "11.3.0"
+  },
   "dependencies": {
     "@0glabs/0g-serving-broker": "^0.7.1",
     "@anthropic-ai/sdk": "^0.38.0",

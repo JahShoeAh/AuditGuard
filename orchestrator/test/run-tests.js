@@ -24,11 +24,13 @@ function makeMocks(opts = {}) {
   } = opts;
   const auditLogMessages = [];
   const agentCommsMessages = [];
+  const discoveryMessages = [];
   const cancelledJobs = [];
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
     publishAuditLog: async (msg) => auditLogMessages.push(msg),
+    publishDiscovery: async (msg) => discoveryMessages.push(msg),
     subscribeDiscovery() {},
     subscribeAgentComms() {},
     subscribeAuditLog() {},
@@ -83,7 +85,7 @@ function makeMocks(opts = {}) {
     markJobCompleted: async () => {},
   };
 
-  return { hcs, contracts, auditLogMessages, agentCommsMessages, inft, cancelledJobs };
+  return { hcs, contracts, auditLogMessages, agentCommsMessages, discoveryMessages, inft, cancelledJobs };
 }
 
 async function testAgentRegistration() {
@@ -204,6 +206,50 @@ async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
     const summary = auditLogMessages.find((m) => m.type === "AUCTION_INVITE_SUMMARY");
     assert.ok(summary, "summary should still be emitted");
     assert.equal(summary.payload.excludedByReason.active_check_unavailable, 1);
+  } finally {
+    if (previousRetries == null) delete process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
+    else process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = previousRetries;
+  }
+}
+
+async function testInviteUsesStaleActiveCacheWhenRpcUnavailable() {
+  const previousRetries = process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
+  try {
+    process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = "1";
+    const log = mockLog();
+    const roster = new Roster(log);
+    roster.upsert({
+      agentId: "a1",
+      evmAddress: ADDR_AGENT_A,
+      stake: 50,
+      reputation: 80,
+      specializations: ["lending"],
+    });
+    const { hcs, contracts, agentCommsMessages } = makeMocks({ activeCheckThrows: true });
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+    orch.onchainActiveCacheTtlMs = 0; // force a live check attempt
+    orch.onchainActiveStaleFallbackTtlMs = 300000;
+    orch.onchainActiveCache.set(ADDR_AGENT_A.toLowerCase(), {
+      active: true,
+      checkedAt: Date.now() - 10_000,
+    });
+
+    await orch.handleDiscovery({
+      type: MessageType.CONTRACT_DISCOVERED,
+      agentId: "scanner",
+      timestamp: now(),
+      payload: {
+        contractAddress: "0xfeed00000000000000000000000000000000000f",
+        contractType: "lending",
+        budget: 100,
+        riskScore: 65,
+        estimatedLOC: 1400,
+      },
+    });
+
+    const invite = agentCommsMessages.find((m) => m.type === MessageType.AUCTION_INVITE);
+    assert.ok(invite, "stale active cache fallback should preserve invite batch");
+    assert.deepEqual(invite.payload.eligibleAgentIds, ["a1"]);
   } finally {
     if (previousRetries == null) delete process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
     else process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = previousRetries;
@@ -695,6 +741,95 @@ async function testSkipSettlementWhenAlreadySettled() {
   assert.ok(!auditLogMessages.some((m) => m.type === "PAYMENT_SETTLED"), "no settlement log expected");
 }
 
+async function testScheduledEnrichmentPublishesDiscovery() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, discoveryMessages } = makeMocks();
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    scheduledEnrichmentClient: async () => ({
+      contractType: "lending",
+      riskScore: 78,
+      estimatedLOC: 3200,
+      classifier: {
+        riskSource: "0g",
+        riskModel: "qwen/qwen-2.5-7b-instruct",
+        topRiskFactors: ["reentrancy"],
+        evmType: "erc20",
+        isProxy: false,
+      },
+    }),
+  });
+
+  const published = await orch.publishScheduledDiscoveryWithEnrichment({
+    contractAddress: ADDR_JOB,
+    scheduleAddress: "0x0000000000000000000000000000000000000f00",
+    triggeredAt: Math.floor(Date.now() / 1000),
+    timesTriggered: 1,
+    retryCount: 0,
+  });
+
+  assert.equal(published, true, "scheduled enrichment success should publish discovery");
+  assert.equal(discoveryMessages.length, 1, "should publish one discovery message");
+  assert.equal(discoveryMessages[0].payload.contractType, "lending");
+  assert.equal(discoveryMessages[0].payload.riskScore, 78);
+  assert.equal(discoveryMessages[0].payload.classifier.riskSource, "0g");
+}
+
+async function testScheduledEnrichmentFailureQueuesRetry() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages, discoveryMessages } = makeMocks();
+  let attempts = 0;
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    scheduledEnrichmentClient: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("simulated enrichment outage");
+      return {
+        contractType: "vault",
+        riskScore: 64,
+        estimatedLOC: 2200,
+        classifier: null,
+      };
+    },
+  });
+  orch.scheduledEnrichmentMaxAttempts = 1;
+
+  const payload = {
+    contractAddress: "0xfeed0000000000000000000000000000000000ee",
+    scheduleAddress: "0x0000000000000000000000000000000000000f01",
+    triggeredAt: Math.floor(Date.now() / 1000),
+    timesTriggered: 2,
+    retryCount: 1,
+  };
+
+  const published = await orch.publishScheduledDiscoveryWithEnrichment(payload);
+  assert.equal(published, false, "failed enrichment should not publish placeholder discovery");
+  assert.equal(discoveryMessages.length, 0, "no discovery should be published on enrichment failure");
+  assert.ok(
+    auditLogMessages.some((m) => m.type === "DISCOVERY_ENRICHMENT_FAILED"),
+    "failure should emit DISCOVERY_ENRICHMENT_FAILED telemetry"
+  );
+
+  orch.queueScheduledEnrichment(payload);
+  const queuedKey = orch.scheduledEnrichmentQueueKey(payload.contractAddress, payload.scheduleAddress);
+  const queued = orch.scheduledEnrichmentQueue.get(queuedKey);
+  assert.ok(queued, "failed enrichment should be queued for retry");
+  queued.nextAttemptAt = Date.now() - 1;
+  await orch.processScheduledEnrichmentQueue();
+  assert.equal(discoveryMessages.length, 1, "queued retry should publish discovery after enrichment recovers");
+  assert.equal(orch.scheduledEnrichmentQueue.size, 0, "queue should clear after successful retry");
+}
+
 async function run() {
   const tests = [
     ["agent registration", testAgentRegistration],
@@ -702,6 +837,7 @@ async function run() {
     ["single invite batch per job", testSingleInviteBatchPerJob],
     ["discovery dedupe", testDiscoveryDedupeSkipsDuplicate],
     ["invite filter fail-closed active check", testInviteFilterFailClosedOnUnavailableActiveCheck],
+    ["invite uses stale cache when active RPC check unavailable", testInviteUsesStaleActiveCacheWhenRpcUnavailable],
     ["invite summary telemetry", testInviteSummaryTelemetry],
     ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],
     ["strict fail-fast on create failure", testStrictFailFastOnCreateFailure],
@@ -715,6 +851,8 @@ async function run() {
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],
     ["settlement/report/alert", testSettlementOnReport],
     ["skip settlement when already settled", testSkipSettlementWhenAlreadySettled],
+    ["scheduled enrichment publishes discovery", testScheduledEnrichmentPublishesDiscovery],
+    ["scheduled enrichment failure queues retry", testScheduledEnrichmentFailureQueuesRetry],
   ];
 
   let passed = 0;

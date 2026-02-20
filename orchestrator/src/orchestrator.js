@@ -5,6 +5,7 @@ import { ContractClient } from "./contract-client.js";
 import { Roster } from "./roster.js";
 import { createLogger } from "./logger.js";
 import { InftBridge } from "./inft-bridge.js";
+import { enrichScheduledDiscovery } from "./scheduled-enrichment-client.js";
 import { MessageType, now } from "../../agents/shared/types.js";
 import { parseUnits } from "ethers";
 
@@ -47,6 +48,9 @@ export class OrchestratorAgent {
     this.rosterBootstrapOnchain = (process.env.ORCHESTRATOR_ROSTER_BOOTSTRAP_ONCHAIN ?? "true") !== "false";
     this.filterInvitesOnchainActive = (process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE ?? "true") !== "false";
     this.onchainActiveCacheTtlMs = Number(process.env.ORCHESTRATOR_ACTIVE_CACHE_TTL_MS ?? "15000");
+    this.onchainActiveStaleFallbackTtlMs = Number(
+      process.env.ORCHESTRATOR_ACTIVE_STALE_CACHE_TTL_MS ?? "300000"
+    );
     this.activeCheckRetries = Number(process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES ?? "3");
     this.activeCheckFailOpen = (process.env.ORCHESTRATOR_ACTIVE_CHECK_FAIL_OPEN ?? "false") === "true";
     this.discoveryDedupeEnabled = (process.env.ORCHESTRATOR_ENABLE_DISCOVERY_DEDUPE ?? "true") !== "false";
@@ -58,6 +62,19 @@ export class OrchestratorAgent {
     this.inflightCloseJobs = new Map();
     this.inflightSelectWinnerJobs = new Map();
     this.reconcileCloseCooldown = new Map();
+    this.scheduledEnrichmentClient = opts.scheduledEnrichmentClient ?? enrichScheduledDiscovery;
+    this.scheduledEnrichmentMaxAttempts = Number(
+      process.env.ORCHESTRATOR_SCHEDULED_ENRICHMENT_MAX_ATTEMPTS ?? "2"
+    );
+    this.scheduledEnrichmentTimeoutMs = Number(
+      process.env.ORCHESTRATOR_SCHEDULED_ENRICHMENT_TIMEOUT_MS ?? "45000"
+    );
+    this.scheduledEnrichmentRetryIntervalMs = Number(
+      process.env.ORCHESTRATOR_SCHEDULED_ENRICHMENT_RETRY_INTERVAL_MS ?? "15000"
+    );
+    this.scheduledEnrichmentQueue = new Map();
+    this.scheduledEnrichmentTimer = null;
+    this.scheduledEnrichmentInFlight = false;
   }
 
   buildContractClient() {
@@ -282,6 +299,7 @@ export class OrchestratorAgent {
     this.subscribeContractEvents();
     this.subscribeSchedulerEvents();  // HSS audit triggers
     this.startStaleAuctionReconcileLoop();
+    this.startScheduledEnrichmentRetryLoop();
     if (this.enablePing) this.startPingLoop();
     this.log.info("Orchestrator started (isolated branch)");
   }
@@ -308,6 +326,69 @@ export class OrchestratorAgent {
     if (typeof value === "bigint") return Number(value);
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  extractClassifierMetadata(payload = {}) {
+    const classifier =
+      payload?.classifier && typeof payload.classifier === "object"
+        ? payload.classifier
+        : {};
+    const riskSource = classifier.riskSource ?? payload.riskSource ?? null;
+    const riskModel = classifier.riskModel ?? payload.riskModel ?? null;
+    const topRiskFactorsRaw = classifier.topRiskFactors ?? payload.topRiskFactors ?? [];
+    const topRiskFactors = Array.isArray(topRiskFactorsRaw) ? topRiskFactorsRaw : [];
+    const evmType = classifier.evmType ?? payload.evmType ?? null;
+    const isProxy = classifier.isProxy ?? payload.isProxy ?? null;
+    const standardsRaw = classifier.standards ?? payload.standards ?? [];
+    const standards = Array.isArray(standardsRaw) ? standardsRaw : [];
+    const contractName = classifier.contractName ?? payload.contractName ?? null;
+    const proxyTarget = classifier.proxyTarget ?? payload.proxyTarget ?? null;
+    const sourceOrigin = classifier.sourceOrigin ?? payload.sourceOrigin ?? null;
+    const riskDimensions = classifier.riskDimensions ?? payload.riskDimensions ?? null;
+    const riskRationale = classifier.riskRationale ?? payload.riskRationale ?? null;
+    const riskLatencyMs = classifier.riskLatencyMs ?? payload.riskLatencyMs ?? null;
+    const riskComponents = classifier.riskComponents ?? payload.riskComponents ?? null;
+
+    const hasMetadata =
+      riskSource != null ||
+      riskModel != null ||
+      topRiskFactors.length > 0 ||
+      evmType != null ||
+      isProxy != null ||
+      contractName != null ||
+      proxyTarget != null ||
+      standards.length > 0 ||
+      sourceOrigin != null;
+
+    if (!hasMetadata) return null;
+    return {
+      riskSource,
+      riskModel,
+      topRiskFactors,
+      evmType,
+      isProxy,
+      standards,
+      contractName,
+      proxyTarget,
+      sourceOrigin,
+      riskDimensions,
+      riskRationale,
+      riskLatencyMs,
+      riskComponents,
+    };
+  }
+
+  buildClassifierHints(classifierMetadata) {
+    if (!classifierMetadata) return null;
+    return {
+      riskSource: classifierMetadata.riskSource ?? null,
+      riskModel: classifierMetadata.riskModel ?? null,
+      topRiskFactors: Array.isArray(classifierMetadata.topRiskFactors)
+        ? classifierMetadata.topRiskFactors
+        : [],
+      evmType: classifierMetadata.evmType ?? null,
+      isProxy: classifierMetadata.isProxy ?? null,
+    };
   }
 
   hasOpenJobForContract(contractAddress) {
@@ -449,6 +530,23 @@ export class OrchestratorAgent {
       }
     }
 
+    // If live RPC is transiently unavailable, reuse stale on-chain cache
+    // so invite eligibility doesn't collapse to zero for healthy agents.
+    if (cached) {
+      const cacheAgeMs = Date.now() - cached.checkedAt;
+      if (cacheAgeMs <= this.onchainActiveStaleFallbackTtlMs) {
+        this.log.warn(
+          `Invite-time on-chain active check failed for ${normalized}; using stale cache ` +
+          `(age=${cacheAgeMs}ms, active=${cached.active}): ${lastError}`
+        );
+        return {
+          active: cached.active,
+          unavailable: true,
+          reason: `stale_cache_fallback:${lastError}`,
+        };
+      }
+    }
+
     this.log.warn(
       `Invite-time on-chain active check failed for ${normalized}: ${lastError}`
     );
@@ -574,6 +672,7 @@ export class OrchestratorAgent {
   async handleDiscovery(msg) {
     await this.rosterBootstrapPromise.catch(() => { });
     const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
+    const classifierMetadata = this.extractClassifierMetadata(msg.payload || {});
     if (this.shouldDedupeDiscovery(contractAddress)) {
       this.log.info(`Discovery deduped for ${String(contractAddress).slice(0, 12)}…`);
       await this.hcs.publishAuditLog({
@@ -620,6 +719,7 @@ export class OrchestratorAgent {
     this.setJobByKey(jobId, {
       contractAddress,
       contractType,
+      classifier: classifierMetadata,
       bidders: [],
       openedAt: now(),
       winners: [],
@@ -789,11 +889,16 @@ export class OrchestratorAgent {
           riskScore: riskScore ?? 0,
           estimatedLOC: estimatedLOC ?? 0,
           onChain: auctionOpenedOnChain,
+          ...(classifierMetadata ? { classifier: classifierMetadata } : {}),
         },
       });
     } catch (err) {
       this.log.warn(`Failed to publish JOB_CREATED for ${contractAddress?.slice(0, 12)}: ${err}`);
     }
+
+    // Avoid startup races where discoveries arrive before on-chain roster hydration
+    // has populated active agents.
+    await this.rosterBootstrapPromise.catch(() => { });
 
     const eligibility = typeof this.roster.evaluateEligibility === "function"
       ? this.roster.evaluateEligibility(contractType)
@@ -803,6 +908,33 @@ export class OrchestratorAgent {
     const onchainFiltered = await this.filterEligibleAgentsOnChain(eligible);
     eligible = onchainFiltered.eligible;
     excludedAgents.push(...onchainFiltered.excluded);
+
+    // One-shot repair path: if eligibility collapses to zero, resync roster
+    // from on-chain registry and evaluate again before giving up.
+    if (eligible.length === 0 && this.rosterBootstrapOnchain) {
+      try {
+        await this.syncRosterFromRegistry();
+        const refreshedEligibility = typeof this.roster.evaluateEligibility === "function"
+          ? this.roster.evaluateEligibility(contractType)
+          : { eligible: this.roster.eligibleFor(contractType), excluded: [] };
+        const refreshedOnchainFiltered = await this.filterEligibleAgentsOnChain(
+          Array.isArray(refreshedEligibility.eligible) ? refreshedEligibility.eligible : []
+        );
+        if (refreshedOnchainFiltered.eligible.length > 0) {
+          eligible = refreshedOnchainFiltered.eligible;
+          excludedAgents.length = 0;
+          excludedAgents.push(
+            ...(Array.isArray(refreshedEligibility.excluded) ? refreshedEligibility.excluded : []),
+            ...refreshedOnchainFiltered.excluded
+          );
+          this.log.info(`Invite eligibility recovered after on-chain roster resync for job ${jobId}`);
+        }
+      } catch (err) {
+        this.log.warn(
+          `Invite eligibility roster resync failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
     const excludedByReason = {};
     for (const item of excludedAgents) {
       for (const reason of item.reasons ?? []) {
@@ -833,7 +965,7 @@ export class OrchestratorAgent {
       this.log.warn(`Failed to publish AUCTION_INVITE_SUMMARY for job ${jobId}: ${err}`);
     }
     try {
-      await this.inviteAgents(jobId, eligible, msg.payload);
+      await this.inviteAgents(jobId, eligible, msg.payload, classifierMetadata);
     } catch (err) {
       this.log.warn(`Failed to publish AUCTION_INVITE messages for job ${jobId}: ${err}`);
     }
@@ -1280,7 +1412,7 @@ export class OrchestratorAgent {
     }
   }
 
-  async inviteAgents(jobId, agents, payload) {
+  async inviteAgents(jobId, agents, payload, classifierMetadata = null) {
     if (!Array.isArray(agents) || agents.length === 0) {
       this.log.info(`No eligible agents to invite for job ${jobId}`);
       return;
@@ -1295,6 +1427,11 @@ export class OrchestratorAgent {
       estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
       estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
     };
+    const effectiveClassifier = classifierMetadata || this.extractClassifierMetadata(payload || {});
+    const classifierHints = this.buildClassifierHints(effectiveClassifier);
+    if (classifierHints) {
+      invitePayload.classifierHints = classifierHints;
+    }
     const eligibleAgentIds = agents.map((agent) => String(agent?.agentId ?? "")).filter(Boolean);
     const eligibleEvmAddresses = agents.map((agent) => this.normalizeAddress(agent?.evmAddress)).filter(Boolean);
     const inviteBatchId = `invite:${String(jobId)}:${Date.now()}`;
@@ -1792,6 +1929,132 @@ export class OrchestratorAgent {
     }
   }
 
+  scheduledEnrichmentQueueKey(contractAddress, scheduleAddress) {
+    return `${String(contractAddress || "").toLowerCase()}::${String(scheduleAddress || "").toLowerCase()}`;
+  }
+
+  async runScheduledEnrichment(contractAddress) {
+    let lastError = null;
+    const maxAttempts = Math.max(1, this.scheduledEnrichmentMaxAttempts);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.scheduledEnrichmentClient(contractAddress, {
+          timeoutMs: this.scheduledEnrichmentTimeoutMs,
+        });
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  async publishScheduledDiscoveryWithEnrichment(payload) {
+    const addr = String(payload.contractAddress);
+    try {
+      const enrichment = await this.runScheduledEnrichment(addr);
+      const classifierMetadata = this.extractClassifierMetadata({
+        ...(enrichment?.classifier || {}),
+      });
+      const discoveryMsg = {
+        type: "CONTRACT_DISCOVERED",
+        agentId: "audit-scheduler",
+        timestamp: now(),
+        payload: {
+          contractAddress: addr,
+          contractType: enrichment?.contractType ?? "unknown",
+          budget: CONFIG.payments.totalGuard,
+          riskScore: Number(enrichment?.riskScore ?? 0),
+          estimatedLOC: Number(enrichment?.estimatedLOC ?? 0),
+          triggeredByHSS: true,
+          scheduleAddress: String(payload.scheduleAddress),
+          deployerAddress: "HSS_SCHEDULE",
+          ...(classifierMetadata ? { classifier: classifierMetadata } : {}),
+        },
+      };
+      await this.hcs.publishDiscovery(discoveryMsg);
+      this.log.info(
+        `Published enriched HSS discovery for ${addr.slice(0, 12)}… ` +
+        `(type=${discoveryMsg.payload.contractType}, risk=${discoveryMsg.payload.riskScore})`
+      );
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        `Scheduled enrichment failed for ${addr.slice(0, 12)}… ` +
+        `(attempt=${payload.retryCount ?? 0}): ${message}`
+      );
+      await this.hcs.publishAuditLog({
+        type: "DISCOVERY_ENRICHMENT_FAILED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          contractAddress: addr,
+          scheduleAddress: String(payload.scheduleAddress),
+          triggeredAt: Number(payload.triggeredAt),
+          timesTriggered: Number(payload.timesTriggered),
+          retryCount: Number(payload.retryCount ?? 0),
+          error: message,
+        },
+      });
+      return false;
+    }
+  }
+
+  queueScheduledEnrichment(payload) {
+    const key = this.scheduledEnrichmentQueueKey(payload.contractAddress, payload.scheduleAddress);
+    const existing = this.scheduledEnrichmentQueue.get(key);
+    const retryCount = Math.max(Number(payload.retryCount ?? 0), Number(existing?.retryCount ?? 0));
+    const queued = {
+      ...payload,
+      retryCount,
+      nextAttemptAt: Date.now() + this.scheduledEnrichmentRetryIntervalMs,
+    };
+    this.scheduledEnrichmentQueue.set(key, queued);
+    this.log.info(
+      `Scheduled enrichment queued for ${String(payload.contractAddress).slice(0, 12)}… ` +
+      `(retryCount=${queued.retryCount}, queueSize=${this.scheduledEnrichmentQueue.size})`
+    );
+  }
+
+  async processScheduledEnrichmentQueue() {
+    if (this.scheduledEnrichmentInFlight || this.scheduledEnrichmentQueue.size === 0) return;
+    this.scheduledEnrichmentInFlight = true;
+    try {
+      const nowMs = Date.now();
+      const entries = Array.from(this.scheduledEnrichmentQueue.entries());
+      for (const [key, payload] of entries) {
+        if (Number(payload.nextAttemptAt ?? 0) > nowMs) continue;
+        const success = await this.publishScheduledDiscoveryWithEnrichment(payload);
+        if (success) {
+          this.scheduledEnrichmentQueue.delete(key);
+          continue;
+        }
+        this.scheduledEnrichmentQueue.set(key, {
+          ...payload,
+          retryCount: Number(payload.retryCount ?? 0) + 1,
+          nextAttemptAt: Date.now() + this.scheduledEnrichmentRetryIntervalMs,
+        });
+      }
+    } finally {
+      this.scheduledEnrichmentInFlight = false;
+    }
+  }
+
+  startScheduledEnrichmentRetryLoop() {
+    if (this.scheduledEnrichmentTimer) return;
+    this.scheduledEnrichmentTimer = setInterval(() => {
+      this.processScheduledEnrichmentQueue().catch((err) => {
+        this.log.warn(
+          `Scheduled enrichment retry loop error: ${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }, this.scheduledEnrichmentRetryIntervalMs);
+    this.scheduledEnrichmentTimer.unref?.();
+  }
+
   /**
    * Subscribe to AuditScheduler.AuditTriggered events.
    * This is where HSS integration closes the loop:
@@ -1830,26 +2093,20 @@ export class OrchestratorAgent {
             },
           });
 
-          // Publish discovery event to HCS so all components (including iNFT listener) see it
-          // This triggers the standard pipeline: iNFT minting -> Orchestrator handleDiscovery -> Auction
-          const discoveryMsg = {
-            type: "CONTRACT_DISCOVERED",
-            agentId: "audit-scheduler",
-            timestamp: now(),
-            payload: {
-              contractAddress: addr,
-              contractType: "scheduled_audit",
-              budget: CONFIG.payments.totalGuard,
-              riskScore: 50,
-              estimatedLOC: 0,
-              triggeredByHSS: true,
-              scheduleAddress: String(scheduleAddress),
-              deployerAddress: "HSS_SCHEDULE",
-            },
+          const enrichmentPayload = {
+            contractAddress: addr,
+            scheduleAddress: String(scheduleAddress),
+            triggeredAt: Number(triggeredAt),
+            timesTriggered: Number(timesTriggered),
+            retryCount: 0,
           };
-
-          await this.hcs.publishDiscovery(discoveryMsg);
-          this.log.info("Published HSS discovery event to HCS (triggers iNFT minting + auction)");
+          const published = await this.publishScheduledDiscoveryWithEnrichment(enrichmentPayload);
+          if (!published) {
+            this.queueScheduledEnrichment({
+              ...enrichmentPayload,
+              retryCount: 1,
+            });
+          }
         }
       );
 

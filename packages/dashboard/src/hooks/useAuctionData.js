@@ -125,8 +125,15 @@ export function useAuctionData() {
     useMockEvents ? null : auctionContract,
     'getActiveJobs',
     [],
-    { refetchInterval: activeJobsPollMs },
+    {
+      refetchInterval: activeJobsPollMs,
+      structuralSharing: false,
+    },
   );
+
+  const normalizedActiveJobIds = Array.isArray(activeJobIds)
+    ? activeJobIds.map((id) => String(id))
+    : [];
 
   // Merge store data into enriched auction objects
   const auctions = useMemo(() => {
@@ -134,10 +141,10 @@ export function useAuctionData() {
       activeJobs,
       bids,
       winners,
-      activeJobIds,
+      activeJobIds: normalizedActiveJobIds,
       useMockEvents,
     });
-  }, [activeJobs, bids, winners, activeJobIds, useMockEvents]);
+  }, [activeJobs, bids, winners, normalizedActiveJobIds, useMockEvents]);
 
   return {
     auctions,
