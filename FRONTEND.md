@@ -2263,10 +2263,6 @@ npm run preview   # Preview built dist
 npm test          # Run vitest
 ```
 
-Live stack defaults:
-- `npm run dev` / `npm run dev:all` starts live ingestion mode (no forced `VITE_TEST_MODE` filtering).
-- `npm run dev:all:test` and `npm run start:all:test` explicitly enable `VITE_TEST_MODE=true`.
-
 ### Vite Configuration
 
 **File:** `vite.config.js`
@@ -2304,7 +2300,7 @@ export default defineConfig({
 VITE_HEDERA_NETWORK=testnet
 VITE_HEDERA_JSON_RPC=https://testnet.hashio.io/api
 VITE_HEDERA_MIRROR_NODE=https://testnet.mirrornode.hedera.com
-VITE_TEST_MODE=true    # Optional: filters discoveries to configured test contracts only
+VITE_TEST_MODE=true    # Optional: filters discoveries to test contracts only
 ```
 
 ### SDK Config Loading

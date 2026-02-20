@@ -143,11 +143,6 @@ function TimingBar({ discoveredAt, postedAt, winnersAt, settledAt }) {
 export default function AuditJobCard({ job }) {
   const [expanded, setExpanded] = useState(false);
   const typeColor = TYPE_COLORS[job.contractType] || '#6b7280';
-  const classifierSummary = [
-    job.riskSource ? `src:${job.riskSource}` : null,
-    job.riskModel ? job.riskModel : null,
-    job.topRiskFactors?.[0] ? `factor:${job.topRiskFactors[0]}` : null,
-  ].filter(Boolean).join(' • ');
 
   return (
     <div className="border border-gray-900 rounded bg-gray-900/60 font-mono text-xs overflow-hidden min-w-[300px] max-w-[360px] flex-shrink-0">
@@ -181,13 +176,6 @@ export default function AuditJobCard({ job }) {
             <span>│</span>
             <span style={{ color: riskColor(job.initialRiskScore) }}>Risk {job.initialRiskScore}/100</span>
           </div>
-          {(classifierSummary || job.evmType || job.isProxy != null) && (
-            <div className="mt-0.5 text-[10px] text-gray-600 font-mono truncate">
-              {classifierSummary || '--'}
-              {job.evmType ? ` • ${job.evmType}` : ''}
-              {job.isProxy === true ? ' • proxy' : ''}
-            </div>
-          )}
         </div>
         {/* State badge */}
         <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded flex-shrink-0 ${

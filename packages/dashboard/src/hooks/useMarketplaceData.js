@@ -18,15 +18,8 @@ export function useMarketplaceData(categoryFilter = null) {
     contracts?.dataMarketplaceContract,
     'getActiveListings',
     [],
-    {
-      refetchInterval: 15_000,
-      structuralSharing: false,
-    }
+    { refetchInterval: 15_000 }
   );
-
-  const normalizedListingIds = Array.isArray(activeListingIds)
-    ? activeListingIds.map((id) => String(id))
-    : [];
 
   const listings = useMemo(() => {
     let all = Object.values(dataListings);
@@ -42,14 +35,14 @@ export function useMarketplaceData(categoryFilter = null) {
 
   // Count listings in contract that aren't in store yet (missed events)
   const missedCount = useMemo(() => {
-    if (!normalizedListingIds.length) return 0;
+    if (!activeListingIds) return 0;
     const storeIds = new Set(Object.keys(dataListings));
     let missed = 0;
-    for (const id of normalizedListingIds) {
-      if (!storeIds.has(id)) missed++;
+    for (const id of activeListingIds) {
+      if (!storeIds.has(id.toString())) missed++;
     }
     return missed;
-  }, [normalizedListingIds, dataListings]);
+  }, [activeListingIds, dataListings]);
 
   // Count per category for tab badges
   const categoryCounts = useMemo(() => {

@@ -80,9 +80,6 @@ function validateJobCreatedPayload(payload) {
   assertFiniteNumber(payload.riskScore, "JOB_CREATED.payload.riskScore");
   assertFiniteNumber(payload.estimatedLOC, "JOB_CREATED.payload.estimatedLOC");
   assert.equal(typeof payload.onChain, "boolean", "JOB_CREATED.payload.onChain must be boolean");
-  if (payload.classifier != null) {
-    assert.equal(typeof payload.classifier, "object", "JOB_CREATED.payload.classifier must be object");
-  }
 }
 
 function validateAuctionInvitePayload(payload) {
@@ -100,9 +97,6 @@ function validateAuctionInvitePayload(payload) {
     payload.eligibleEvmAddresses.length,
     "eligible id/address list lengths must match"
   );
-  if (payload.classifierHints != null) {
-    assert.equal(typeof payload.classifierHints, "object", "classifierHints must be an object when present");
-  }
 }
 
 function validateBidSubmittedPayload(payload) {
@@ -164,13 +158,6 @@ async function testEventContractPayloads() {
       budget: 100,
       riskScore: 71,
       estimatedLOC: 1800,
-      classifier: {
-        riskSource: "0g",
-        riskModel: "qwen/qwen-2.5-7b-instruct",
-        topRiskFactors: ["unsafe delegatecall"],
-        evmType: "erc20",
-        isProxy: false,
-      },
     },
   });
 
@@ -181,8 +168,6 @@ async function testEventContractPayloads() {
   const invite = agentCommsMessages.find((m) => m.type === MessageType.AUCTION_INVITE);
   assert.ok(invite, "expected AUCTION_INVITE agentComms message");
   validateAuctionInvitePayload(invite.payload || {});
-  assert.equal(invite.payload?.classifierHints?.riskSource, "0g");
-  assert.equal(invite.payload?.classifierHints?.riskModel, "qwen/qwen-2.5-7b-instruct");
 
   const summary = auditLogMessages.find((m) => m.type === "AUCTION_INVITE_SUMMARY");
   assert.ok(summary, "expected AUCTION_INVITE_SUMMARY audit log");

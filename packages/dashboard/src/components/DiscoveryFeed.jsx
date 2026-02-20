@@ -72,26 +72,12 @@ function DiscoveryCard({ discovery }) {
     contractAddress,
     chain,
     estimatedLineCount,
-    estimatedLOC,
     initialRiskScore,
-    riskScore,
     contractType,
     tvlEstimate,
     discoveryTimestamp,
     timestamp,
   } = discovery;
-  const classifier = discovery?.classifier && typeof discovery.classifier === 'object'
-    ? discovery.classifier
-    : {};
-  const normalizedRiskScore = Number(initialRiskScore ?? riskScore ?? 0);
-  const normalizedLineCount = Number(estimatedLineCount ?? estimatedLOC ?? 0);
-  const riskSource = classifier.riskSource ?? discovery.riskSource ?? null;
-  const riskModel = classifier.riskModel ?? discovery.riskModel ?? null;
-  const topRiskFactors = Array.isArray(classifier.topRiskFactors)
-    ? classifier.topRiskFactors
-    : Array.isArray(discovery.topRiskFactors)
-      ? discovery.topRiskFactors
-      : [];
 
   const accentColor = auctionTypeColor(contractType);
   const typeLabel = auctionTypeLabel(contractType);
@@ -157,25 +143,13 @@ function DiscoveryCard({ discovery }) {
           Chain: <span className="text-gray-300 font-mono">{chain || '--'}</span>
         </span>
         <span className="text-gray-500 font-sans">
-          Lines: <span className="text-gray-300 font-mono">{normalizedLineCount?.toLocaleString() || '--'}</span>
+          Lines: <span className="text-gray-300 font-mono">{estimatedLineCount?.toLocaleString() || '--'}</span>
         </span>
       </div>
 
       {/* Row 4: Risk bar */}
       <div className="mb-2">
-        <RiskBar score={normalizedRiskScore || 0} />
-      </div>
-
-      {/* Row 4.5: Classifier summary */}
-      <div className="mb-2 text-[10px] text-gray-500 flex items-center justify-between gap-2">
-        <span className="truncate">
-          Source: <span className="text-gray-300 font-mono">{riskSource || '--'}</span>
-        </span>
-        <span className="truncate text-right">
-          {riskModel || topRiskFactors[0]
-            ? <span className="text-gray-300 font-mono">{riskModel || topRiskFactors[0]}</span>
-            : '--'}
-        </span>
+        <RiskBar score={initialRiskScore || 0} />
       </div>
 
       {/* Row 5: TVL + HCS link */}

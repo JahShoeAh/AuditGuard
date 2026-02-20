@@ -1,5 +1,4 @@
 const path = require("path");
-const fs = require("fs");
 const { createRequire } = require("module");
 const { ethers } = require("ethers");
 const { loadRuntimeEnv, summarizeCredentialConflict } = require("./env-policy.js");
@@ -40,29 +39,8 @@ function resolveAgentsRequire() {
   return createRequire(agentsPkg);
 }
 
-function resolveScannerClassifierMode() {
-  const demoMode = boolFromEnv("DEMO_MODE", false);
-  const testMode = boolFromEnv("TEST_MODE", false);
-  const strictLive = boolFromEnv("STRICT_LIVE", !demoMode);
-  const defaultEnabled = strictLive && !demoMode && !testMode;
-  const classifierMode = boolFromEnv("SCANNER_CLASSIFIER_PIPELINE", defaultEnabled);
-  return { demoMode, testMode, strictLive, defaultEnabled, classifierMode };
-}
-
 function checkScannerOptionalDependencies() {
-  const scannerMode = resolveScannerClassifierMode();
-  const { classifierMode, strictLive, demoMode, testMode } = scannerMode;
-
-  if (strictLive && !demoMode && !testMode && !classifierMode) {
-    fail(
-      "strict live runtime requires scanner classifier pipeline, but SCANNER_CLASSIFIER_PIPELINE resolved to false",
-      [
-        "Unset SCANNER_CLASSIFIER_PIPELINE to use strict-live default (enabled), or set SCANNER_CLASSIFIER_PIPELINE=true",
-        "Use STRICT_LIVE=false only for non-live/local fallback debugging",
-      ]
-    );
-  }
-
+  const classifierMode = boolFromEnv("SCANNER_CLASSIFIER_PIPELINE", false);
   const deps = [
     {
       pkg: "evmdecoder",
@@ -103,30 +81,6 @@ function checkScannerOptionalDependencies() {
   warn(
     `scanner classifier optional dependencies missing (baseline mode continues): ${details.join(", ")}`
   );
-}
-
-function checkScheduledEnrichmentTooling() {
-  const { strictLive, demoMode, testMode } = resolveScannerClassifierMode();
-  if (!strictLive || demoMode || testMode) return;
-
-  const enrichScriptPath = path.join(__dirname, "..", "agents", "scanner", "enrich-contract.ts");
-  if (!fs.existsSync(enrichScriptPath)) {
-    fail(
-      `scheduled enrichment requires scanner enrichment entrypoint, but file is missing: ${enrichScriptPath}`,
-      ["Restore agents/scanner/enrich-contract.ts"]
-    );
-  }
-
-  try {
-    const agentsRequire = resolveAgentsRequire();
-    const tsxResolved = agentsRequire.resolve("tsx");
-    info(`scheduled enrichment tooling check passed (tsx=${tsxResolved})`);
-  } catch {
-    fail(
-      "scheduled enrichment requires tsx in agents workspace",
-      ["npm --prefix agents install"]
-    );
-  }
 }
 
 function checkBrokerDependency() {
@@ -533,7 +487,6 @@ async function main() {
   checkScannerEcdsaCredential();
   await checkAccountKeyPairIntegrity();
   checkScannerOptionalDependencies();
-  checkScheduledEnrichmentTooling();
   await checkBrokerRuntimeLoadability();
   const { strictLiveZgRequired } = checkZgRequiredEnv();
   await checkZgModelConsistency(strictLiveZgRequired);

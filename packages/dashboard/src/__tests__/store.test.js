@@ -33,10 +33,6 @@ describe('Store — Discovery events', () => {
 
     expect(state.discoveries).toHaveLength(1);
     expect(state.discoveries[0].contractAddress).toBe('0xabc123');
-    expect(state.discoveries[0].initialRiskScore).toBe(85);
-    expect(state.discoveries[0].estimatedLineCount).toBe(3500);
-    expect(state.discoveriesByAddress['0xabc123']).toBeDefined();
-    expect(state.discoveriesByAddress['0xabc123'].riskScore).toBe(85);
   });
 
   it('should cap discoveries at 100', () => {

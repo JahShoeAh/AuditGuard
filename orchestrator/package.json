@@ -14,10 +14,6 @@
     "seed:live-agents": "node scripts/seed-live-agents.js",
     "test:live-smoke": "node scripts/live-smoke-check.js"
   },
-  "engines": {
-    "node": "24.0.2",
-    "npm": "11.3.0"
-  },
   "dependencies": {
     "@hashgraph/sdk": "^2.48.1",
     "dotenv": "^16.4.5",
