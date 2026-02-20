@@ -195,8 +195,22 @@ export class EventListenerService {
 
   async _syncAgentsFromRegistryEvents() {
     if (!this.contracts?.agentRegistryContract) return 0;
-    const events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
-    for (const ev of events) {
+
+    const MAX_BLOCK_RANGE = 10000;
+    const latestBlock = await this.provider.getBlockNumber();
+    let allEvents = [];
+
+    for (let fromBlock = 0; fromBlock <= latestBlock; fromBlock += MAX_BLOCK_RANGE) {
+      const toBlock = Math.min(fromBlock + MAX_BLOCK_RANGE - 1, latestBlock);
+      try {
+        const events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', fromBlock, toBlock);
+        allEvents = allEvents.concat(events);
+      } catch (err) {
+        console.warn(`[EventListener] Failed to fetch AgentRegistered events from ${fromBlock} to ${toBlock}:`, err.message);
+      }
+    }
+
+    for (const ev of allEvents) {
       const a = ev.args;
       this.store.setAgent(a.agent, {
         address: a.agent,
@@ -207,7 +221,7 @@ export class EventListenerService {
         source: 'onchain_event',
       });
     }
-    return events.length;
+    return allEvents.length;
   }
 
   async _syncAgentsFromRegistryViews() {

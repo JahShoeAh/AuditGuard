@@ -5276,7 +5276,7 @@
   "auditJob:136": {
     "schemaVersion": "1.0.0",
     "tokenId": "0.0.7982095:136",
-    "jobId": 0,
+    "jobId": 298,
     "target": {
       "contractAddress": "0x000000000000000000000000000000000079e413",
       "chain": "hedera-testnet",
@@ -5292,17 +5292,44 @@
       "discoveryTrigger": "new_deployment"
     },
     "state": {
-      "current": "DISCOVERED",
+      "current": "AUDITING_IN_PROGRESS",
       "history": [
         {
           "from": "NONE",
           "to": "DISCOVERED",
           "timestamp": "2026-02-20T06:46:27.794Z",
           "trigger": "hcs_discovery_event"
+        },
+        {
+          "from": "DISCOVERED",
+          "to": "AUCTION_OPEN",
+          "timestamp": "2026-02-20T08:04:45.572Z",
+          "trigger": "AuditAuction.JobPosted"
+        },
+        {
+          "from": "AUCTION_OPEN",
+          "to": "AUDITING_IN_PROGRESS",
+          "timestamp": "2026-02-20T08:07:19.061Z",
+          "trigger": "AuditAuction.WinnersSelected"
         }
       ]
     },
-    "participants": [],
+    "participants": [
+      {
+        "agentAddress": "0xf28cFD8e2D14B9A7e74658ACab633eAe1cb16502",
+        "role": "primary_auditor",
+        "specialization": "dex",
+        "bidAmount": 21,
+        "reputationAtBid": 5000
+      },
+      {
+        "agentAddress": "0x8Fa8Aa2b692A2F1F9402cCaDf2BD5da6c772A905",
+        "role": "primary_auditor",
+        "specialization": "lending",
+        "bidAmount": 33.6,
+        "reputationAtBid": 5000
+      }
+    ],
     "reports": {
       "findings": {
         "critical": 0,
@@ -5315,7 +5342,17 @@
       }
     },
     "createdAt": "2026-02-20T06:46:27.794Z",
-    "updatedAt": "2026-02-20T06:46:27.794Z"
+    "updatedAt": "2026-02-20T08:07:30.554Z",
+    "auction": {
+      "deadline": "2026-02-20T06:56:31.000Z",
+      "budgetGuard": 100,
+      "totalBids": 2,
+      "winningAgents": [
+        "0x8Fa8Aa2b692A2F1F9402cCaDf2BD5da6c772A905",
+        "0xf28cFD8e2D14B9A7e74658ACab633eAe1cb16502"
+      ],
+      "platformFeePaid": 2.73
+    }
   },
   "auditJob:137": {
     "schemaVersion": "1.0.0",
@@ -5364,7 +5401,7 @@
   "auditJob:138": {
     "schemaVersion": "1.0.0",
     "tokenId": "0.0.7982095:138",
-    "jobId": 0,
+    "jobId": 307,
     "target": {
       "contractAddress": "0x000000000000000000000000000000000079e472",
       "chain": "hedera-testnet",
@@ -5380,13 +5417,25 @@
       "discoveryTrigger": "new_deployment"
     },
     "state": {
-      "current": "DISCOVERED",
+      "current": "CANCELLED",
       "history": [
         {
           "from": "NONE",
           "to": "DISCOVERED",
           "timestamp": "2026-02-20T06:46:35.586Z",
           "trigger": "hcs_discovery_event"
+        },
+        {
+          "from": "DISCOVERED",
+          "to": "AUCTION_OPEN",
+          "timestamp": "2026-02-20T08:05:27.200Z",
+          "trigger": "AuditAuction.JobPosted"
+        },
+        {
+          "from": "AUCTION_OPEN",
+          "to": "CANCELLED",
+          "timestamp": "2026-02-20T08:08:20.333Z",
+          "trigger": "AuditAuction.JobCancelled"
         }
       ]
     },
@@ -5403,7 +5452,14 @@
       }
     },
     "createdAt": "2026-02-20T06:46:35.586Z",
-    "updatedAt": "2026-02-20T06:46:35.586Z"
+    "updatedAt": "2026-02-20T08:09:06.417Z",
+    "auction": {
+      "deadline": "2026-02-20T07:32:15.000Z",
+      "budgetGuard": 100,
+      "totalBids": 0,
+      "winningAgents": [],
+      "platformFeePaid": 0
+    }
   },
   "contractHealth:93": {
     "schemaVersion": "1.0.0",

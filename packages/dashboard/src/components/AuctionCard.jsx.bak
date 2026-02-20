@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import React, { forwardRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Countdown from './Countdown';
 import BidRow from './BidRow';
@@ -25,8 +25,8 @@ function bidLifecycleLabel(status) {
   if (status === 'submitted') return 'Bid Submitted';
   if (status === 'skipped') return 'Bid Skipped';
   if (status === 'failed') return 'Bid Failed';
-  return status || 'Unknown';
-};
+  return status || 'Unknown';3
+}
 
 function llmInferenceLabel(status) {
   if (status === 'started') return 'LLM Inference Started';
@@ -78,7 +78,7 @@ function resolveState(job, winnerData) {
 
 // ── Main AuctionCard ───────────────────────────────────────
 
-export default function AuctionCard({
+const AuctionCard = React.forwardRef(function AuctionCard({
   job,
   bids,
   bidLifecycle = [],
@@ -328,4 +328,4 @@ export default function AuctionCard({
       <SubContractTree parentJobId={job.jobId} />
     </motion.div>
   );
-}
+}));
