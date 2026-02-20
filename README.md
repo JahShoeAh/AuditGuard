@@ -101,6 +101,10 @@ AuditGuard/
 
 ## Quick Start
 
+Runtime requirements:
+- Node.js `v24.0.2`
+- npm `11.3.0`
+
 ```bash
 # Install dependencies
 npm install
@@ -122,6 +126,11 @@ npm run orchestrator
 # Run dashboard
 npm --prefix packages/dashboard run dev
 ```
+
+Dev/runtime script modes:
+- `npm run dev` / `npm run dev:all`: live-default stack startup (dashboard test filter off)
+- `npm run dev:all:test`: explicit dashboard test-filter mode (`VITE_TEST_MODE=true`)
+- `npm run preflight:live`: strict runtime checks (credentials, scanner classifier deps, 0g runtime, payer separation)
 
 ## Current Integration Items (as of February 18, 2026)
 

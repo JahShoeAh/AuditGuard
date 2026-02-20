@@ -12,7 +12,16 @@ export class Roster {
 
   upsert(agent) {
     const existing = this.agents.get(agent.agentId) || {};
-    const merged = { ...existing, ...agent, lastSeen: now(), tier: existing.tier ?? "COMMODITY" };
+    const normalizedSpecializations = Array.isArray(agent.specializations) && agent.specializations.length
+      ? agent.specializations.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+      : existing.specializations ?? [];
+    const merged = {
+      ...existing,
+      ...agent,
+      specializations: normalizedSpecializations,
+      lastSeen: now(),
+      tier: existing.tier ?? "COMMODITY",
+    };
     this.agents.set(agent.agentId, merged);
     this.log.info(`Agent registered/updated: ${agent.agentId} stake=${agent.stake} rep=${agent.reputation ?? "?"}`);
   }
@@ -41,11 +50,9 @@ export class Roster {
     const cutoff = now() - CONFIG.timeouts.livenessExpiryMs;
     const normalizedType =
       typeof contractType === "string" ? contractType.trim().toLowerCase() : "";
+    const canonicalTypes = new Set(["lending", "dex", "staking", "bridge", "vault"]);
     // Unknown/scheduled jobs should not be blocked by specialization labels.
-    const enforceSpecializationMatch =
-      normalizedType.length > 0 &&
-      normalizedType !== "unknown" &&
-      normalizedType !== "scheduled_audit";
+    const enforceSpecializationMatch = canonicalTypes.has(normalizedType);
     const eligible = [];
     const excluded = [];
     const staleAgentIds = [];

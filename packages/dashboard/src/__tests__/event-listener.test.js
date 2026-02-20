@@ -70,6 +70,15 @@ describe("EventListenerService", () => {
     });
 
     expect(store.addDiscovery).toHaveBeenCalledTimes(1);
+    expect(store.addDiscovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contractAddress: "0xabc",
+        riskScore: 0,
+        initialRiskScore: 0,
+        estimatedLOC: 0,
+        estimatedLineCount: 0,
+      })
+    );
     expect(store.incrementStat).toHaveBeenCalledWith("totalDiscoveries");
     expect(store.addLogEntry).toHaveBeenCalledTimes(1);
     expect(store.addLogEntry.mock.calls[0][0]).toMatchObject({

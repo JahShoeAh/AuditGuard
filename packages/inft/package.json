@@ -16,6 +16,10 @@
     "listen": "node src/discovery-listener.js",
     "listen:events": "node src/event-listener.js"
   },
+  "engines": {
+    "node": "24.0.2",
+    "npm": "11.3.0"
+  },
   "dependencies": {
     "@0gfoundation/0g-ts-sdk": "^1.2.1",
     "@hashgraph/sdk": "^2.46.0",

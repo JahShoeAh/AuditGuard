@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-02-20T06:44:08.338Z",
+  "generatedAt": "2026-02-20T08:28:13.337Z",
   "files": [
     "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/backend.log",
     "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/agents.log",
     "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/dashboard.log"
   ],
-  "totalEvents": 8,
+  "totalEvents": 22,
   "distinctJobs": 0,
   "jobsWithMissingLinks": 0,
   "jobs": []
