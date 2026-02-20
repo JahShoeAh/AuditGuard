@@ -14,6 +14,7 @@ import {
 } from "../shared/index.js";
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
+import { isHederaId, hederaIdToEvmAddress } from "./hedera-address.js";
 import {
   enrichContractDiscovery,
   getClassifierRuntimeStatus,
@@ -86,6 +87,31 @@ type MirrorContract = {
   bytecode?: string | null;
 };
 
+/**
+ * Resolves a MirrorContract to a lowercase EVM address string, or null if
+ * neither `evm_address` nor `contract_id` can produce a valid address.
+ *
+ * Priority:
+ *   1. `evm_address` if it is already a valid EVM address (0x…)
+ *   2. `contract_id` if it looks like a Hedera entity ID (0.0.N) — converted
+ *      via the canonical shard/realm/num → 20-byte encoding
+ */
+function resolveContractEvmAddress(c: MirrorContract): string | null {
+  const evm = c.evm_address?.trim();
+  if (evm && ethers.isAddress(evm)) return evm.toLowerCase();
+
+  const id = c.contract_id?.trim();
+  if (id && isHederaId(id)) {
+    try {
+      return hederaIdToEvmAddress(id);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 const seenContracts = new Set<string>();
 let lastSeenTimestamp: string | null = makeInitialTimestamp();
 
@@ -111,7 +137,7 @@ function nextDiscoveryContract(): { key: string; address: string; deployer: stri
 export function generateDiscovery() {
   const pick = nextDiscoveryContract();
   const isTestMode = process.env.TEST_MODE === "true";
-  const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault"];
+  const types: ContractType[] = ["lending", "dex", "staking", "bridge", "vault", "derivatives", "oracle", "governance", "nft"];
   const riskScore = isTestMode ? 75 : randomInt(20, 95);
   const estimatedLOC = isTestMode ? 150 : randomInt(500, 10000);
   const discoveryTimestamp = Math.floor(Date.now() / 1000);
@@ -189,7 +215,7 @@ function extractCreatedTimestamp(c: MirrorContract): string | null {
 }
 
 async function createDiscoveryFromMirror(contract: MirrorContract) {
-  const contractAddress = (contract.evm_address || '').toLowerCase();
+  const contractAddress = resolveContractEvmAddress(contract) ?? "";
   const createdTs = extractCreatedTimestamp(contract) || String(Date.now());
   const txHash = contract.transaction_hash || hashOf({
     contractAddress,
@@ -252,7 +278,7 @@ async function fetchNewContractsSinceCursor() {
   const cursorTs = toConsensusBigInt(lastSeenTimestamp);
 
   return contracts
-    .filter((c) => typeof c.evm_address === "string" && ethers.isAddress(c.evm_address))
+    .filter((c) => resolveContractEvmAddress(c) !== null)
     .filter((c) => {
       if (!cursorTs) return true;
       const ts = toConsensusBigInt(extractCreatedTimestamp(c));

@@ -200,7 +200,16 @@ export class EventListenerService {
 
   async _syncAgentsFromRegistryEvents() {
     if (!this.contracts?.agentRegistryContract) return 0;
-    const events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
+    // Many public RPC providers (e.g. Hashio) reject eth_getLogs requests that
+    // span more than 7 days.  Querying from block 0 always exceeds this limit.
+    // If the call fails for any reason we return 0 so the caller falls back to
+    // the view-based hydration path.
+    let events;
+    try {
+      events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
+    } catch {
+      return 0;
+    }
     for (const ev of events) {
       const a = ev.args;
       this.store.setAgent(a.agent, {

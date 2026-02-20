@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { forwardRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Countdown from './Countdown';
 import BidRow from './BidRow';
@@ -78,14 +78,14 @@ function resolveState(job, winnerData) {
 
 // ── Main AuctionCard ───────────────────────────────────────
 
-export default function AuctionCard({
+const AuctionCard = forwardRef(function AuctionCard({
   job,
   bids,
   bidLifecycle = [],
   llmInference = [],
   winnerData,
   recentBidTimestamps,
-}) {
+}, ref) {
   const state = resolveState(job, winnerData);
   const canonicalType = normalizeAuctionType(job.contractType);
   const accentColor = auctionTypeColor(canonicalType);
@@ -149,6 +149,7 @@ export default function AuctionCard({
       transition={{ type: 'spring', stiffness: 350, damping: 30,
         boxShadow: isWinnerState ? { duration: 0.8, times: [0, 0.4, 1] } : undefined,
       }}
+      ref={ref}
       className="card mb-3 relative overflow-hidden"
       style={{
         borderColor: isWinnerState ? 'rgba(16, 185, 129, 0.3)' : undefined,
@@ -328,4 +329,6 @@ export default function AuctionCard({
       <SubContractTree parentJobId={job.jobId} />
     </motion.div>
   );
-}
+});
+
+export default AuctionCard;

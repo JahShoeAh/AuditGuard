@@ -350,9 +350,9 @@ describe("utils.ts", () => {
 
     it("randomFindingTitle returns a string for each contract type", async () => {
         const { randomFindingTitle } = await import("../shared/utils.js");
-        const types = ["lending", "dex", "staking", "bridge", "vault", "unknown"] as const;
+        const types: Array<string> = ["lending", "dex", "staking", "bridge", "vault", "derivatives", "oracle", "governance", "nft", "unknown"];
         for (const t of types) {
-            const title = randomFindingTitle(t);
+            const title = randomFindingTitle(t as any);
             expect(typeof title).toBe("string");
             expect(title.length).toBeGreaterThan(0);
         }

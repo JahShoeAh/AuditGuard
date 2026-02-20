@@ -39,7 +39,16 @@ export interface ContractDiscoveryEvent extends HCSMessage {
   };
 }
 
-export type ContractType = "lending" | "dex" | "staking" | "bridge" | "vault";
+export type ContractType =
+  | "lending"      // Lending / borrowing protocols (Aave, Compound, MakerDAO)
+  | "dex"          // Decentralised exchanges (Uniswap, Curve, SushiSwap)
+  | "staking"      // Staking & liquid-staking (Lido, Rocket Pool)
+  | "bridge"       // Cross-chain bridges (Hop, Stargate, Across)
+  | "vault"        // Yield aggregators / vaults (Yearn, Beefy)
+  | "derivatives"  // Perpetuals, options, futures (GMX, dYdX, Synthetix)
+  | "oracle"       // Price oracles (Chainlink, Pyth, Band)
+  | "governance"   // DAO governance (Governor Bravo, OpenZeppelin Governor)
+  | "nft";         // NFT tokens / marketplaces (ERC-721, ERC-1155)
 
 // ============================================================
 // AgentComms Topic Messages

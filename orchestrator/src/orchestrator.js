@@ -1764,11 +1764,54 @@ export class OrchestratorAgent {
 
       job.winners = winnerAddresses;
 
-      const winningBidIndices = selectedWinners
-        .map((w) => w.bidIndex)
-        .filter((idx) => Number.isInteger(idx));
+      // Resolve on-chain bid indices by fetching the actual bids array from the
+      // contract.  The off-chain job.bidders array (built from HCS messages) may
+      // not match the on-chain _jobBids[jobId] array in length or order, so
+      // using the off-chain array position as a bid index causes
+      // "AuditAuction: invalid bid index" reverts when bids were submitted
+      // on-chain through a different path or in a different order.
+      let onchainBids = [];
+      try {
+        onchainBids = await this.contracts.auction.getBidsForJob(Number(jobId));
+      } catch (err) {
+        this.log.warn(
+          `[Orchestrator] getBidsForJob failed for job ${jobId} — ` +
+          `falling back to off-chain indices: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      let winningBidIndices;
+      if (onchainBids.length > 0) {
+        // Build a lowercase-address → on-chain-index map.
+        const onchainIndexByAddress = new Map();
+        for (let i = 0; i < onchainBids.length; i++) {
+          const agent = String(onchainBids[i].agent ?? "").toLowerCase();
+          if (agent) onchainIndexByAddress.set(agent, i);
+        }
+        winningBidIndices = [];
+        for (const winner of selectedWinners) {
+          const addr = String(winner.evmAddress ?? "").toLowerCase();
+          const onchainIdx = onchainIndexByAddress.get(addr);
+          if (onchainIdx !== undefined) {
+            winningBidIndices.push(onchainIdx);
+          } else {
+            this.log.warn(
+              `[Orchestrator] Winner ${winner.agentId} (${addr}) has no matching on-chain bid for job ${jobId} — skipping`
+            );
+          }
+        }
+      } else {
+        // No on-chain bids fetched (RPC error or empty); fall back to off-chain
+        // array positions so existing behaviour is preserved for the retry path.
+        winningBidIndices = selectedWinners
+          .map((w) => w.bidIndex)
+          .filter((idx) => Number.isInteger(idx));
+      }
+
       if (!winningBidIndices.length) {
-        const error = "No valid winning bid indices";
+        const error = onchainBids.length === 0
+          ? "No on-chain bids found for job (agents may not have submitted bids on-chain)"
+          : "No valid winning bid indices (winners have no matching on-chain bids)";
         this.log.warn(`[Orchestrator] On-chain selectWinners failed for job ${jobId}: ${error}`);
         job.failed = true;
         job.failureReason = error;
