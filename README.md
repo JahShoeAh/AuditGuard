@@ -94,6 +94,7 @@ AuditGuard/
 ├── packages/
 │   ├── contracts/           # 10 Solidity smart contracts (Hardhat)
 │   ├── dashboard/           # React observer dashboard (Vite)
+│   ├── cloudflare-api/      # Cloudflare Worker + D1 event persistence API
 │   ├── inft/                # iNFT schemas, minting, state transitions
 │   └── sdk/                 # Shared config (deployed addresses, topic IDs)
 └── .env.example             # Required environment variables
@@ -122,6 +123,13 @@ npm run orchestrator
 # Run dashboard
 npm --prefix packages/dashboard run dev
 ```
+
+## Cloudflare Integration
+
+- Dashboard static deploy config: `packages/dashboard/wrangler.jsonc`
+- D1-backed events API: `packages/cloudflare-api`
+- Dashboard event source env: `VITE_EVENTS_API_BASE_URL` (default `/api`)
+- End-to-end setup guide: `docs/CLOUDFLARE_INTEGRATION_PLAN.md`
 
 ## Current Integration Items (as of February 18, 2026)
 
