@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   build-and-push:
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,3 +56,45 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-to-ec2:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy latest backend image on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            IMAGE="${{ needs.build-and-push.outputs.image }}:sha-${{ github.sha }}"
+            CONTAINER_NAME="${{ secrets.EC2_CONTAINER_NAME }}"
+            ENV_FILE="${{ secrets.EC2_ENV_FILE }}"
+            GHCR_USER="${{ secrets.GHCR_USERNAME }}"
+            GHCR_PAT="${{ secrets.GHCR_READ_TOKEN }}"
+
+            if [ -z "${CONTAINER_NAME}" ]; then
+              CONTAINER_NAME="auditguard-devall"
+            fi
+            if [ -z "${ENV_FILE}" ]; then
+              ENV_FILE="/opt/auditguard/.env"
+            fi
+            if [ ! -f "${ENV_FILE}" ]; then
+              echo "Missing env file at ${ENV_FILE}" >&2
+              exit 1
+            fi
+
+            echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            docker pull "${IMAGE}"
+            docker stop "${CONTAINER_NAME}" || true
+            docker rm "${CONTAINER_NAME}" || true
+            docker run -d \
+              --name "${CONTAINER_NAME}" \
+              --restart unless-stopped \
+              --env-file "${ENV_FILE}" \
+              "${IMAGE}"
