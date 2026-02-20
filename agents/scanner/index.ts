@@ -51,8 +51,11 @@ const SCANNER_REGISTRATION_SPECIALIZATIONS = parseCsvList(
   process.env.SCANNER_REGISTRATION_SPECIALIZATIONS,
   DEFAULT_SCANNER_SPECIALIZATIONS
 );
-const SCANNER_CLASSIFIER_PIPELINE =
-  String(process.env.SCANNER_CLASSIFIER_PIPELINE ?? "false").toLowerCase() === "true";
+const SCANNER_CLASSIFIER_PIPELINE = resolveScannerClassifierPipelineEnabled({
+  strictLive: STRICT_LIVE,
+  demoMode: DEMO_MODE,
+  testMode: TEST_MODE,
+});
 
 const log = createAgentLogger(AGENT_ID, "scanner");
 
@@ -139,6 +142,17 @@ function parseCsvList(raw: string | undefined, fallback: string[]): string[] {
     .map((value) => value.trim())
     .filter(Boolean);
   return values.length > 0 ? values : fallback;
+}
+
+function resolveScannerClassifierPipelineEnabled(opts: {
+  strictLive: boolean;
+  demoMode: boolean;
+  testMode: boolean;
+}) {
+  const defaultEnabled = opts.strictLive && !opts.demoMode && !opts.testMode;
+  const raw = process.env.SCANNER_CLASSIFIER_PIPELINE;
+  if (raw == null || raw.trim() === "") return defaultEnabled;
+  return String(raw).toLowerCase() !== "false";
 }
 
 // ---- Mirror-node Discovery ----

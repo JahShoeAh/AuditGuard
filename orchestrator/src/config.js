@@ -34,6 +34,19 @@ function getEnv(name) {
   return trimmed.replace(/^['"]|['"]$/g, "");
 }
 
+function getPositiveIntEnv(name, fallback) {
+  const raw = getEnv(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+const winnerWaitMs = getPositiveIntEnv(
+  "ORCHESTRATOR_WINNER_WAIT_MS",
+  getPositiveIntEnv("ORCHESTRATOR_AUCTION_DURATION_MS", 120_000)
+);
+
 export const CONFIG = {
   network: "testnet",
   strictLive: (process.env.STRICT_LIVE ?? String(strictLiveDefault)) === "true",
@@ -87,7 +100,7 @@ export const CONFIG = {
     premiumThreshold: 80,
   },
   timeouts: {
-    winnerWaitMs: 30_000,
+    winnerWaitMs,
     findingsSlaMs: 90_000,
     pingIntervalMs: 45_000,
     livenessExpiryMs: 120_000,

@@ -321,6 +321,15 @@ function isNetworkLikeError(reason) {
   );
 }
 
+function isInsufficientPayerBalanceError(reason) {
+  const normalized = String(reason || "").toLowerCase();
+  return (
+    normalized.includes("insufficient_payer_balance") ||
+    normalized.includes("insufficient funds for transfer") ||
+    normalized.includes("failed precheck with status insufficient_payer_balance")
+  );
+}
+
 function getOwnerCredentialCandidates() {
   return [
     {
@@ -881,16 +890,35 @@ async function ensureAgentHbarMinimum(client, operatorId, operatorKey, agentAcco
   }
 
   const sendTinybars = Math.max(1, Math.ceil(deficit * 1e8));
-  const tx = await new TransferTransaction()
-    .addHbarTransfer(operatorId, Hbar.fromTinybars(-sendTinybars))
-    .addHbarTransfer(agentAccountId, Hbar.fromTinybars(sendTinybars))
-    .freezeWith(client);
-  const signed = await tx.sign(operatorKey);
-  const submit = await signed.execute(client);
-  const receipt = await submit.getReceipt(client);
-  console.log(
-    `    ✓ ${label}: HBAR top-up +${(sendTinybars / 1e8).toFixed(4)} (status=${String(receipt.status)})`
-  );
+  const sendHbar = sendTinybars / 1e8;
+  const submitTopup = async () => {
+    const tx = await new TransferTransaction()
+      .addHbarTransfer(operatorId, Hbar.fromTinybars(-sendTinybars))
+      .addHbarTransfer(agentAccountId, Hbar.fromTinybars(sendTinybars))
+      .freezeWith(client);
+    const signed = await tx.sign(operatorKey);
+    const submit = await signed.execute(client);
+    const receipt = await submit.getReceipt(client);
+    console.log(
+      `    ✓ ${label}: HBAR top-up +${sendHbar.toFixed(4)} (status=${String(receipt.status)})`
+    );
+  };
+
+  try {
+    await submitTopup();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (!isInsufficientPayerBalanceError(reason)) {
+      throw err;
+    }
+    const operatorTarget = Math.max(OPERATOR_HBAR_TARGET, MIN_ACTIVATION_PAYER_HBAR, sendHbar + 0.25);
+    console.log(
+      `    ⚠ ${label}: operator payer is too low for HBAR top-up; ` +
+      `attempting operator auto-top-up to ${operatorTarget.toFixed(4)} HBAR and retrying`
+    );
+    await maybeTopupOperatorHbar(operatorId, operatorTarget);
+    await submitTopup();
+  }
   return await getHbarBalance(client, agentAccountId, `${label} payer post-topup`);
 }
 
@@ -988,14 +1016,21 @@ async function main() {
 
   try {
     let operatorHbar = await getHbarBalance(hederaClient, operatorId, "operator preflight");
-    if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
-      await maybeTopupOperatorHbar(operatorId, MIN_ACTIVATION_PAYER_HBAR);
+    const targetOperatorHbar = Math.max(MIN_ACTIVATION_PAYER_HBAR, OPERATOR_HBAR_TARGET);
+    if (operatorHbar < targetOperatorHbar) {
+      await maybeTopupOperatorHbar(operatorId, targetOperatorHbar);
       operatorHbar = await getHbarBalance(hederaClient, operatorId, "operator after auto-topup");
-      if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
-        throw new Error(
-          `operator payer HBAR too low (${operatorHbar.toFixed(4)} < ${MIN_ACTIVATION_PAYER_HBAR.toFixed(4)})`
-        );
-      }
+    }
+    if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
+      throw new Error(
+        `operator payer HBAR too low (${operatorHbar.toFixed(4)} < ${MIN_ACTIVATION_PAYER_HBAR.toFixed(4)})`
+      );
+    }
+    if (operatorHbar < targetOperatorHbar) {
+      console.log(
+        `⚠ Operator payer HBAR below target (${operatorHbar.toFixed(4)} < ${targetOperatorHbar.toFixed(4)}). ` +
+        "Activation can proceed, but payer may deplete during registry/agent writes."
+      );
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
