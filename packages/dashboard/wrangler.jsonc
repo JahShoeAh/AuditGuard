@@ -1,13 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "auditguard-dashboard",
+  "workers_dev": true,
   "compatibility_date": "2026-02-20",
-  // Naming convention:
-  // - Dashboard worker: auditguard-dashboard
-  // - Canonical dashboard path: https://auditguard.<your-domain>/dashboard
-  // Optional custom-domain route example:
-  // "routes": [{ "pattern": "auditguard.<your-domain>/dashboard*", "zone_name": "<your-domain>" }],
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
   }
 }

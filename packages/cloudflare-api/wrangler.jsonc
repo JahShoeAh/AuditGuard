@@ -2,13 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "auditguard-api",
   "main": "./worker.ts",
+  "workers_dev": true,
   "compatibility_date": "2026-02-20",
   "compatibility_flags": ["nodejs_compat"],
-  // Naming convention:
-  // - API worker: auditguard-api
-  // - Canonical API path: https://auditguard.<your-domain>/api/*
-  // Optional custom-domain route example:
-  // "routes": [{ "pattern": "auditguard.<your-domain>/api/*", "zone_name": "<your-domain>" }],
   "d1_databases": [
     {
       "binding": "DB",
@@ -17,7 +13,7 @@
     }
   ],
   "vars": {
-    "FRONTEND_ORIGIN": "*",
+    "FRONTEND_ORIGIN": "https://auditguard-dashboard.auditguard.workers.dev",
     "APP_ENV": "production"
   }
 }
