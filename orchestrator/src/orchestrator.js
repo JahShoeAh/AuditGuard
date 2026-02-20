@@ -981,23 +981,66 @@ export class OrchestratorAgent {
 
   // ─── Actions ───────────────────────────────────────────────────────────
 
+  async dispatchToUcpEndpoint(endpoint, message) {
+    if (!endpoint || String(endpoint).startsWith("hcs://")) return;
+
+    const url = `${String(endpoint).replace(/\/$/, "")}/task`;
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 5000);
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+        signal: ctrl.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      this.log.info(`UCP HTTP dispatch → ${url} (type=${message.type})`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(`UCP HTTP dispatch failed for ${endpoint}: ${reason}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   async inviteAgents(jobId, agents, payload) {
+    const invitePayload = {
+      jobId,
+      contractAddress: payload.contractAddress,
+      contractType: payload.contractType,
+      budget: payload.budget ?? CONFIG.payments.totalGuard,
+      riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
+      estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
+      estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
+    };
+
     for (const agent of agents) {
       await this.hcs.publishAgentComms({
         type: MessageType.AUCTION_INVITE,
         agentId: "orchestrator",
         timestamp: now(),
-        payload: {
-          jobId,
-          contractAddress: payload.contractAddress,
-          contractType: payload.contractType,
-          budget: payload.budget ?? CONFIG.payments.totalGuard,
-          riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
-          estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
-          estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
-        },
+        payload: invitePayload,
       });
     }
+
+    for (const agent of agents) {
+      const entry = this.roster.get(agent.agentId);
+      if (entry?.endpoint) {
+        this.dispatchToUcpEndpoint(entry.endpoint, {
+          type: "AUCTION_INVITE",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: invitePayload,
+        }).catch(() => { });
+      }
+    }
+
     this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
   }
 
@@ -1102,6 +1145,24 @@ export class OrchestratorAgent {
         await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
         const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
         this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+
+        for (const winner of selectedWinners) {
+          const entry = this.roster.get(winner.agentId);
+          if (entry?.endpoint) {
+            this.dispatchToUcpEndpoint(entry.endpoint, {
+              type: "TASK_ASSIGNED",
+              agentId: "orchestrator",
+              timestamp: now(),
+              payload: {
+                jobId,
+                contractAddress: job.contractAddress,
+                contractType: job.contractType,
+                winnerAddress: winner.evmAddress,
+              },
+            }).catch(() => { });
+          }
+        }
+
         job.winnerSource = "on-chain";
         return;
       } catch (err) {
