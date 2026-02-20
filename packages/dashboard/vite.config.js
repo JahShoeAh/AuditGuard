@@ -12,6 +12,13 @@ export default defineConfig({
   server: {
     port: 5173,
     open: process.env.DASHBOARD_OPEN === 'true',
+    proxy: {
+      '/hedera-rpc': {
+        target: 'https://testnet.hashio.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/hedera-rpc/, '/api'),
+      },
+    },
   },
   build: {
     rollupOptions: {

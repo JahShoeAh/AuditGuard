@@ -1,5 +1,5 @@
 import { EvmDecoder } from "evmdecoder";
-import type { ContractInfo } from "evmdecoder";
+import { resolveEvmAddress } from "./hedera-address.js";
 
 export interface ClassificationResult {
   evmType: string;
@@ -154,7 +154,7 @@ export async function classifyContract(
     proxyTarget = lastProxy?.target ?? null;
   }
 
-  const defiCategory = mapEvmTypeToDefiCategory(evmType, standards, info);
+  const defiCategory = mapEvmTypeToDefiCategory(evmType, standards);
 
   return {
     evmType,
@@ -166,74 +166,29 @@ export async function classifyContract(
   };
 }
 
-const FUNCTION_SELECTOR_HINTS: Record<string, DefiCategory> = {
-  "0x38ed1739": "dex",
-  "0x7ff36ab5": "dex",
-  "0xe8e33700": "dex",
-  "0xbaa2abde": "dex",
-  "0x128acb08": "dex",
-  "0x022c0d9f": "dex",
-  "0xc5ebeaec": "lending",
-  "0x0e752702": "lending",
-  "0x573ade81": "lending",
-  "0xe9c714f2": "lending",
-  "0xa0712d68": "lending",
-  "0xa694fc3a": "staking",
-  "0x2e17de78": "staking",
-  "0x5c19a95c": "staking",
-  "0xb88d4fde": "staking",
-  "0x0f5287b0": "bridge",
-  "0x8b7bfd70": "bridge",
-  "0xa44bbb15": "bridge",
-  "0x3805550f": "bridge",
-  "0xb6b55f25": "vault",
-  "0x2e1a7d4d": "vault",
-  "0xba087652": "vault",
-};
-
 function mapEvmTypeToDefiCategory(
   evmType: string,
-  standards: string[],
-  info: any
+  standards: string[]
 ): DefiCategory {
   const typeLower = evmType.toLowerCase();
 
-  if (standards.includes("ERC3156")) return "lending";
-  if (typeLower === "gnosissafe" || typeLower === "gnosis multisig") return "vault";
-  if (typeLower === "diamond") return "vault";
+  // ── Standards-based fast paths ───────────────────────────────────────────
+  // evmdecoder contractType.name values: GnosisSafe, GnosisMultisig, DiamondProxy,
+  //   Token (ERC20), NFT (ERC721), MultiToken (ERC1155), FlashLoan (ERC3156),
+  //   TokenPair (Uniswap-style LP), ContractRegistry (ERC1820), OffchainResolver (ERC3668)
+  if (standards.includes("ERC3156") || typeLower === "flashloan") return "lending";
+  if (standards.includes("ERC721") || standards.includes("ERC1155")
+      || typeLower === "nft" || typeLower === "multitoken") return "nft";
+  if (typeLower === "gnosissafe" || typeLower === "gnosismultisig") return "vault";
+  if (typeLower === "diamond" || typeLower === "diamondproxy") return "vault";  // ERC-2535
+  if (typeLower === "tokenpair") return "dex";  // Uniswap-style LP pair
 
-  if (standards.includes("ERC721") || standards.includes("ERC1155")) return "vault";
+  // Note: function-selector heuristics require raw EVM bytecode. ContractInfo
+  // from evmdecoder does not expose a bytecode field, so selector-based
+  // classification cannot run here. Further bytecode-based refinement is
+  // performed upstream in the enrichment pipeline (source-retriever + risk-blender).
 
-  const bytecode: string | undefined = info?.bytecode;
-  if (bytecode && bytecode.length > 10) {
-    const selectorHits: Record<DefiCategory, number> = {
-      lending: 0,
-      dex: 0,
-      staking: 0,
-      bridge: 0,
-      vault: 0,
-    };
-
-    for (const [selector, category] of Object.entries(FUNCTION_SELECTOR_HINTS)) {
-      const selectorHex = selector.slice(2);
-      if (bytecode.includes(selectorHex)) {
-        selectorHits[category]++;
-      }
-    }
-
-    let bestCategory: DefiCategory = "lending";
-    let bestCount = 0;
-    for (const [cat, count] of Object.entries(selectorHits)) {
-      if (count > bestCount) {
-        bestCount = count;
-        bestCategory = cat as DefiCategory;
-      }
-    }
-
-    if (bestCount > 0) return bestCategory;
-  }
-
-  return "lending";
+  return "vault"; // conservative generic DeFi default for unrecognised contracts
 }
 
 export function _resetDecoder(): void {

@@ -50,7 +50,10 @@ export class Roster {
     const cutoff = now() - CONFIG.timeouts.livenessExpiryMs;
     const normalizedType =
       typeof contractType === "string" ? contractType.trim().toLowerCase() : "";
-    const canonicalTypes = new Set(["lending", "dex", "staking", "bridge", "vault"]);
+    const canonicalTypes = new Set([
+      "lending", "dex", "staking", "bridge", "vault",
+      "derivatives", "oracle", "governance", "nft",
+    ]);
     // Unknown/scheduled jobs should not be blocked by specialization labels.
     const enforceSpecializationMatch = canonicalTypes.has(normalizedType);
     const eligible = [];
