@@ -11,7 +11,6 @@ export default function WalletButton() {
   const status = useWalletStore((s) => s.connectionStatus);
   const displayName = useWalletStore((s) => s.displayName);
   const address = useWalletStore((s) => s.address);
-  const guardBalance = useWalletStore((s) => s.guardBalance);
   const hbarBalance = useWalletStore((s) => s.hbarBalance);
   const openWalletModal = useWalletStore((s) => s.openWalletModal);
   const refreshBalances = useWalletStore((s) => s.refreshBalances);
@@ -55,9 +54,6 @@ export default function WalletButton() {
         <div className="flex items-center gap-3">
           <span className="font-mono text-xs font-semibold text-amber-200">{displayName}</span>
           <span className="font-mono text-[11px] text-amber-300">
-            {fmtBalance(guardBalance)} GUARD
-          </span>
-          <span className="font-mono text-[10px] text-gray-400">
             {fmtBalance(hbarBalance, 3)} HBAR
           </span>
         </div>

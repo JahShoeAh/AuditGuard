@@ -56,7 +56,9 @@ function AgentBrowserRow({ rank, agent, pool, backing, isSelected, onSelect }) {
     ? parseFloat(formatUnits(BigInt(backing.toString()), GUARD_DECIMALS)).toFixed(2)
     : (parseFloat(selfStake) + parseFloat(delegated)).toFixed(2);
 
-  const shareRate      = fmtShareRate(pool?.rewardShareBps);
+  const shareRate      = pool && pool.totalDelegated > 0n
+    ? fmtShareRate(pool.rewardShareBps)
+    : '10%';
   const delegatorCount = pool?.delegatorCount ?? 0;
   const accepting      = pool?.acceptingDelegations ?? true;
 
@@ -108,6 +110,9 @@ function AgentBrowserRow({ rank, agent, pool, backing, isSelected, onSelect }) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs font-mono pl-6 text-gray-500">
         <span>
           Reward share: <span className="text-green-400 font-semibold">{shareRate}</span>
+          {(!pool || pool.totalDelegated === 0n) && (
+            <span className="text-gray-600 text-[10px] ml-1">(default)</span>
+          )}
         </span>
         <span>│</span>
         <span>{delegatorCount} delegator{delegatorCount !== 1 ? 's' : ''}</span>

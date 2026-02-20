@@ -54,7 +54,7 @@ export default function PurchaseModal({ listing, onClose, onSuccess }) {
   const contracts    = useStore((s) => s.contracts);
   const signer       = useWalletStore((s) => s.signer);
   const address      = useWalletStore((s) => s.address);
-  const guardBalance = useWalletStore((s) => s.guardBalance);
+  const hbarBalance  = useWalletStore((s) => s.hbarBalance);
   const refreshBal   = useWalletStore((s) => s.refreshBalances);
   const addPurchase  = useStore((s) => s.addDataPurchase);
 
@@ -64,10 +64,12 @@ export default function PurchaseModal({ listing, onClose, onSuccess }) {
   const priceRaw   = listing.price ? BigInt(listing.price.toString()) : 0n;
   const feeRaw     = platformFee(priceRaw);
   const totalRaw   = priceRaw + feeRaw;
-  const balance    = parseFloat(guardBalance) || 0;
-  const balanceRaw = BigInt(Math.floor(balance * 1e8));
-  const canAfford  = balanceRaw >= totalRaw;
-  const afterBal   = Math.max(0, balance - parseFloat(fmtGuard(totalRaw)));
+  // Show costs in HBAR (fixed rate: 100 GUARD = 1 HBAR)
+  const totalGuard = parseFloat(fmtGuard(totalRaw));
+  const totalHbar  = totalGuard / 100;
+  const balance    = parseFloat(hbarBalance) || 0;
+  const canAfford  = balance >= totalHbar;
+  const afterBal   = Math.max(0, balance - totalHbar);
 
   const catMeta = CATEGORY_META[Number(listing.category ?? 0)] ?? CATEGORY_META[7];
   const isRunning = phase === PHASE.APPROVING || phase === PHASE.PURCHASING;
@@ -165,24 +167,24 @@ export default function PurchaseModal({ listing, onClose, onSuccess }) {
           <div className="border border-gray-800 rounded-xl p-4 bg-gray-900 mb-4 space-y-2">
             <div className="flex justify-between text-xs font-mono">
               <span className="text-gray-500">Report price</span>
-              <span className="text-amber-300 font-bold">{fmtGuard(priceRaw)} GUARD</span>
+              <span className="text-amber-300 font-bold">{(parseFloat(fmtGuard(priceRaw)) / 100).toFixed(4)} HBAR</span>
             </div>
             <div className="flex justify-between text-xs font-mono">
               <span className="text-gray-500">Platform fee (3%)</span>
-              <span className="text-gray-400">{fmtGuard(feeRaw)} GUARD</span>
+              <span className="text-gray-400">{(parseFloat(fmtGuard(feeRaw)) / 100).toFixed(4)} HBAR</span>
             </div>
             <div className="flex justify-between text-xs font-mono border-t border-gray-800 pt-2">
               <span className="text-gray-300 font-semibold">Total</span>
-              <span className="text-amber-300 font-bold">{fmtGuard(totalRaw)} GUARD</span>
+              <span className="text-amber-300 font-bold">{totalHbar.toFixed(4)} HBAR</span>
             </div>
             <div className="flex justify-between text-xs font-mono">
               <span className="text-gray-500">Your balance</span>
-              <span className={canAfford ? 'text-gray-300' : 'text-red-400'}>{balance.toFixed(2)} GUARD</span>
+              <span className={canAfford ? 'text-gray-300' : 'text-red-400'}>{balance.toFixed(4)} HBAR</span>
             </div>
             <div className="flex justify-between text-xs font-mono">
               <span className="text-gray-500">After purchase</span>
               <span className={canAfford ? 'text-green-400' : 'text-red-400'}>
-                {canAfford ? afterBal.toFixed(2) : '—'} GUARD
+                {canAfford ? afterBal.toFixed(4) : '—'} HBAR
               </span>
             </div>
           </div>
@@ -236,7 +238,7 @@ export default function PurchaseModal({ listing, onClose, onSuccess }) {
           {!canAfford && phase === PHASE.IDLE && (
             <div className="border border-red-500/30 rounded-lg p-3 bg-red-500/5 mb-4">
               <p className="text-xs font-mono text-red-300">
-                Insufficient GUARD balance. You need {fmtGuard(totalRaw)} GUARD but have {balance.toFixed(2)} GUARD.
+                Insufficient HBAR balance. You need {totalHbar.toFixed(4)} HBAR but have {balance.toFixed(4)} HBAR.
               </p>
             </div>
           )}
@@ -264,7 +266,7 @@ export default function PurchaseModal({ listing, onClose, onSuccess }) {
                 ? phase === PHASE.APPROVING   ? 'Approving…'
                 : phase === PHASE.PURCHASING  ? 'Purchasing…'
                 : '…'
-                : `Purchase ${fmtGuard(totalRaw)} GUARD`}
+                : `Purchase (${totalHbar.toFixed(4)} HBAR)`}
             </button>
           </div>
         </motion.div>

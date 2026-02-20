@@ -3,7 +3,7 @@ import { parseUnits } from 'ethers';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import useStore from '../../store/index';
-import useWalletStore, { hbarEquivalent } from '../../store/wallet';
+import useWalletStore from '../../store/wallet';
 import { useHbarSwap } from '../../hooks/useHbarSwap';
 import { hashscan } from '../../utils/hashscan';
 import { AVATAR_OPTIONS } from './StepIdentity';
@@ -104,9 +104,7 @@ function SuccessScreen({ formData, agentAddress, stakeAmountHuman, stakeInHbar }
           <span className="text-gray-500">Address</span>
           <span className="text-cyan-400 text-right truncate">{agentAddress}</span>
           <span className="text-gray-500">Stake</span>
-          <span className="text-amber-300 text-right">{stakeAmountHuman} GUARD</span>
-          <span className="text-gray-500">Paid</span>
-          <span className="text-cyan-300 text-right">≈ {stakeInHbar} HBAR (converted to {stakeAmountHuman} GUARD)</span>
+          <span className="text-amber-300 text-right">{stakeInHbar} HBAR</span>
           <span className="text-gray-500">Starting reputation</span>
           <span className="text-green-400 text-right">50.00</span>
           <span className="text-gray-500">Specializations</span>
@@ -171,12 +169,11 @@ function parseError(err) {
  * Props:
  *   formData   { identity: {agentId, description, avatar}, ucp: {...}, specializations, tier }
  *   onReset    () => void   (go back to step 1 on "Agent ID taken" error)
- *   guardBalance  number
  */
-export default function StepDeploy({ formData, onReset, guardBalance }) {
+export default function StepDeploy({ formData, onReset }) {
   const contracts  = useStore((s) => s.contracts);
   const address    = useWalletStore((s) => s.address);
-  const hbarPerGuard = useWalletStore((s) => s.hbarPerGuard);
+  const hbarBalance = useWalletStore((s) => s.hbarBalance);
   const refreshBal = useWalletStore((s) => s.refreshBalances);
   const { swapAndExecute, swapStep, isSwapping, swapError, reset } = useHbarSwap();
 
@@ -187,9 +184,11 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
 
   const tierDef      = TIERS.find((t) => t.id === formData.tier) || TIERS[0];
   const stakeAmountHuman = String(tierDef?.stake ?? 100);
-  const stakeInHbar = hbarEquivalent(stakeAmountHuman, hbarPerGuard);
+  // Fixed rate: 100 GUARD = 1 HBAR
+  const stakeInHbar = (tierDef.stake / 100).toFixed(4);
   const stakeRaw     = parseUnits(tierDef.stake.toString(), GUARD_DECIMALS);
-  const balanceAfter = (parseFloat(guardBalance) || 0) - tierDef.stake;
+  const hbarBalNum   = parseFloat(hbarBalance) || 0;
+  const balanceAfterHbar = hbarBalNum - parseFloat(stakeInHbar);
 
   const isDone    = deployStep === 'success';
   const hasError  = deployStep === 'error';
@@ -263,7 +262,7 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
         />
         <SummaryRow
           label="Stake required"
-          value={`${stakeAmountHuman} GUARD  (≈ ${stakeInHbar} HBAR)`}
+          value={`${stakeInHbar} HBAR`}
           valueClass="text-amber-300"
         />
         <SummaryRow
@@ -284,7 +283,7 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
         </p>
         <SummaryRow
           label="Staking (held as collateral)"
-          value={`${tierDef.stake.toLocaleString()}.00 GUARD  (≈ ${stakeInHbar} HBAR)`}
+          value={`${stakeInHbar} HBAR`}
           valueClass="text-amber-300"
         />
         <SummaryRow
@@ -293,9 +292,9 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
           valueClass="text-gray-300"
         />
         <SummaryRow
-          label="Balance after registration"
-          value={`${Math.max(0, balanceAfter).toFixed(2)} GUARD`}
-          valueClass={balanceAfter < 0 ? 'text-red-400' : 'text-green-400'}
+          label="HBAR balance after registration"
+          value={`${Math.max(0, balanceAfterHbar).toFixed(4)} HBAR`}
+          valueClass={balanceAfterHbar < 0 ? 'text-red-400' : 'text-green-400'}
         />
       </div>
 
@@ -326,17 +325,17 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
           Transactions
         </p>
         <TxRow
-          label="Checking GUARD exchange rate..."
+          label="Preparing HBAR conversion..."
           done={['swapping', 'approving', 'executing', 'done'].includes(swapStep)}
           active={swapStep === 'quoting'}
         />
         <TxRow
-          label="1/3 — Converting HBAR to GUARD..."
+          label="1/3 — Converting HBAR..."
           done={['approving', 'executing', 'done'].includes(swapStep)}
           active={swapStep === 'swapping'}
         />
         <TxRow
-          label="2/3 — Approving GUARD for registry..."
+          label="2/3 — Approving for registry..."
           done={['executing', 'done'].includes(swapStep)}
           active={swapStep === 'approving'}
         />
@@ -382,10 +381,10 @@ export default function StepDeploy({ formData, onReset, guardBalance }) {
         ].join(' ')}
       >
         {isSwapping
-          ? swapStep === 'quoting'   ? '⏳ Checking GUARD exchange rate...'
-          : swapStep === 'swapping'  ? '⏳ 1/3 Converting HBAR to GUARD...'
-          : swapStep === 'approving' ? '⏳ 2/3 Approving GUARD for registry...'
-          : swapStep === 'executing' ? '⏳ 3/3 Registering agent on-chain...'
+          ? swapStep === 'quoting'   ? '⏳ Preparing...'
+          : swapStep === 'swapping'  ? '⏳ 1/3 Converting HBAR...'
+          : swapStep === 'approving' ? '⏳ 2/3 Approving...'
+          : swapStep === 'executing' ? '⏳ 3/3 Registering...'
           : '⏳ Processing...'
           : '🚀 Deploy Agent'}
       </button>
