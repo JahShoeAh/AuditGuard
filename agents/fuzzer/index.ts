@@ -31,7 +31,10 @@ const AGENT_ID = "fuzzer-012";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const STRICT_LIVE = CONFIG.strictLive;
 const NO_FALLBACK_MODE = (process.env.NO_FALLBACK_MODE ?? "true") === "true";
-const SPECIALIZATIONS: ContractType[] = ["dex", "bridge"];
+const SPECIALIZATIONS: ContractType[] = [
+  "lending", "dex", "staking", "bridge", "vault",
+  "derivatives", "oracle", "governance", "nft",
+];
 const BASE_REPUTATION = 82;
 const MAX_DATA_PURCHASE_PRICE = 1.0; // GUARD
 const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;

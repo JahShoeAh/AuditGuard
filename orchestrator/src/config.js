@@ -87,7 +87,7 @@ export const CONFIG = {
     premiumThreshold: 80,
   },
   timeouts: {
-    winnerWaitMs: 30_000,
+    winnerWaitMs: 120_000,
     findingsSlaMs: 90_000,
     pingIntervalMs: 45_000,
     livenessExpiryMs: 120_000,

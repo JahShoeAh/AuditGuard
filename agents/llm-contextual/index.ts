@@ -43,7 +43,10 @@ import { loadContractSource } from "../shared/contract-source.js";
 const AGENT_ID = "llm-contextual-003";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const STRICT_LIVE = CONFIG.strictLive;
-const SPECIALIZATIONS: ContractType[] = ["lending", "bridge", "dex"];
+const SPECIALIZATIONS: ContractType[] = [
+  "lending", "dex", "staking", "bridge", "vault",
+  "derivatives", "oracle", "governance", "nft",
+];
 const BASE_REPUTATION = 87;
 const MIN_RISK_SCORE = 50;       // only take complex jobs
 const MIN_LOC = 1000;            // not worth my time below this

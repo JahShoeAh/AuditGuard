@@ -62,6 +62,7 @@ export class OrchestratorAgent {
     this.inflightCloseJobs = new Map();
     this.inflightSelectWinnerJobs = new Map();
     this.reconcileCloseCooldown = new Map();
+    this._isReconcileRunning = false;
     this.scheduledEnrichmentClient = opts.scheduledEnrichmentClient ?? enrichScheduledDiscovery;
     this.scheduledEnrichmentMaxAttempts = Number(
       process.env.ORCHESTRATOR_SCHEDULED_ENRICHMENT_MAX_ATTEMPTS ?? "2"
@@ -1601,6 +1602,16 @@ export class OrchestratorAgent {
   }
 
   async reconcileExpiredActiveAuctions() {
+    if (this._isReconcileRunning) return;
+    this._isReconcileRunning = true;
+    try {
+      await this._reconcileExpiredActiveAuctionsInner();
+    } finally {
+      this._isReconcileRunning = false;
+    }
+  }
+
+  async _reconcileExpiredActiveAuctionsInner() {
     const getActiveJobs =
       this.contracts.getActiveJobs?.bind(this.contracts) ??
       this.contracts.auction?.getActiveJobs?.bind(this.contracts.auction);
