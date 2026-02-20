@@ -29,9 +29,9 @@ interface IStakingManagerDelegation {
 ///
 ///   DELEGATORS                 AGENTS                  PROTOCOL
 ///   ──────────                 ──────                  ────────
-///   delegate(agent, amount)    enableDelegation()       propagateSlash() [StakingManager]
-///   requestUndelegate()        setRewardShareBps()      distributeRewards() [PaymentSettlement]
-///   completeUndelegate()       disableDelegation()
+///   delegate(agent, amount)    setRewardShareBps()      propagateSlash() [StakingManager]
+///   requestUndelegate()                                 distributeRewards() [PaymentSettlement]
+///   completeUndelegate()
 ///   claimRewards()
 ///
 ///   Reward maths use a Synthetix-style rewardPerToken accumulator for O(1) per-claim
@@ -107,8 +107,6 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
         uint16 rewardShareBps;
         /// @notice Number of unique delegators currently delegating to this agent.
         uint32 delegatorCount;
-        /// @notice True while the agent is accepting new delegations.
-        bool acceptingDelegations;
     }
 
     // ──────────────────────────────────────────────
@@ -179,12 +177,6 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     // ──────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────
-
-    /// @notice Emitted when an agent enables the delegation marketplace.
-    event DelegationEnabled(address indexed agent, uint16 rewardShareBps);
-
-    /// @notice Emitted when an agent disables new delegations (existing are unaffected).
-    event DelegationDisabled(address indexed agent);
 
     /// @notice Emitted when an agent adjusts the share bps offered to delegators.
     event RewardShareUpdated(address indexed agent, uint16 oldBps, uint16 newBps);
@@ -270,62 +262,22 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
 
     /// @notice Deploys DelegatedStaking with the required contract addresses.
     /// @param _guardToken GUARD HTS token EVM address.
-    /// @param _stakingManager StakingManager contract address.
-    /// @param _agentRegistry AgentRegistry contract address.
     /// @param _treasury Treasury address for slash proceeds.
+    /// @dev StakingManager and AgentRegistry can be set post-deployment via setters.
     constructor(
         address _guardToken,
-        address _stakingManager,
-        address _agentRegistry,
         address _treasury
     ) Ownable(msg.sender) {
         require(_guardToken != address(0), "DelegatedStaking: guard token is zero");
         require(_treasury != address(0), "DelegatedStaking: treasury is zero");
 
         guardToken = _guardToken;
-        stakingManager = _stakingManager;
-        agentRegistry = _agentRegistry;
         treasury = _treasury;
     }
 
     // ──────────────────────────────────────────────
-    //  Agent Opt-In
+    //  Agent Configuration
     // ──────────────────────────────────────────────
-
-    /// @notice Allows a registered, ACTIVE agent to begin accepting delegations.
-    /// @dev Sets rewardShareBps to defaultRewardBps. Only callable by the agent themselves.
-    ///      The agent must be ACTIVE in AgentRegistry.
-    function enableDelegation() external whenNotPaused {
-        if (agentRegistry != address(0)) {
-            require(
-                IAgentRegistryDelegation(agentRegistry).isActiveAgent(msg.sender),
-                "DelegatedStaking: agent not active in registry"
-            );
-        }
-
-        AgentDelegationPool storage pool = agentPools[msg.sender];
-        require(!pool.acceptingDelegations, "DelegatedStaking: already enabled");
-
-        pool.agent = msg.sender;
-        pool.acceptingDelegations = true;
-
-        if (pool.rewardShareBps == 0) {
-            pool.rewardShareBps = uint16(defaultRewardBps);
-        }
-
-        emit DelegationEnabled(msg.sender, pool.rewardShareBps);
-    }
-
-    /// @notice Stops the agent from accepting NEW delegations. Existing delegations
-    ///         remain active and can still claim rewards and undelegate normally.
-    function disableDelegation() external {
-        AgentDelegationPool storage pool = agentPools[msg.sender];
-        require(pool.acceptingDelegations, "DelegatedStaking: already disabled");
-
-        pool.acceptingDelegations = false;
-
-        emit DelegationDisabled(msg.sender);
-    }
 
     /// @notice Adjusts the share of audit earnings an agent offers to delegators.
     /// @param bps New reward share in basis points. Must be in [100, 5000] (1%–50%).
@@ -350,19 +302,25 @@ contract DelegatedStaking is ReentrancyGuard, Pausable, Ownable {
     /// @dev Transfers GUARD from delegator to this contract via HTS precompile.
     ///      Creates a new Delegation if one doesn't exist, or increases existing amount.
     ///      Settles any pending rewards before changing amount (accumulator pattern).
+    ///      Auto-initializes the agent's pool on first delegation.
     /// @param agent Agent wallet address to delegate to.
     /// @param amount GUARD to delegate in smallest units (must be >= minDelegation).
     function delegate(address agent, uint96 amount) external nonReentrant whenNotPaused {
         require(amount >= minDelegation, "DelegatedStaking: below minimum delegation");
-
-        AgentDelegationPool storage pool = agentPools[agent];
-        require(pool.acceptingDelegations, "DelegatedStaking: agent not accepting delegations");
 
         if (agentRegistry != address(0)) {
             require(
                 IAgentRegistryDelegation(agentRegistry).isActiveAgent(agent),
                 "DelegatedStaking: agent not active"
             );
+        }
+
+        AgentDelegationPool storage pool = agentPools[agent];
+
+        // Auto-initialize pool if first delegation to this agent
+        if (pool.agent == address(0)) {
+            pool.agent = agent;
+            pool.rewardShareBps = uint16(defaultRewardBps);
         }
 
         bytes32 key = _delegationKey(msg.sender, agent);

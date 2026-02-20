@@ -104,7 +104,6 @@ export default function AgentDetail({ addr }) {
           totalDelegated:       pool.totalDelegated,
           rewardShareBps:       pool.rewardShareBps,
           delegatorCount:       Number(pool.delegatorCount),
-          acceptingDelegations: pool.acceptingDelegations,
         });
       } catch { /* contract not deployed */ }
       if (walletAddress) {
@@ -154,16 +153,6 @@ export default function AgentDetail({ addr }) {
     }
   }, [profile.ucpEndpoint]);
 
-  const handleEnableDelegation = useCallback(async () => {
-    const ds = contracts?.delegatedStakingContract;
-    if (!ds || !signer) { toast.error('Wallet not connected.'); return; }
-    try {
-      await execWrite(ds, 'enableDelegation', []);
-      toast.success('Delegation enabled! Backers can now delegate GUARD to your agent.');
-    } catch (err) {
-      toast.error(`Failed: ${err?.message?.slice(0, 80) || 'Unknown error'}`);
-    }
-  }, [contracts, signer, execWrite, toast]);
 
   if (!addr) {
     return (
@@ -269,29 +258,19 @@ export default function AgentDetail({ addr }) {
             <span className="text-gray-300 text-right">{profile.completedJobs || 0}</span>
           </div>
 
-          {/* Enable Delegations toggle */}
-          <div className="border border-gray-700 rounded-lg p-3 bg-gray-900">
+          {/* Delegation Info */}
+          <div className="border border-green-500/20 rounded-lg p-3 bg-green-500/5">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-gray-300 font-semibold">Accept Delegations</span>
-              {poolData?.acceptingDelegations ? (
-                <span className="text-[10px] font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded">ENABLED</span>
-              ) : (
-                <span className="text-[10px] font-bold text-gray-500 bg-gray-800 px-2 py-0.5 rounded">DISABLED</span>
-              )}
+              <span className="text-gray-300 font-semibold">Delegation Status</span>
+              <span className="text-[10px] font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded">OPEN</span>
             </div>
-            <p className="text-gray-600 text-[11px] mb-2">
-              Allow GUARD holders to back your agent and share in rewards.
+            <p className="text-[11px] font-mono text-gray-400">
+              Anyone can delegate GUARD to support your agent. You currently share{' '}
+              <span className="text-green-400 font-semibold">
+                {poolData?.rewardShareBps ? `${(Number(poolData.rewardShareBps) / 100).toFixed(1)}%` : '10%'}
+              </span>
+              {' '}of your earnings with delegators.
             </p>
-            {!poolData?.acceptingDelegations && (
-              <button
-                type="button"
-                onClick={handleEnableDelegation}
-                disabled={writeStatus === 'confirming'}
-                className="w-full py-1.5 text-[11px] font-bold font-mono uppercase tracking-wider rounded border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-50 transition-colors"
-              >
-                {writeStatus === 'confirming' ? '⏳ Enabling…' : 'Enable Delegations →'}
-              </button>
-            )}
           </div>
         </Section>
       )}
@@ -412,10 +391,6 @@ export default function AgentDetail({ addr }) {
               <span className="text-gray-500">Reward Share</span>
               <span className="text-green-400 text-right font-semibold">
                 {(Number(poolData.rewardShareBps) / 100).toFixed(0)}%
-              </span>
-              <span className="text-gray-500">Accepting</span>
-              <span className={`text-right font-semibold ${poolData.acceptingDelegations ? 'text-green-400' : 'text-red-400'}`}>
-                {poolData.acceptingDelegations ? '✓ Yes' : '✗ Closed'}
               </span>
               {myDelegation && (
                 <>

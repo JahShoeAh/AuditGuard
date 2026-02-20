@@ -103,7 +103,6 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
   const shareRate      = fmtShareRate(pool?.rewardShareBps);
   const totalDelegated = fmtG(pool?.totalDelegated);
   const delegatorCount = pool?.delegatorCount ?? 0;
-  const accepting      = pool?.acceptingDelegations ?? true;
   const myExisting     = fmtG(existingDelegation?.amount);
   const slashCount     = agentProfile?.slashCount ?? 0;
   const fpRate         = agentProfile?.falsePositives ?? 0;
@@ -180,18 +179,8 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
           <span className={`text-right font-semibold ${parseFloat(myExisting) > 0 ? 'text-cyan-300' : 'text-gray-600'}`}>
             {parseFloat(myExisting) > 0 ? `${myExisting} GUARD` : 'None yet'}
           </span>
-          <span className="text-gray-500">Accepting</span>
-          <span className={`text-right font-semibold ${accepting ? 'text-green-400' : 'text-red-400'}`}>
-            {accepting ? '✓ Yes' : '✗ Closed'}
-          </span>
         </div>
       </div>
-
-      {!accepting && (
-        <div className="border border-red-500/30 rounded-lg p-3 bg-red-500/5 text-xs font-mono text-red-300">
-          ⚠ This agent is not currently accepting new delegations.
-        </div>
-      )}
 
       <div className="flex gap-2 pt-1">
         <button
@@ -202,8 +191,7 @@ function Step1Review({ agentProfile, pool, existingDelegation, onNext, onClose }
         </button>
         <button
           onClick={onNext}
-          disabled={!accepting}
-          className="flex-1 text-xs font-bold font-mono py-2 rounded border border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 text-xs font-bold font-mono py-2 rounded border border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 transition-colors"
         >
           Set Amount →
         </button>
@@ -562,7 +550,6 @@ export default function DelegationWizard({ agentAddress, onClose, onSuccess }) {
         totalDelegated:       poolResult.totalDelegated,
         rewardShareBps:       poolResult.rewardShareBps,
         delegatorCount:       Number(poolResult.delegatorCount),
-        acceptingDelegations: poolResult.acceptingDelegations,
       });
     } catch { /* not deployed yet */ }
 
