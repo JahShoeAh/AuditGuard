@@ -1934,7 +1934,30 @@ export class OrchestratorAgent {
           payload: { jobId: key, winners: winnerAddrs, totalEscrowed: totalEscrowed?.toString(), platformFee: platformFee?.toString() },
         }).catch(() => {});
       });
-      this.log.info("Listening for on-chain WinnersSelected events");
+
+      this.contracts.auction.on("JobCancelled", (jobId, reason) => {
+        const key = this.normalizeJobId(jobId);
+        const job = this.getJobByKey(key);
+        if (!job) return;
+
+        const reasonCode = reason ? String(reason) : "cancelled_event";
+        job.cancelledOnChain = true;
+        job.cancelledReason = reasonCode;
+        job.terminalOnChain = true;
+        job.terminalReason = "cancelled";
+        job.terminalAt = Date.now();
+        this.setJobByKey(key, job);
+        this.log.info(`[Orchestrator] On-chain JobCancelled event for job ${key}, reason: ${reasonCode}`);
+
+        this.hcs.publishAuditLog({
+          type: "JOB_CANCELLED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: { jobId: key, contractAddress: job.contractAddress, phase: "event", reasonCode },
+        }).catch(() => {});
+      });
+
+      this.log.info("Listening for on-chain WinnersSelected and JobCancelled events");
     } catch (err) {
       this.log.warn(`Contract event subscription failed: ${err.message}`);
     }
