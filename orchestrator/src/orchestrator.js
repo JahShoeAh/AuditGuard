@@ -1252,31 +1252,77 @@ export class OrchestratorAgent {
 
   // ─── Actions ───────────────────────────────────────────────────────────
 
+  async dispatchToUcpEndpoint(endpoint, message) {
+    if (!endpoint || String(endpoint).startsWith("hcs://")) return;
+
+    const url = `${String(endpoint).replace(/\/$/, "")}/task`;
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 5000);
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+        signal: ctrl.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      this.log.info(`UCP HTTP dispatch → ${url} (type=${message.type})`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(`UCP HTTP dispatch failed for ${endpoint}: ${reason}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   async inviteAgents(jobId, agents, payload) {
     if (!Array.isArray(agents) || agents.length === 0) {
       this.log.info(`No eligible agents to invite for job ${jobId}`);
       return;
     }
+
+    const invitePayload = {
+      jobId,
+      contractAddress: payload.contractAddress,
+      contractType: payload.contractType,
+      budget: payload.budget ?? CONFIG.payments.totalGuard,
+      riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
+      estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
+      estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
+    };
     const eligibleAgentIds = agents.map((agent) => String(agent?.agentId ?? "")).filter(Boolean);
     const eligibleEvmAddresses = agents.map((agent) => this.normalizeAddress(agent?.evmAddress)).filter(Boolean);
     const inviteBatchId = `invite:${String(jobId)}:${Date.now()}`;
+
     await this.hcs.publishAgentComms({
       type: MessageType.AUCTION_INVITE,
       agentId: "orchestrator",
       timestamp: now(),
       payload: {
-        jobId,
-        contractAddress: payload.contractAddress,
-        contractType: payload.contractType,
-        budget: payload.budget ?? CONFIG.payments.totalGuard,
-        riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,
-        estimatedLOC: payload.estimatedLOC ?? payload.estimatedLineCount ?? 0,
-        estimatedLineCount: payload.estimatedLineCount ?? payload.estimatedLOC ?? 0,
+        ...invitePayload,
         inviteBatchId,
         eligibleAgentIds,
         eligibleEvmAddresses,
       },
     });
+
+    for (const agent of agents) {
+      const entry = this.roster.get(agent.agentId);
+      if (entry?.endpoint) {
+        this.dispatchToUcpEndpoint(entry.endpoint, {
+          type: "AUCTION_INVITE",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: invitePayload,
+        }).catch(() => { });
+      }
+    }
+
     this.log.info(`Invited ${agents.length} agents to job ${jobId}`);
   }
 
@@ -1284,6 +1330,11 @@ export class OrchestratorAgent {
     const key = this.normalizeJobId(jobId);
     const job = this.getJobByKey(key) ?? { contractAddress: null };
     if (!this.getJobByKey(key)) this.setJobByKey(key, job);
+
+    if (job.cancelledOnChain) {
+      return true;
+    }
+
     const existingClose = this.inflightCloseJobs.get(key);
     if (this.auctionCloseSingleflightEnabled && existingClose) {
       this.log.info(`[Orchestrator] closeExpiredAuction single-flight skip for job ${key}`);
@@ -1314,6 +1365,10 @@ export class OrchestratorAgent {
           const receipt = await this.contracts.cancelJob(Number(key));
           job.cancelledOnChain = true;
           job.cancelledReason = reasonCode;
+          job.terminalOnChain = true;
+          job.terminalReason = "cancelled";
+          job.terminalTxHash = receipt?.hash ?? null;
+          job.terminalAt = Date.now();
           this.setJobByKey(key, job);
           this.log.info(
             `[Orchestrator] On-chain cancelJob succeeded for expired job ${key}, tx: ${receipt?.hash ?? "unknown"}`
@@ -1336,9 +1391,11 @@ export class OrchestratorAgent {
           lastError = error;
 
           if (this.isAuctionTerminalError(error)) {
-            // Auction is already terminal on-chain; treat as closed and stop retrying.
             job.cancelledOnChain = true;
             job.cancelledReason = `${reasonCode}:already_terminal`;
+            job.terminalOnChain = true;
+            job.terminalReason = "cancel_already_terminal";
+            job.terminalAt = Date.now();
             this.setJobByKey(key, job);
             this.log.info(`[Orchestrator] Expired job ${key} already terminal on-chain during cancel path`);
             return true;
@@ -1432,6 +1489,8 @@ export class OrchestratorAgent {
     for (const rawId of activeJobIds || []) {
       if (closeAttempts >= this.staleAuctionReconcileMaxPerCycle) break;
       const key = this.normalizeJobId(rawId);
+      const job = this.getJobByKey(key);
+      if (job?.terminalOnChain || job?.cancelledOnChain) continue;
       const cooldownUntil = Number(this.reconcileCloseCooldown.get(key) ?? 0);
       if (cooldownUntil > nowMs) continue;
       try {
@@ -1439,7 +1498,15 @@ export class OrchestratorAgent {
         const deadlineSec = Number(chainJob?.auctionDeadline ?? 0);
         const status = Number(chainJob?.status ?? -1);
         const isAuctionOpen = status === 0; // JobStatus.AUCTION_OPEN
-        if (!isAuctionOpen) continue;
+        if (!isAuctionOpen) {
+          if (job) {
+            job.terminalOnChain = true;
+            job.terminalReason = "reconcile_skip_terminal";
+            job.terminalAt = Date.now();
+            this.setJobByKey(key, job);
+          }
+          continue;
+        }
         if (!Number.isFinite(deadlineSec) || deadlineSec <= 0) continue;
         if (deadlineSec > nowSec) continue;
 
@@ -1528,7 +1595,6 @@ export class OrchestratorAgent {
         return;
       }
 
-      // Score bids: 55% reputation + 25% price (inverse) + 20% speed (inverse)
       const maxBid = Math.max(...job.bidders.map((b) => b.bidAmount || 1), 1);
       const maxTime = Math.max(...job.bidders.map((b) => b.estimatedTimeSec || 1), 1);
 
@@ -1553,7 +1619,7 @@ export class OrchestratorAgent {
         if (selectedWinners.length >= 3) break;
       }
 
-      const winnerAddresses = selectedWinners.map(w => w.evmAddress).filter(Boolean);
+      const winnerAddresses = selectedWinners.map((w) => w.evmAddress).filter(Boolean);
       this.log.info(
         `Bid-scored winners for job ${jobId} (${job.bidders.length} bids): ` +
         `${winnerAddresses.join(", ")}`
@@ -1561,7 +1627,6 @@ export class OrchestratorAgent {
 
       job.winners = winnerAddresses;
 
-      // On-chain winner selection only (no HCS fallback path).
       const winningBidIndices = selectedWinners
         .map((w) => w.bidIndex)
         .filter((idx) => Number.isInteger(idx));
@@ -1604,6 +1669,24 @@ export class OrchestratorAgent {
           await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
           const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
           this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+
+          for (const winner of selectedWinners) {
+            const entry = this.roster.get(winner.agentId);
+            if (entry?.endpoint) {
+              this.dispatchToUcpEndpoint(entry.endpoint, {
+                type: "TASK_ASSIGNED",
+                agentId: "orchestrator",
+                timestamp: now(),
+                payload: {
+                  jobId,
+                  contractAddress: job.contractAddress,
+                  contractType: job.contractType,
+                  winnerAddress: winner.evmAddress,
+                },
+              }).catch(() => { });
+            }
+          }
+
           job.winnerSource = "on-chain";
           return;
         } catch (err) {

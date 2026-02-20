@@ -29,9 +29,11 @@
   },
   "dependencies": {
     "@0glabs/0g-serving-broker": "^0.7.1",
+    "@anthropic-ai/sdk": "^0.38.0",
     "@hashgraph/sdk": "^2.46.0",
     "dotenv": "^16.4.0",
     "ethers": "^6.13.0",
+    "evmdecoder": "^0.0.69",
     "winston": "^3.13.0"
   },
   "devDependencies": {

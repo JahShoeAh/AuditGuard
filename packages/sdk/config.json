@@ -44,13 +44,21 @@
       "evmAddress": "0xC4736e92fbd50663b0C1bd68d7Bf6cdC1FC04D9e"
     },
     "delegatedStaking": {
-      "id": "0.0.7977494",
-      "evmAddress": "0x5843aF31d9BB3b85b05bD715E4770199c091d9Ad"
+      "id": "0.0.d7ecb236abbc559a284921043e36d2962235f77c",
+      "evmAddress": "0xD7ECb236ABBC559A284921043e36D2962235f77C",
+      "deployedAt": "2026-02-20T02:28:27.769Z",
+      "version": "v2-no-gating"
     },
     "auditScheduler": {
       "address": "0x67d67C1c721241f9350d3ecA0C0a1B6D53E69860",
       "evmAddress": "0x67d67c1c721241f9350d3eca0c0a1b6d53e69860",
       "deployedAt": "2026-02-19T04:40:23.961Z"
+    },
+    "guardExchange": {
+      "evmAddress": "0xC93f9096FDa8996C988Ad1b32665BBFc8CA571fE",
+      "deployedAt": "2026-02-20T01:35:30.431Z",
+      "seedHbar": "100",
+      "seedGuard": "10000"
     }
   },
   "testContracts": [

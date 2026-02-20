@@ -28,12 +28,25 @@ const UCP_CAPABILITIES = [
 
 // ── URL validation ─────────────────────────────────────────
 
+// In Vite dev mode (npm run dev), allow http://localhost for local testing.
+// Always false in production builds (import.meta.env.DEV is statically replaced).
+const IS_DEV = import.meta.env.DEV === true;
+
 function validateUcpUrl(value) {
   if (!value) return 'UCP endpoint is required.';
   try {
     const u = new URL(value);
-    if (u.protocol !== 'https:') return 'Endpoint must use HTTPS.';
-    return null;
+    if (u.protocol === 'https:') return null;
+    if (
+      IS_DEV &&
+      u.protocol === 'http:' &&
+      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
+    ) {
+      return null; // allow http://localhost in dev mode; use ngrok for production
+    }
+    return IS_DEV
+      ? 'Endpoint must use HTTPS (or http://localhost in dev mode).'
+      : 'Endpoint must use HTTPS.';
   } catch {
     return 'Enter a valid HTTPS URL (e.g. https://my-server.com/ucp/agent).';
   }
