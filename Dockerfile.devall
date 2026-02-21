@@ -1,27 +1,5 @@
 # syntax=docker/dockerfile:1
 
-# ── Stage 1: install deps + compile native addons ──
-FROM node:20.19.0-bookworm-slim AS deps
-
-WORKDIR /app
-
-# Build tools needed for better-sqlite3 and other native addons.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-
-# Copy workspace manifests first for better layer caching.
-# Only backend workspaces — dashboard is excluded to keep the image small.
-COPY package.json package-lock.json ./
-COPY agents/package.json agents/package.json
-COPY orchestrator/package.json orchestrator/package.json
-COPY packages/inft/package.json packages/inft/package.json
-COPY packages/events-api/package.json packages/events-api/package.json
-
-# Install only backend workspace dependencies (skip dashboard).
-RUN npm ci -w agents -w orchestrator -w packages/inft -w packages/events-api --include-workspace-root
-
-# ── Stage 2: slim runtime (no python3/make/g++) ──
 FROM node:20.19.0-bookworm-slim
 
 WORKDIR /app
@@ -29,14 +7,23 @@ WORKDIR /app
 LABEL org.opencontainers.image.source="https://github.com/JahShoeAh/AuditGuard"
 LABEL org.opencontainers.image.description="AuditGuard backend runtime (orchestrator + agents + iNFT listeners + events API)"
 
+# Use dumb-init for proper signal forwarding/shutdown of all child processes.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init \
+  && apt-get install -y --no-install-recommends dumb-init python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy installed node_modules (with compiled native addons) from deps stage.
-COPY --from=deps /app .
+# Copy workspace manifests first for better layer caching.
+COPY package.json package-lock.json ./
+COPY agents/package.json agents/package.json
+COPY orchestrator/package.json orchestrator/package.json
+COPY packages/dashboard/package.json packages/dashboard/package.json
+COPY packages/inft/package.json packages/inft/package.json
+COPY packages/events-api/package.json packages/events-api/package.json
 
-# Copy application source.
+# Install all workspace dependencies.
+RUN npm ci --workspaces --include-workspace-root
+
+# Copy full source after dependency install.
 COPY . .
 
 ENV NODE_ENV=development
