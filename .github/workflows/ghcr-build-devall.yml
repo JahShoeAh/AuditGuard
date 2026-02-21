@@ -90,6 +90,7 @@ jobs:
             fi
 
             echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            docker system prune -a -f || true
             docker pull "${IMAGE}"
             docker stop "${CONTAINER_NAME}" || true
             docker rm "${CONTAINER_NAME}" || true

@@ -13,15 +13,15 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for better layer caching.
+# Only backend workspaces — dashboard is excluded to keep the image small.
 COPY package.json package-lock.json ./
 COPY agents/package.json agents/package.json
 COPY orchestrator/package.json orchestrator/package.json
-COPY packages/dashboard/package.json packages/dashboard/package.json
 COPY packages/inft/package.json packages/inft/package.json
 COPY packages/events-api/package.json packages/events-api/package.json
 
-# Install all workspace dependencies required by dev:backend.
-RUN npm ci --workspaces --include-workspace-root
+# Install only backend workspace dependencies (skip dashboard).
+RUN npm ci -w agents -w orchestrator -w packages/inft -w packages/events-api --include-workspace-root
 
 # Copy full source after dependency install.
 COPY . .
