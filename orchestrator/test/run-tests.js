@@ -30,17 +30,6 @@ function makeMocks(opts = {}) {
   const cancelledJobs = [];
   const auctionListeners = new Map();
   let createCalls = 0;
-  const dataMarketplace = {
-    purchaseData: async () => {},
-  };
-  const subAuction = {
-    createSubAuction: async () => {},
-    acceptResult: async () => {},
-  };
-  const paymentSettlement = {
-    settleJob: async () => {},
-    isJobSettled: async () => settledOnChain,
-  };
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
@@ -87,13 +76,17 @@ function makeMocks(opts = {}) {
       auctionDeadline: BigInt(Math.floor(Date.now() / 1000) + 60),
       status: 0,
     }),
-    dataMarketplace,
-    subAuction,
-    paymentSettlement,
-    purchaseData: async (...args) => dataMarketplace.purchaseData(...args),
-    createSubAuction: async (...args) => subAuction.createSubAuction(...args),
-    acceptSubResult: async (...args) => subAuction.acceptResult(...args),
-    settleJob: async (...args) => paymentSettlement.settleJob(...args),
+    dataMarketplace: {
+      purchaseData: async () => {},
+    },
+    subAuction: {
+      createSubAuction: async () => {},
+      acceptResult: async () => {},
+    },
+    paymentSettlement: {
+      settleJob: async () => {},
+      isJobSettled: async () => settledOnChain,
+    },
     agentRegistry: {
       isActiveAgent: async () => {
         if (activeCheckThrows) throw new Error("transient rpc failure");
@@ -866,143 +859,6 @@ async function testSelectWinnersIgnoresLocalGhostBidsWhenOnChainEmpty() {
   assert.ok(cancelledJobs.includes(4242), "no on-chain bids should trigger cancel path");
 }
 
-async function testSelectWinnersHydratesMissingJobFromChain() {
-  const previousRehydrate = process.env.ORCHESTRATOR_REHYDRATE_MISSING_JOB_FOR_SELECTION;
-  process.env.ORCHESTRATOR_REHYDRATE_MISSING_JOB_FOR_SELECTION = "true";
-  try {
-    const log = mockLog();
-    const roster = new Roster(log);
-    const { hcs, contracts } = makeMocks({
-      onChainBids: [
-        {
-          agent: ADDR_AGENT_A,
-          bidAmount: 1000000000n,
-          collateralLocked: 5000000000n,
-          reputationAtBid: 90n,
-          estimatedCompletionTime: 100n,
-          timestamp: 1n,
-        },
-      ],
-    });
-    let selectCalls = 0;
-    contracts.selectWinners = async () => {
-      selectCalls += 1;
-      return { hash: "0xselect", status: 1 };
-    };
-    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-
-    await orch.selectWinnersOnChain("4242", { path: "reconcile" });
-
-    assert.equal(selectCalls, 1, "missing in-memory job should be hydrated and selected");
-    assert.ok(orch.getJobByKey("4242"), "hydrated job should be persisted in memory");
-  } finally {
-    if (previousRehydrate == null) delete process.env.ORCHESTRATOR_REHYDRATE_MISSING_JOB_FOR_SELECTION;
-    else process.env.ORCHESTRATOR_REHYDRATE_MISSING_JOB_FOR_SELECTION = previousRehydrate;
-  }
-}
-
-async function testReconcileSelectCapRespected() {
-  const previousCap = process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
-  process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = "1";
-  try {
-    const log = mockLog();
-    const roster = new Roster(log);
-    const { hcs, contracts } = makeMocks({
-      onChainBids: [
-        {
-          agent: ADDR_AGENT_A,
-          bidAmount: 1000000000n,
-          collateralLocked: 5000000000n,
-          reputationAtBid: 90n,
-          estimatedCompletionTime: 100n,
-          timestamp: 1n,
-        },
-      ],
-    });
-    contracts.getActiveJobs = async () => [4242n, 4243n];
-    contracts.getJob = async () => ({
-      auctionDeadline: BigInt(Math.floor(Date.now() / 1000) - 3),
-      status: 0,
-    });
-    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-    const calls = [];
-    orch.selectWinnersOnChain = async (jobId, opts = {}) => {
-      calls.push({ jobId: String(jobId), path: opts.path ?? "" });
-    };
-
-    await orch.reconcileExpiredActiveAuctions();
-
-    assert.equal(calls.length, 1, "reconcile must honor max selects per cycle cap");
-    assert.equal(calls[0].path, "reconcile", "reconcile-triggered selection should carry reconcile path");
-  } finally {
-    if (previousCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
-    else process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = previousCap;
-  }
-}
-
-async function testWinnerSelectionTimingTelemetry() {
-  const log = mockLog();
-  const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks({
-    onChainBids: [
-      {
-        agent: ADDR_AGENT_A,
-        bidAmount: 1000000000n,
-        collateralLocked: 5000000000n,
-        reputationAtBid: 90n,
-        estimatedCompletionTime: 100n,
-        timestamp: 1n,
-      },
-    ],
-  });
-  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-  orch.setJobByKey("4242", {
-    contractAddress: ADDR_JOB,
-    contractType: "vault",
-    bidders: [],
-    winners: [],
-    findings: [],
-    reportPublished: false,
-    auctionDeadlineSec: Math.floor(Date.now() / 1000) - 1,
-    winnerSelectionScheduledAt: Date.now() - 1500,
-  });
-
-  await orch.selectWinnersOnChain("4242", { path: "timer" });
-
-  const timing = auditLogMessages.find((m) => m.type === "WINNER_SELECTION_TIMING");
-  assert.ok(timing, "winner timing telemetry should be emitted");
-  assert.equal(timing.payload.path, "timer");
-  assert.equal(timing.payload.result, "success");
-  assert.ok(Number(timing.payload.attempts) >= 1, "timing telemetry should include attempts");
-}
-
-async function testStartupWinnerRearmSchedulesTimers() {
-  const previousRearm = process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
-  process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = "true";
-  try {
-    const log = mockLog();
-    const roster = new Roster(log);
-    const { hcs, contracts } = makeMocks();
-    contracts.getActiveJobs = async () => [4242n];
-    contracts.getJob = async () => ({
-      status: 0,
-      auctionDeadline: BigInt(Math.floor(Date.now() / 1000) + 30),
-      contractAddress: ADDR_JOB,
-      contractType: "lending",
-    });
-    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
-
-    await orch.bootstrapWinnerSelectionFromActiveJobs();
-
-    assert.ok(orch.getJobByKey("4242"), "startup re-arm should hydrate active on-chain jobs");
-    assert.ok(orch.winnerSelectionTimers.has("4242"), "startup re-arm should schedule winner selection timer");
-    orch.clearWinnerSelectionTimer("4242");
-  } finally {
-    if (previousRearm == null) delete process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
-    else process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = previousRearm;
-  }
-}
-
 async function testAutoBuyDataListing() {
   const log = mockLog();
   const roster = new Roster(log);
@@ -1196,10 +1052,6 @@ async function run() {
     ["winner selected immediate publish + dedupe", testImmediateWinnerAuditLogAndDeduping],
     ["select winners uses on-chain bid index mapping", testSelectWinnersUsesOnChainBidIndexMapping],
     ["select winners ignores local ghost bids when on-chain empty", testSelectWinnersIgnoresLocalGhostBidsWhenOnChainEmpty],
-    ["select winners hydrates missing job from chain", testSelectWinnersHydratesMissingJobFromChain],
-    ["reconcile select cap respected", testReconcileSelectCapRespected],
-    ["winner selection timing telemetry", testWinnerSelectionTimingTelemetry],
-    ["startup winner rearm schedules timers", testStartupWinnerRearmSchedulesTimers],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],

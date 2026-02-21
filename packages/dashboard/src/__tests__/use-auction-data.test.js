@@ -23,28 +23,6 @@ describe("buildAuctionRows", () => {
     expect(rows.map((r) => r.job.jobId)).toEqual(["2", "4", "1", "3"]);
   });
 
-  it("pins winner-selected rows to top and orders them by newest winner timestamp", () => {
-    const nowSec = 1_700_000_000;
-    const rows = buildAuctionRows({
-      activeJobs: {
-        "1": { jobId: "1", contractType: "lending", auctionDeadline: nowSec + 60 },
-        "2": { jobId: "2", contractType: "dex", auctionDeadline: nowSec - 10 },
-        "3": { jobId: "3", contractType: "bridge", auctionDeadline: nowSec - 20 },
-        "4": { jobId: "4", contractType: "vault", auctionDeadline: nowSec + 5 },
-      },
-      bids: {},
-      winners: {
-        "2": { agents: ["0xbbb"], winnersAt: (nowSec * 1000) - 15_000 },
-        "3": { agents: ["0xccc"], winnersAt: (nowSec * 1000) - 3_000 },
-      },
-      activeJobIds: [1n, 2n, 3n, 4n],
-      useMockEvents: false,
-      nowSec,
-    });
-
-    expect(rows.map((r) => r.job.jobId)).toEqual(["3", "2", "4", "1"]);
-  });
-
   it("strict live mode removes winner-selected rows after winner TTL expires", () => {
     const nowSec = 1_700_000_000;
     const rows = buildAuctionRows({

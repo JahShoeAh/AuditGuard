@@ -132,10 +132,6 @@ export function buildAuctionRows({
   };
 
   const getDeadline = (job) => normalizeDeadlineSeconds(job.auctionDeadline) ?? Number.MAX_SAFE_INTEGER;
-  const getWinnerTs = (row) =>
-    normalizeTimestampMs(row?.winnerData?.winnersAt)
-    ?? normalizeTimestampMs(row?.job?.endedAt)
-    ?? 0;
 
   return storeJobs
     .filter(includeJob)
@@ -148,15 +144,6 @@ export function buildAuctionRows({
       winnerData: winners?.[job.jobId] || null,
     }))
     .sort((a, b) => {
-      const aWinnerRank = a.winnerData ? 0 : 1;
-      const bWinnerRank = b.winnerData ? 0 : 1;
-      if (aWinnerRank !== bWinnerRank) return aWinnerRank - bWinnerRank;
-
-      if (aWinnerRank === 0 && bWinnerRank === 0) {
-        const byWinnerRecency = getWinnerTs(b) - getWinnerTs(a);
-        if (byWinnerRecency !== 0) return byWinnerRecency;
-      }
-
       const byDeadline = getDeadline(a.job) - getDeadline(b.job);
       if (byDeadline !== 0) return byDeadline;
       return Number(b.job.jobId) - Number(a.job.jobId);

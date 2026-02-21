@@ -1016,56 +1016,6 @@ describe("EventListenerService", () => {
     );
   });
 
-  it("hydrates winners from contract polling even when events API polling fails", async () => {
-    const store = makeStoreSpies();
-    const provider = {
-      getBlockNumber: vi.fn(async () => 701),
-      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
-    };
-    const auctionContract = makeContractMock({
-      WinnersSelected: [
-        {
-          args: {
-            jobId: 91n,
-            winners: ["0x00000000000000000000000000000000000000aa"],
-            totalEscrowed: 150000000n,
-            platformFee: 5000000n,
-          },
-          blockNumber: 700,
-          transactionHash: "0xwinner91",
-        },
-      ],
-    });
-    const contracts = {
-      auctionContract,
-      agentRegistryContract: makeContractMock(),
-      subAuctionContract: makeContractMock(),
-      dataMarketplaceContract: makeContractMock(),
-      paymentSettlementContract: makeContractMock(),
-      vaultFactoryContract: makeContractMock(),
-      stakingManagerContract: makeContractMock(),
-      treasuryContract: makeContractMock(),
-    };
-    const svc = new EventListenerService(config, contracts, store, provider);
-    svc.lastProcessedBlock = 699;
-    vi.spyOn(svc, "fetchEvents").mockRejectedValue(new Error("events api unavailable"));
-
-    await svc._pollEventsAPI();
-    await svc._pollContractEvents();
-
-    expect(store.setWinners).toHaveBeenCalledWith(
-      "91",
-      expect.objectContaining({
-        source: "contract",
-      })
-    );
-    expect(store.setIngestionHealth).toHaveBeenCalledWith(
-      expect.objectContaining({
-        winnerSource: "contract",
-      })
-    );
-  });
-
   it("skips overlapping contract polls while a prior poll is still in flight", async () => {
     const store = makeStoreSpies();
     const provider = {

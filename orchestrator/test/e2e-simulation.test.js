@@ -16,13 +16,6 @@ function makeMocks() {
   const auditLogMessages = [];
   const agentCommsMessages = [];
   const settledJobs = [];
-  const dataMarketplace = { purchaseData: async () => {} };
-  const subAuction = { createSubAuction: async () => {}, acceptResult: async () => {} };
-  const paymentSettlement = {
-    settleJob: async (jobId, payments) => {
-      settledJobs.push({ jobId, payments });
-    },
-  };
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
@@ -44,13 +37,13 @@ function makeMocks() {
     },
     cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
     selectWinners: async () => ({ hash: "0xselect", status: 1 }),
-    dataMarketplace,
-    subAuction,
-    paymentSettlement,
-    purchaseData: async (...args) => dataMarketplace.purchaseData(...args),
-    createSubAuction: async (...args) => subAuction.createSubAuction(...args),
-    acceptSubResult: async (...args) => subAuction.acceptResult(...args),
-    settleJob: async (...args) => paymentSettlement.settleJob(...args),
+    dataMarketplace: { purchaseData: async () => {} },
+    subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
+    paymentSettlement: {
+      settleJob: async (jobId, payments) => {
+        settledJobs.push({ jobId, payments });
+      },
+    },
     getAddress: () => "0x0000000000000000000000000000000000000abc",
   };
 

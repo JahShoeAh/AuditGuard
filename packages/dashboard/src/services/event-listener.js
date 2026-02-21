@@ -55,17 +55,6 @@ function parsePollIntervalMs(value, fallbackMs) {
   return Math.floor(raw);
 }
 
-function toTimestampMs(value, fallbackMs = Date.now()) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return numeric;
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return fallbackMs;
-}
-
 // ── Helpers ────────────────────────────────────────────────
 
 /** Convert raw 8-decimal BigInt to human-readable "15.00 GUARD" */
@@ -982,8 +971,6 @@ export class EventListenerService {
       }
       const totalEscrowed = normalizeGuardRaw(payload.totalEscrowed);
       const platformFee = normalizeGuardRaw(payload.platformFee);
-      const winnerAtValue = existingWinnerData?.winnersAt ?? (timestamp ?? Date.now());
-      const winnerTsMs = toTimestampMs(winnerAtValue);
 
       this.store.setWinners?.(jobId, {
         agents: winnerAgents,
@@ -991,13 +978,8 @@ export class EventListenerService {
         totalEscrowedFormatted: totalEscrowed.formatted,
         platformFee: platformFee.raw,
         platformFeeFormatted: platformFee.formatted,
-        winnersAt: winnerAtValue,
+        winnersAt: existingWinnerData?.winnersAt ?? (timestamp ?? Date.now()),
         source: 'auditLog',
-      });
-      this.store.setIngestionHealth?.({
-        winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
-        lastWinnerEventAt: winnerTsMs,
-        winnerSource: 'auditLog',
       });
       return;
     }
@@ -1390,21 +1372,14 @@ export class EventListenerService {
         const a = ev.args;
         const jobId = a.jobId.toString();
         const existingWinnerData = this.store.winners?.[jobId];
-        const winnerAtValue = existingWinnerData?.winnersAt ?? Date.now();
-        const winnerTsMs = toTimestampMs(winnerAtValue);
         this.store.setWinners(jobId, {
           agents: Array.from(a.winners),
           totalEscrowed: a.totalEscrowed,
           totalEscrowedFormatted: parseGuardAmount(a.totalEscrowed),
           platformFee: a.platformFee,
           platformFeeFormatted: parseGuardAmount(a.platformFee),
-          winnersAt: winnerAtValue,
+          winnersAt: existingWinnerData?.winnersAt ?? Date.now(),
           source: 'contract',
-        });
-        this.store.setIngestionHealth?.({
-          winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
-          lastWinnerEventAt: winnerTsMs,
-          winnerSource: 'contract',
         });
         if ((a.platformFee ?? 0n) > 0n) {
           this._addGuardFlow({

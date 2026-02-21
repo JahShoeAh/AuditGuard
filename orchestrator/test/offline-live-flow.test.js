@@ -19,15 +19,6 @@ function makeOfflineHarness() {
   const agentCommsMessages = [];
   const settledCalls = [];
   const settledOnChain = new Set();
-  const dataMarketplace = { purchaseData: async () => {} };
-  const subAuction = { createSubAuction: async () => {}, acceptResult: async () => {} };
-  const paymentSettlement = {
-    isJobSettled: async (jobId) => settledOnChain.has(Number(jobId)),
-    settleJob: async (jobId, payments, reportAgent) => {
-      settledCalls.push({ jobId: Number(jobId), payments, reportAgent });
-      settledOnChain.add(Number(jobId));
-    },
-  };
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
@@ -49,13 +40,15 @@ function makeOfflineHarness() {
     },
     cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
     selectWinners: async () => ({ hash: "0xselect", status: 1 }),
-    dataMarketplace,
-    subAuction,
-    paymentSettlement,
-    purchaseData: async (...args) => dataMarketplace.purchaseData(...args),
-    createSubAuction: async (...args) => subAuction.createSubAuction(...args),
-    acceptSubResult: async (...args) => subAuction.acceptResult(...args),
-    settleJob: async (...args) => paymentSettlement.settleJob(...args),
+    dataMarketplace: { purchaseData: async () => {} },
+    subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
+    paymentSettlement: {
+      isJobSettled: async (jobId) => settledOnChain.has(Number(jobId)),
+      settleJob: async (jobId, payments, reportAgent) => {
+        settledCalls.push({ jobId: Number(jobId), payments, reportAgent });
+        settledOnChain.add(Number(jobId));
+      },
+    },
     getAddress: () => "0x0000000000000000000000000000000000000abc",
   };
 

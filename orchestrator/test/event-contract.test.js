@@ -40,9 +40,6 @@ function makeMocks() {
     subscribeAgentComms() {},
     subscribeAuditLog() {},
   };
-  const dataMarketplace = { purchaseData: async () => {} };
-  const subAuction = { createSubAuction: async () => {}, acceptResult: async () => {} };
-  const paymentSettlement = { settleJob: async () => {}, isJobSettled: async () => false };
 
   const contracts = {
     auction,
@@ -51,13 +48,9 @@ function makeMocks() {
     cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
     getActiveJobs: async () => [],
     getJob: async () => ({ auctionDeadline: BigInt(Math.floor(Date.now() / 1000) + 60), status: 0 }),
-    dataMarketplace,
-    subAuction,
-    paymentSettlement,
-    purchaseData: async (...args) => dataMarketplace.purchaseData(...args),
-    createSubAuction: async (...args) => subAuction.createSubAuction(...args),
-    acceptSubResult: async (...args) => subAuction.acceptResult(...args),
-    settleJob: async (...args) => paymentSettlement.settleJob(...args),
+    dataMarketplace: { purchaseData: async () => {} },
+    subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
+    paymentSettlement: { settleJob: async () => {}, isJobSettled: async () => false },
     agentRegistry: { isActiveAgent: async () => true },
     getAddress: () => ADDR_ORCH,
   };

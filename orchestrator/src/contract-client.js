@@ -67,9 +67,8 @@ function buildProviderWithFallback() {
 }
 
 export class ContractClient {
-  constructor(wallet, walletAddress = null) {
+  constructor(wallet) {
     this.wallet = wallet;
-    this.walletAddress = typeof walletAddress === "string" ? walletAddress : "";
     const auctionAddress = assertAddress(CONFIG.contracts.auction, "auction");
     const subAuctionAddress = assertAddress(CONFIG.contracts.subAuction, "subAuction");
     const dataMarketplaceAddress = assertAddress(CONFIG.contracts.dataMarketplace, "dataMarketplace");
@@ -83,9 +82,7 @@ export class ContractClient {
     this.paymentSettlement = new ethers.Contract(paymentSettlementAddress, loadABI("PaymentSettlement"), wallet);
     this.agentRegistry = new ethers.Contract(agentRegistryAddress, loadABI("AgentRegistry"), wallet);
     this.budgetVault = new ethers.Contract(budgetVaultAddress, loadABI("AuditBudgetVault"), wallet);
-    this.fastWinnerPathEnabled = (process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED ?? "false") === "true";
-    this._writeQueue = [];
-    this._writeQueueRunning = false;
+    this._writeQueue = Promise.resolve();
 
     // AuditScheduler — optional; only active after deploy:audit-scheduler has run
     try {
@@ -111,107 +108,48 @@ export class ContractClient {
     const { provider, rpcCandidates } = buildProviderWithFallback();
 
     const pk = hexKey.startsWith("0x") ? hexKey : `0x${hexKey}`;
-    const baseWallet = new ethers.Wallet(pk, provider);
-    const wallet = new ethers.NonceManager(baseWallet);
+    const wallet = new ethers.Wallet(pk, provider);
     log.info(
-      `Using orchestrator wallet ${baseWallet.address} ` +
+      `Using orchestrator wallet ${wallet.address} ` +
       `(RPC candidates: ${rpcCandidates.join(", ")})`
     );
-    return new ContractClient(wallet, baseWallet.address);
+    return new ContractClient(wallet);
   }
 
   getAddress() {
-    return this.walletAddress;
+    return this.wallet.address;
   }
 
   async _enqueueWrite(sendFn) {
-    return this._enqueueWriteWithPriority(sendFn, "normal");
-  }
-
-  async _enqueueWriteWithPriority(sendFn, priority = "normal") {
-    const normalizedPriority = priority === "high" ? "high" : "normal";
-    return new Promise((resolve, reject) => {
-      const task = { sendFn, resolve, reject, priority: normalizedPriority };
-      if (this.fastWinnerPathEnabled && normalizedPriority === "high") {
-        const firstNormalIndex = this._writeQueue.findIndex((entry) => entry.priority !== "high");
-        if (firstNormalIndex === -1) {
-          this._writeQueue.push(task);
-        } else {
-          this._writeQueue.splice(firstNormalIndex, 0, task);
-        }
-      } else {
-        this._writeQueue.push(task);
-      }
-      this._drainWriteQueue().catch((err) => {
-        log.warn(`write queue drain failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+    const previous = this._writeQueue;
+    let releaseQueue = () => { };
+    this._writeQueue = new Promise((resolve) => {
+      releaseQueue = resolve;
     });
-  }
-
-  async _drainWriteQueue() {
-    if (this._writeQueueRunning) return;
-    this._writeQueueRunning = true;
+    await previous.catch(() => { });
     try {
-      while (this._writeQueue.length > 0) {
-        const task = this._writeQueue.shift();
-        if (!task) continue;
-        try {
-          const result = await task.sendFn();
-          task.resolve(result);
-        } catch (err) {
-          task.reject(err);
-        }
-      }
+      return await sendFn();
     } finally {
-      this._writeQueueRunning = false;
+      releaseQueue();
     }
   }
 
   async createAuditJob(...args) {
-    return this._enqueueWriteWithPriority(async () => this.auction.createAuditJob(...args), "normal");
+    return this._enqueueWrite(async () => this.auction.createAuditJob(...args));
   }
 
   async selectWinners(jobId, winningBidIndices) {
-    const tx = await this._enqueueWriteWithPriority(
-      async () => this.auction.selectWinners(jobId, winningBidIndices),
-      "high"
+    const tx = await this._enqueueWrite(async () =>
+      this.auction.selectWinners(jobId, winningBidIndices)
     );
     const receipt = await tx.wait();
     return receipt;
   }
 
   async cancelJob(jobId) {
-    const tx = await this._enqueueWriteWithPriority(async () => this.auction.cancelJob(jobId), "high");
+    const tx = await this._enqueueWrite(async () => this.auction.cancelJob(jobId));
     const receipt = await tx.wait();
     return receipt;
-  }
-
-  async purchaseData(listingId) {
-    return this._enqueueWriteWithPriority(
-      async () => this.dataMarketplace.purchaseData(listingId),
-      "normal"
-    );
-  }
-
-  async createSubAuction(...args) {
-    return this._enqueueWriteWithPriority(
-      async () => this.subAuction.createSubAuction(...args),
-      "normal"
-    );
-  }
-
-  async acceptSubResult(subAuctionId) {
-    return this._enqueueWriteWithPriority(
-      async () => this.subAuction.acceptResult(subAuctionId),
-      "normal"
-    );
-  }
-
-  async settleJob(jobId, payments, reportAgent) {
-    return this._enqueueWriteWithPriority(
-      async () => this.paymentSettlement.settleJob(jobId, payments, reportAgent),
-      "normal"
-    );
   }
 
   async getActiveJobs() {
