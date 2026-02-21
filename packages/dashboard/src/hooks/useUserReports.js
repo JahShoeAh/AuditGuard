@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import useWalletStore from '../store/wallet';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+const REPORTS_API_BASE = (
+  import.meta.env.VITE_REPORTS_API_BASE_URL
+  ?? import.meta.env.VITE_API_BASE_URL
+  ?? ''
+).trim().replace(/\/$/, '');
 
 export function useUserReports() {
   const { address, isConnected } = useWalletStore((s) => ({
@@ -16,7 +20,7 @@ export function useUserReports() {
   useEffect(() => {
     let cancelled = false;
 
-    if (!isConnected || !address) {
+    if (!isConnected || !address || !REPORTS_API_BASE) {
       setReports([]);
       setError(null);
       setLoading(false);
@@ -31,8 +35,17 @@ export function useUserReports() {
 
       try {
         const response = await fetch(
-          `${API_BASE}/api/reports?deployer=${encodeURIComponent(address)}`
+          `${REPORTS_API_BASE}/api/reports?deployer=${encodeURIComponent(address)}`
         );
+        if (response.status === 404) {
+          if (cancelled) return;
+          setReports([]);
+          setError(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Reports API responded ${response.status}`);
+        }
         const data = await response.json();
         if (cancelled) return;
 
@@ -70,7 +83,7 @@ export function useReportByJob(jobId) {
   useEffect(() => {
     let cancelled = false;
 
-    if (!jobId) {
+    if (!jobId || !REPORTS_API_BASE) {
       setReport(null);
       setError(null);
       setLoading(false);
@@ -85,8 +98,17 @@ export function useReportByJob(jobId) {
 
       try {
         const response = await fetch(
-          `${API_BASE}/api/reports/${encodeURIComponent(jobId)}`
+          `${REPORTS_API_BASE}/api/reports/${encodeURIComponent(jobId)}`
         );
+        if (response.status === 404) {
+          if (cancelled) return;
+          setReport(null);
+          setError(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Reports API responded ${response.status}`);
+        }
         const data = await response.json();
         if (cancelled) return;
 

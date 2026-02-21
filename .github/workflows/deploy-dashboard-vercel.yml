@@ -9,6 +9,7 @@ on:
       - "packages/sdk/**"
       - "package.json"
       - "package-lock.json"
+      - ".github/workflows/deploy-dashboard-vercel.yml"
   workflow_dispatch:
 
 permissions:

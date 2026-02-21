@@ -214,6 +214,7 @@ export class EventListenerService {
     this.hcsEventsSeen = 0;
     this.contractEventsSeen = 0;
     this._contractPollInFlight = false;
+    this._lastEventsApiError = null;
 
     this._intervals = [];
     this._running = false;
@@ -402,6 +403,7 @@ export class EventListenerService {
   async _pollEventsAPI() {
     try {
       const messages = await this.fetchEvents();
+      this._lastEventsApiError = null;
 
       if (this.onlyTestDiscoveries && !this.eventsBacklogSkipped) {
         for (const msg of messages) {
@@ -427,7 +429,11 @@ export class EventListenerService {
         activeAuctionsCount,
       });
     } catch (err) {
-      console.warn('[EventListener] Events API poll error:', err.message);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== this._lastEventsApiError) {
+        console.warn('[EventListener] Events API poll error:', message);
+        this._lastEventsApiError = message;
+      }
     }
   }
 
@@ -443,9 +449,23 @@ export class EventListenerService {
 
   async fetchEvents() {
     const url = `${EVENTS_API_BASE_URL}/events?limit=${EVENT_FETCH_LIMIT}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
     if (!res.ok) {
-      throw new Error(`Events API responded ${res.status}`);
+      throw new Error(`Events API responded ${res.status} for ${url}`);
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const bodyPreview = await res.text().catch(() => '');
+      const compactPreview = String(bodyPreview).replace(/\s+/g, ' ').slice(0, 180);
+      throw new Error(
+        `Events API returned non-JSON (${contentType || 'unknown'}) for ${url}. ` +
+        `Body preview: ${compactPreview}`
+      );
     }
 
     const json = await res.json();
