@@ -28,6 +28,7 @@ function makeMocks(opts = {}) {
   const auditLogMessages = [];
   const agentCommsMessages = [];
   const cancelledJobs = [];
+  const auctionListeners = new Map();
   let createCalls = 0;
 
   const hcs = {
@@ -49,6 +50,14 @@ function makeMocks(opts = {}) {
       },
       interface: {
         parseLog: () => ({ name: "JobPosted", args: { jobId: 4242n } }),
+      },
+      on: (event, handler) => {
+        auctionListeners.set(event, handler);
+      },
+      emit: async (event, ...args) => {
+        const handler = auctionListeners.get(event);
+        if (!handler) throw new Error(`Missing auction listener for ${event}`);
+        await handler(...args);
       },
     },
     cancelJob: async (jobId) => {
@@ -694,6 +703,61 @@ async function testSelectWinnersSingleflight() {
   );
 }
 
+async function testImmediateWinnerAuditLogAndDeduping() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks({
+    onChainBids: [
+      {
+        agent: ADDR_AGENT_A,
+        bidAmount: 1000000000n,
+        collateralLocked: 5000000000n,
+        reputationAtBid: 90n,
+        estimatedCompletionTime: 100n,
+        timestamp: 1n,
+      },
+    ],
+  });
+  contracts.selectWinners = async () => ({ hash: "0xselectwinner", status: 1 });
+
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [
+      {
+        agentId: "agent-1",
+        evmAddress: ADDR_AGENT_A,
+        bidAmount: 10,
+        estimatedTimeSec: 100,
+        reputation: 90,
+      },
+    ],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  await orch.selectWinnersOnChain("4242");
+
+  const immediateWinnerLogs = auditLogMessages.filter((m) => m.type === "WINNER_SELECTED");
+  assert.equal(immediateWinnerLogs.length, 1, "winner should be published immediately after selectWinners tx");
+  assert.equal(immediateWinnerLogs[0]?.payload?.txHash, "0xselectwinner");
+
+  orch.subscribeContractEvents();
+  await contracts.auction.emit(
+    "WinnersSelected",
+    4242n,
+    [ADDR_AGENT_A],
+    1000000000n,
+    50000000n,
+    { transactionHash: "0xselectwinner" }
+  );
+
+  const dedupedWinnerLogs = auditLogMessages.filter((m) => m.type === "WINNER_SELECTED");
+  assert.equal(dedupedWinnerLogs.length, 1, "duplicate winner announcements should be deduped");
+}
+
 async function testSelectWinnersUsesOnChainBidIndexMapping() {
   const log = mockLog();
   const roster = new Roster(log);
@@ -985,6 +1049,7 @@ async function run() {
     ["terminal auction no reopen after cancel", testTerminalAuctionNoReopenAfterCancel],
     ["close expired auction single-flight", testCloseExpiredAuctionSingleflight],
     ["select winners single-flight", testSelectWinnersSingleflight],
+    ["winner selected immediate publish + dedupe", testImmediateWinnerAuditLogAndDeduping],
     ["select winners uses on-chain bid index mapping", testSelectWinnersUsesOnChainBidIndexMapping],
     ["select winners ignores local ghost bids when on-chain empty", testSelectWinnersIgnoresLocalGhostBidsWhenOnChainEmpty],
     ["auto-buy data listing", testAutoBuyDataListing],

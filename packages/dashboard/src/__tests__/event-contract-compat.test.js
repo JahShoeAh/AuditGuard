@@ -247,7 +247,10 @@ describe("Cross-service event contract compatibility", () => {
         "34": [{ agentName: "static-analysis-047", bidAmount: 12.4 }],
       },
       winners: {
-        "34": { agents: ["0x00000000000000000000000000000000000000aa"] },
+        "34": {
+          agents: ["0x00000000000000000000000000000000000000aa"],
+          winnersAt: (nowSec * 1000) - 5_000,
+        },
       },
       activeJobIds: [33n, 34n],
       useMockEvents: false,

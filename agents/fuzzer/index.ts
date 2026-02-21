@@ -877,19 +877,32 @@ async function main() {
         if (reasonCode === "duplicate_bid") {
           bidSubmittedJobs.add(jobKey);
         }
+        const guardBalance = Number(
+          ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)
+        );
+        const hbarBalance = ethers.formatEther(await contracts.wallet.provider.getBalance(wallet.evmAddress));
+        const payerFundingFailure =
+          reasonCode === "insufficient_payer_hbar" || reasonCode === "insufficient_payer_hbar_after_topup";
         log.warn(`On-chain bid failed: ${error}`);
         await hcs.publishAuditLog({
-          type: "BID_SUBMISSION_FAILED",
+          type: payerFundingFailure ? "BID_SKIPPED" : "BID_SUBMISSION_FAILED",
           agentId: AGENT_ID,
           timestamp: Date.now(),
           payload: {
             jobId: String(jobId),
             contractAddress,
             strictLive: STRICT_LIVE && !DEMO_MODE,
-            error,
-            reasonCode,
-            guardBalance: Number(ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)),
-            hbarBalance: ethers.formatEther(await contracts.wallet.provider.getBalance(wallet.evmAddress)),
+            ...(payerFundingFailure
+              ? {
+                  reason: "Insufficient payer HBAR for transaction fees",
+                  reasonCode,
+                }
+              : {
+                  error,
+                  reasonCode,
+                }),
+            guardBalance,
+            hbarBalance,
           },
         });
         return;

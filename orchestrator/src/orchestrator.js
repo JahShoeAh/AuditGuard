@@ -61,6 +61,11 @@ export class OrchestratorAgent {
     this.rosterBootstrapPromise = Promise.resolve();
     this.inflightCloseJobs = new Map();
     this.inflightSelectWinnerJobs = new Map();
+    this.recentWinnerAnnouncements = new Map();
+    const winnerAnnounceDedupRaw = Number(process.env.ORCHESTRATOR_WINNER_ANNOUNCE_DEDUP_MS ?? "15000");
+    this.winnerAnnounceDedupMs = Number.isFinite(winnerAnnounceDedupRaw)
+      ? Math.max(1_000, Math.floor(winnerAnnounceDedupRaw))
+      : 15_000;
     this.reconcileCloseCooldown = new Map();
     this._isReconcileRunning = false;
     this.scheduledEnrichmentClient = opts.scheduledEnrichmentClient ?? enrichScheduledDiscovery;
@@ -136,6 +141,82 @@ export class OrchestratorAgent {
   setJobByKey(jobId, job) {
     const key = this.normalizeJobId(jobId);
     this.jobs.set(key, job);
+  }
+
+  normalizeWinnerAddresses(winners) {
+    if (!Array.isArray(winners)) return [];
+    const seen = new Set();
+    const normalized = [];
+    for (const winner of winners) {
+      const addr = this.normalizeAddress(winner);
+      if (!addr) continue;
+      const key = addr.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push(addr);
+    }
+    return normalized;
+  }
+
+  buildWinnerFingerprint(winners) {
+    return this.normalizeWinnerAddresses(winners)
+      .map((winner) => winner.toLowerCase())
+      .sort()
+      .join("|");
+  }
+
+  pruneWinnerAnnouncementCache(nowMs = Date.now()) {
+    for (const [jobId, entry] of this.recentWinnerAnnouncements.entries()) {
+      const publishedAt = Number(entry?.publishedAt ?? 0);
+      if (!Number.isFinite(publishedAt) || nowMs - publishedAt > this.winnerAnnounceDedupMs) {
+        this.recentWinnerAnnouncements.delete(jobId);
+      }
+    }
+  }
+
+  async publishWinnerSelectedAuditLog(jobId, winners, extras = {}) {
+    const key = this.normalizeJobId(jobId);
+    const winnerAddrs = this.normalizeWinnerAddresses(winners);
+    if (!winnerAddrs.length) return false;
+
+    const txHash = typeof extras?.txHash === "string" && extras.txHash
+      ? extras.txHash
+      : null;
+    const winnersFingerprint = winnerAddrs
+      .map((winner) => winner.toLowerCase())
+      .sort()
+      .join("|");
+    const nowMs = Date.now();
+    this.pruneWinnerAnnouncementCache(nowMs);
+
+    const existing = this.recentWinnerAnnouncements.get(key);
+    if (existing && nowMs - Number(existing.publishedAt ?? 0) <= this.winnerAnnounceDedupMs) {
+      const sameWinners = existing.winnersFingerprint === winnersFingerprint;
+      const sameTxHash = txHash && existing.txHash
+        ? String(existing.txHash).toLowerCase() === txHash.toLowerCase()
+        : false;
+      if (sameWinners || sameTxHash) return false;
+    }
+
+    this.recentWinnerAnnouncements.set(key, {
+      winnersFingerprint,
+      txHash: txHash ? txHash.toLowerCase() : null,
+      publishedAt: nowMs,
+    });
+
+    await this.hcs.publishAuditLog({
+      type: "WINNER_SELECTED",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId: key,
+        winners: winnerAddrs,
+        ...(extras?.totalEscrowed != null ? { totalEscrowed: extras.totalEscrowed.toString() } : {}),
+        ...(extras?.platformFee != null ? { platformFee: extras.platformFee.toString() } : {}),
+        ...(txHash ? { txHash } : {}),
+      },
+    }).catch(() => {});
+    return true;
   }
 
   async withCreateAuditJobLock(task) {
@@ -2124,6 +2205,9 @@ export class OrchestratorAgent {
           await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
           const receipt = await this.contracts.selectWinners(Number(jobId), winningBidIndices);
           this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${jobId}, tx: ${receipt.hash}`);
+          await this.publishWinnerSelectedAuditLog(key, winnerAddresses, {
+            txHash: receipt?.hash ?? null,
+          });
 
           for (const winner of selectedWinners) {
             const entry = this.roster.get(winner.agentId);
@@ -2225,20 +2309,19 @@ export class OrchestratorAgent {
   subscribeContractEvents() {
     try {
       if (!this.contracts.auction?.on) return;
-      this.contracts.auction.on("WinnersSelected", (jobId, winners, totalEscrowed, platformFee) => {
+      this.contracts.auction.on("WinnersSelected", (jobId, winners, totalEscrowed, platformFee, eventMeta) => {
         const key = this.normalizeJobId(jobId);
         const job = this.getJobByKey(key);
         if (!job) return;
 
-        const winnerAddrs = Array.isArray(winners) ? winners.map(String) : [];
+        const winnerAddrs = this.normalizeWinnerAddresses(winners);
         job.winners = winnerAddrs;
         this.log.info(`On-chain WinnersSelected for job ${key}: ${winnerAddrs.join(", ")}`);
-
-        this.hcs.publishAuditLog({
-          type: "WINNER_SELECTED",
-          agentId: "orchestrator",
-          timestamp: now(),
-          payload: { jobId: key, winners: winnerAddrs, totalEscrowed: totalEscrowed?.toString(), platformFee: platformFee?.toString() },
+        const txHash = eventMeta?.log?.transactionHash ?? eventMeta?.transactionHash ?? null;
+        this.publishWinnerSelectedAuditLog(key, winnerAddrs, {
+          totalEscrowed,
+          platformFee,
+          txHash,
         }).catch(() => {});
       });
 
