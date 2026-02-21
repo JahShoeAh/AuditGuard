@@ -6,11 +6,17 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! docker compose version >/dev/null 2>&1; then
+  echo "docker compose is not available on this host" >&2
+  exit 1
+fi
+
 IMAGE="${IMAGE:-}"
-CONTAINER_NAME="${CONTAINER_NAME:-auditguard-devall}"
 ENV_FILE="${ENV_FILE:-/opt/auditguard/.env}"
-HOST_PORT="${HOST_PORT:-}"
-CONTAINER_PORT="${CONTAINER_PORT:-}"
+COMPOSE_FILE="${COMPOSE_FILE:-/opt/auditguard/docker-compose.prod.yml}"
+SCHEMA_FILE="${SCHEMA_FILE:-/opt/auditguard/schema.sql}"
+PROJECT_NAME="${PROJECT_NAME:-auditguard}"
+LEGACY_CONTAINER_NAME="${LEGACY_CONTAINER_NAME:-auditguard-devall}"
 
 if [[ -z "${IMAGE}" ]]; then
   echo "IMAGE is required (for example: ghcr.io/<owner>/<repo>-devall:main)" >&2
@@ -22,28 +28,34 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-echo "Pulling image: ${IMAGE}"
-docker pull "${IMAGE}"
-
-if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  echo "Stopping existing container: ${CONTAINER_NAME}"
-  docker stop "${CONTAINER_NAME}" || true
-  docker rm "${CONTAINER_NAME}" || true
+if [[ ! -f "${COMPOSE_FILE}" ]]; then
+  echo "COMPOSE_FILE not found: ${COMPOSE_FILE}" >&2
+  exit 1
 fi
 
-echo "Starting container: ${CONTAINER_NAME}"
-docker_args=(
-  -d
-  --name "${CONTAINER_NAME}"
-  --restart unless-stopped
-  --env-file "${ENV_FILE}"
-)
-
-if [[ -n "${HOST_PORT}" && -n "${CONTAINER_PORT}" ]]; then
-  docker_args+=(-p "${HOST_PORT}:${CONTAINER_PORT}")
+if [[ ! -f "${SCHEMA_FILE}" ]]; then
+  echo "SCHEMA_FILE not found: ${SCHEMA_FILE}" >&2
+  exit 1
 fi
 
-docker run "${docker_args[@]}" "${IMAGE}"
+if ! grep -q '^POSTGRES_PASSWORD=' "${ENV_FILE}"; then
+  echo "ENV_FILE must define POSTGRES_PASSWORD for PostgreSQL startup" >&2
+  exit 1
+fi
 
-echo "Container started:"
-docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+if [[ -n "${LEGACY_CONTAINER_NAME}" ]] && docker ps -a --format '{{.Names}}' | grep -qx "${LEGACY_CONTAINER_NAME}"; then
+  echo "Stopping legacy container: ${LEGACY_CONTAINER_NAME}"
+  docker stop "${LEGACY_CONTAINER_NAME}" || true
+  docker rm "${LEGACY_CONTAINER_NAME}" || true
+fi
+
+echo "Deploying stack with docker compose..."
+export BACKEND_IMAGE="${IMAGE}"
+export ENV_FILE="${ENV_FILE}"
+export SCHEMA_FILE="${SCHEMA_FILE}"
+
+docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" pull
+docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orphans
+
+echo "Stack status:"
+docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps

@@ -1,26 +1,33 @@
-import { useEffect, useState } from 'react';
-import useWalletStore from '../store/wallet';
+import { useEffect, useState } from "react";
+import useWalletStore from "../store/wallet";
 
 const REPORTS_API_BASE = (
   import.meta.env.VITE_REPORTS_API_BASE_URL
   ?? import.meta.env.VITE_API_BASE_URL
-  ?? ''
-).trim().replace(/\/$/, '');
+  ?? ""
+).trim().replace(/\/$/, "");
 
+function apiUrl(path) {
+  return REPORTS_API_BASE ? `${REPORTS_API_BASE}${path}` : path;
+}
+
+/**
+ * @returns {{ reports: import("../../../packages/sdk/db/report-types.js").StoredAuditReport[], loading: boolean, error: string|null }}
+ */
 export function useUserReports() {
-  const { address, isConnected } = useWalletStore((s) => ({
-    address: s.address,
-    isConnected: s.connectionStatus === 'connected',
-  }));
+  const address = useWalletStore((s) => s.address);
+  const hederaAccountId = useWalletStore((s) => s.hederaAccountId);
+  const isConnected = useWalletStore((s) => s.connectionStatus === "connected");
 
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    const deployer = address || hederaAccountId;
     let cancelled = false;
 
-    if (!isConnected || !address || !REPORTS_API_BASE) {
+    if (!isConnected || !deployer) {
       setReports([]);
       setError(null);
       setLoading(false);
@@ -35,7 +42,7 @@ export function useUserReports() {
 
       try {
         const response = await fetch(
-          `${REPORTS_API_BASE}/api/reports?deployer=${encodeURIComponent(address)}`
+          apiUrl(`/api/reports?deployer=${encodeURIComponent(deployer)}`)
         );
         if (response.status === 404) {
           if (cancelled) return;
@@ -54,12 +61,12 @@ export function useUserReports() {
           setError(null);
         } else {
           setReports([]);
-          setError(typeof data?.error === 'string' ? data.error : 'Failed to load reports');
+          setError(typeof data?.error === "string" ? data.error : "Failed to load reports");
         }
       } catch (err) {
         if (cancelled) return;
         setReports([]);
-        setError(err instanceof Error ? err.message : 'Failed to load reports');
+        setError(err instanceof Error ? err.message : "Failed to load reports");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -70,11 +77,15 @@ export function useUserReports() {
     return () => {
       cancelled = true;
     };
-  }, [address, isConnected]);
+  }, [address, hederaAccountId, isConnected]);
 
   return { reports, loading, error };
 }
 
+/**
+ * @param {string|null|undefined} jobId
+ * @returns {{ report: (import("../../../packages/sdk/db/report-types.js").StoredAuditReport & { mdContent: string })|null, loading: boolean, error: string|null }}
+ */
 export function useReportByJob(jobId) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -83,7 +94,7 @@ export function useReportByJob(jobId) {
   useEffect(() => {
     let cancelled = false;
 
-    if (!jobId || !REPORTS_API_BASE) {
+    if (!jobId) {
       setReport(null);
       setError(null);
       setLoading(false);
@@ -98,7 +109,7 @@ export function useReportByJob(jobId) {
 
       try {
         const response = await fetch(
-          `${REPORTS_API_BASE}/api/reports/${encodeURIComponent(jobId)}`
+          apiUrl(`/api/reports/${encodeURIComponent(jobId)}`)
         );
         if (response.status === 404) {
           if (cancelled) return;
@@ -117,12 +128,12 @@ export function useReportByJob(jobId) {
           setError(null);
         } else {
           setReport(null);
-          setError(typeof data?.error === 'string' ? data.error : 'Failed to load report');
+          setError(typeof data?.error === "string" ? data.error : "Failed to load report");
         }
       } catch (err) {
         if (cancelled) return;
         setReport(null);
-        setError(err instanceof Error ? err.message : 'Failed to load report');
+        setError(err instanceof Error ? err.message : "Failed to load report");
       } finally {
         if (!cancelled) setLoading(false);
       }

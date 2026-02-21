@@ -25,6 +25,7 @@ const {
 const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 const SDK_CONFIG_PATH = path.join(__dirname, "..", "packages", "sdk", "config.json");
 const AGENT_REGISTRY_ABI_PATH = path.join(__dirname, "..", "packages", "sdk", "abis", "AgentRegistry.json");
+const AUDIT_AUCTION_ABI_PATH = path.join(__dirname, "..", "packages", "sdk", "abis", "AuditAuction.json");
 const HTS_PRECOMPILE_ADDRESS = "0x0000000000000000000000000000000000000167";
 const HTS_PRECOMPILE_ABI = ["function associateToken(address account, address token) external returns (int64)"];
 const GUARD_DECIMALS = 8;
@@ -266,6 +267,16 @@ function loadSdkConfig() {
 function loadAgentRegistryAbi() {
   const raw = JSON.parse(fs.readFileSync(AGENT_REGISTRY_ABI_PATH, "utf8"));
   return raw.abi || raw;
+}
+
+function loadAuctionAbi() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(AUDIT_AUCTION_ABI_PATH, "utf8"));
+    return raw.abi || raw;
+  } catch {
+    // Minimal ABI sufficient for associateGuardToken
+    return ["function associateGuardToken() external"];
+  }
 }
 
 async function withTimeout(promise, timeoutMs, label) {
@@ -1408,6 +1419,28 @@ async function main() {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.log(`⚠ DataMarketplace registry sync failed: ${msg}`);
+  }
+
+  // Associate AuditAuction with GUARD token so agents can call approve(auctionAddress, amount).
+  // On Hedera, HTS approve() requires the spender to be associated with the token.
+  const auctionAddress = sdk?.contracts?.auctionContract?.evmAddress ?? sdk?.contracts?.auction?.evmAddress;
+  if (auctionAddress && ethers.isAddress(auctionAddress)) {
+    try {
+      const auctionContract = new ethers.Contract(auctionAddress, loadAuctionAbi(), ownerSigner.wallet);
+      const auctionTx = await auctionContract.associateGuardToken();
+      await auctionTx.wait();
+      console.log(`✓ AuditAuction: GUARD token associated (${auctionAddress})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const normalized = msg.toLowerCase();
+      if (normalized.includes("already associated") || normalized.includes("token_already_associated_to_account")) {
+        console.log(`• AuditAuction: GUARD token already associated`);
+      } else {
+        console.log(`⚠ AuditAuction.associateGuardToken failed: ${msg}`);
+      }
+    }
+  } else {
+    console.log("⚠ AuditAuction address not found in SDK config — skipping GUARD association");
   }
 
   for (const spec of AGENTS) {

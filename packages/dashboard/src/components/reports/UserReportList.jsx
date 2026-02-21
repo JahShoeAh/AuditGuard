@@ -1,144 +1,206 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useUserReports } from '../../hooks/useUserReports';
-import useWalletStore from '../../store/wallet';
+import { useState } from "react";
+import useWalletStore from "../../store/wallet";
+import { useUserReports, useReportByJob } from "../../hooks/useUserReports";
+import { fmt } from "../../utils/format";
 
-const SEVERITY_STYLES = {
-  critical: 'bg-red-900/30 text-red-400 border-red-500/30',
-  high: 'bg-orange-900/30 text-orange-400 border-orange-500/30',
-  medium: 'bg-amber-900/30 text-amber-300 border-amber-500/30',
-  low: 'bg-blue-900/30 text-blue-400 border-blue-500/30',
+const SEV_CLASSES = {
+  critical: "bg-red-900/30 text-red-400 border border-red-500/30",
+  high: "bg-orange-900/30 text-orange-400 border border-orange-500/30",
+  medium: "bg-amber-900/30 text-amber-300 border border-amber-500/30",
+  low: "bg-blue-900/30 text-blue-400 border border-blue-500/30",
+  info: "bg-gray-800 text-gray-400 border border-gray-700",
 };
 
-function shortenAddress(address) {
-  if (!address) return '—';
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-function getGeneratedAt(timestamp) {
-  if (!Number.isFinite(Number(timestamp))) return 'Unknown date';
-  return new Date(Number(timestamp)).toLocaleString();
-}
-
-function severityValue(report, severity) {
-  const map = report?.findingsBySeverity ?? {};
-  return Number(map?.[severity] ?? 0);
+function toFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function findingsCount(report) {
-  const fromRecord = Number(report?.findingCount ?? NaN);
+  const fromRecord = toFiniteNumber(report?.findingCount, NaN);
   if (Number.isFinite(fromRecord)) return fromRecord;
+
+  const map = report?.findingsBySeverity ?? {};
   return (
-    severityValue(report, 'critical')
-    + severityValue(report, 'high')
-    + severityValue(report, 'medium')
-    + severityValue(report, 'low')
-    + Number(report?.findingsBySeverity?.info ?? 0)
+    toFiniteNumber(map.critical)
+    + toFiniteNumber(map.high)
+    + toFiniteNumber(map.medium)
+    + toFiniteNumber(map.low)
+    + toFiniteNumber(map.info)
   );
 }
 
 function agentCount(report) {
-  const fromRecord = Number(report?.agentCount ?? NaN);
+  const fromRecord = toFiniteNumber(report?.agentCount, NaN);
   if (Number.isFinite(fromRecord)) return fromRecord;
   return Array.isArray(report?.agentAddresses) ? report.agentAddresses.length : 0;
 }
 
 function ReportCard({ report }) {
-  const tags = Array.isArray(report?.tags) ? report.tags : [];
+  const [expanded, setExpanded] = useState(false);
+  const { report: full, loading: fullLoading, error: fullError } = useReportByJob(
+    expanded ? report.jobId : null
+  );
+
+  const severityMap = report.findingsBySeverity ?? {};
+  const date = report.timestamp ? new Date(Number(report.timestamp)).toLocaleDateString() : "—";
 
   return (
-    <article className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-cyan-500/40 hover:shadow-[0_0_20px_rgba(34,211,238,0.08)] transition-all">
-      <div className="flex items-start justify-between gap-2">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden hover:border-cyan-500/40 transition-all">
+      <div className="flex items-start justify-between p-4 border-b border-gray-800 bg-gradient-to-r from-gray-900 to-gray-950">
         <div>
-          <p className="text-[11px] uppercase tracking-wide text-gray-500">Job #{report.jobId}</p>
-          <h3 className="text-sm font-semibold text-gray-100 mt-1">{shortenAddress(report.contractAddress)}</h3>
-        </div>
-        <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full border border-cyan-500/30 text-cyan-300 bg-cyan-900/20">
-          {report.chain ?? 'unknown-chain'}
-        </span>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {Object.entries(SEVERITY_STYLES).map(([severity, style]) => (
-          <span
-            key={severity}
-            className={`text-[11px] px-2 py-1 rounded-md border font-medium ${style}`}
-          >
-            {severity}: {severityValue(report, severity)}
-          </span>
-        ))}
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-gray-300">
-        <div className="rounded-lg border border-gray-800 p-2">
-          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Findings</p>
-          <p className="mt-1 font-semibold">{findingsCount(report)}</p>
-        </div>
-        <div className="rounded-lg border border-gray-800 p-2">
-          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Agents</p>
-          <p className="mt-1 font-semibold">{agentCount(report)}</p>
-        </div>
-      </div>
-
-      {tags.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {tags.map((tag) => (
-            <span
-              key={tag}
-              className="text-[10px] px-2 py-1 rounded-full bg-gray-800 border border-gray-700 text-gray-300"
-            >
-              #{tag}
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold font-mono text-gray-200">
+              Job #{report.jobId}
             </span>
-          ))}
+            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+              (report.chain ?? "").includes("hedera")
+                ? "bg-blue-500/20 text-blue-400"
+                : "bg-purple-500/20 text-purple-400"
+            }`}>
+              {(report.chain ?? "UNKNOWN").toUpperCase()}
+            </span>
+          </div>
+          <p className="text-[10px] font-mono text-gray-500 mt-0.5">
+            Contract:{" "}
+            <span className="text-cyan-400">{fmt.address(report.contractAddress)}</span>
+          </p>
+        </div>
+        <span className="text-[10px] text-gray-600 font-mono">{date}</span>
+      </div>
+
+      <div className="p-4 space-y-3">
+        <div>
+          <p className="text-[9px] font-bold uppercase tracking-widest text-gray-500 mb-1.5">
+            Findings by severity
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(severityMap).map(([severity, count]) => (
+              Number(count) > 0 ? (
+                <span
+                  key={severity}
+                  className={`text-[9px] font-bold px-2 py-0.5 rounded ${SEV_CLASSES[severity] ?? SEV_CLASSES.info}`}
+                >
+                  {severity.toUpperCase()}: {count}
+                </span>
+              ) : null
+            ))}
+            {Object.values(severityMap).every((count) => Number(count) === 0) && (
+              <span className="text-[10px] text-gray-600 font-mono">No findings</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[10px] font-mono text-gray-500 border-t border-gray-800 pt-2">
+          <span>
+            Total findings:{" "}
+            <span className="text-gray-300 font-bold">{findingsCount(report)}</span>
+          </span>
+          <span>
+            Agents:{" "}
+            <span className="text-gray-300 font-bold">{agentCount(report)}</span>
+          </span>
+        </div>
+
+        {Array.isArray(report.tags) && report.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {report.tags.map((tag, index) => (
+              <span
+                key={`${String(tag)}:${index}`}
+                className="text-[9px] text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded font-mono"
+              >
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="w-full text-center text-[10px] font-mono text-cyan-500 hover:text-cyan-300 transition-colors py-1 border border-gray-800 rounded"
+        >
+          {expanded ? "Hide Preview ↑" : "Show Preview ↓"}
+        </button>
+
+        {expanded && (
+          <div className="bg-gray-950 rounded border border-gray-800 p-3 max-h-64 overflow-y-auto text-[11px] font-mono text-gray-300">
+            {fullLoading && (
+              <div className="flex items-center gap-2 text-gray-500">
+                <div className="animate-spin h-3 w-3 border border-gray-500 border-t-cyan-400 rounded-full" />
+                Loading report...
+              </div>
+            )}
+            {fullError && !fullLoading && (
+              <p className="text-red-400">{fullError}</p>
+            )}
+            {!fullLoading && !fullError && full?.mdContent && (
+              <pre className="whitespace-pre-wrap break-words">
+                {full.mdContent.length > 1000
+                  ? `${full.mdContent.slice(0, 1000)}...`
+                  : full.mdContent}
+              </pre>
+            )}
+            {!fullLoading && !fullError && !full?.mdContent && (
+              <p className="text-gray-600 italic">Report content unavailable.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {report.cid && (
+        <div className="px-4 py-2 bg-gray-950 border-t border-gray-800 text-[9px] font-mono text-gray-600 truncate">
+          CID: {report.cid}
         </div>
       )}
-
-      <div className="mt-4 flex items-center justify-between">
-        <Link
-          to={`/reports/${report.jobId}`}
-          className="text-sm font-medium text-cyan-300 hover:text-cyan-200 hover:underline"
-        >
-          View Full Report
-        </Link>
-        <p className="text-[11px] text-gray-500">{getGeneratedAt(report.timestamp)}</p>
-      </div>
-    </article>
+    </div>
   );
 }
 
 export default function UserReportList() {
+  const address = useWalletStore((s) => s.address);
+  const hederaAccountId = useWalletStore((s) => s.hederaAccountId);
+  const isConnected = useWalletStore((s) => s.connectionStatus === "connected");
+  const openModal = useWalletStore((s) => s.openWalletModal);
   const { reports, loading, error } = useUserReports();
-  const { address, isConnected } = useWalletStore((s) => ({
-    address: s.address,
-    isConnected: s.connectionStatus === 'connected',
-  }));
-  const [connectBusy, setConnectBusy] = useState(false);
 
-  const connectWallet = async () => {
-    setConnectBusy(true);
-    try {
-      await useWalletStore.getState().connect('metamask');
-    } finally {
-      setConnectBusy(false);
-    }
-  };
+  const displayAddr = address || hederaAccountId;
+
+  if (!isConnected) {
+    return (
+      <div className="text-center py-10">
+        <p className="text-sm font-mono text-gray-400 mb-4">
+          Connect your wallet to view audit reports for contracts you deployed.
+        </p>
+        <button
+          type="button"
+          onClick={() => openModal("reports")}
+          className="bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-mono font-bold py-2 px-5 rounded-lg transition-colors"
+        >
+          Connect Wallet
+        </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-500" />
+      <div className="flex items-center justify-center py-10 gap-2 text-gray-500 text-xs font-mono">
+        <div className="animate-spin h-4 w-4 border border-gray-600 border-t-cyan-400 rounded-full" />
+        Fetching your reports...
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="border border-red-500/40 bg-red-900/20 rounded-xl p-4 text-red-300">
-        <p className="text-sm font-medium">Failed to load reports: {error}</p>
+      <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-4">
+        <p className="text-red-400 font-mono text-sm font-bold">Failed to load reports</p>
+        <p className="text-red-300 font-mono text-xs mt-1">{error}</p>
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="mt-3 text-xs px-3 py-1.5 rounded-md border border-red-400/40 hover:bg-red-800/40 transition-colors"
+          className="mt-3 text-xs font-mono text-cyan-400 hover:underline"
         >
           Retry
         </button>
@@ -146,50 +208,31 @@ export default function UserReportList() {
     );
   }
 
-  if (!isConnected || !address) {
-    return (
-      <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 text-center">
-        <h3 className="text-lg font-semibold text-gray-100">Connect Your Wallet</h3>
-        <p className="text-sm text-gray-400 mt-2">
-          Connect your wallet to view audit reports for contracts you deployed.
-        </p>
-        <button
-          type="button"
-          onClick={connectWallet}
-          disabled={connectBusy}
-          className="mt-4 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 text-white text-sm font-medium transition-colors"
-        >
-          {connectBusy ? 'Connecting...' : 'Connect Wallet'}
-        </button>
-      </div>
-    );
-  }
-
   if (reports.length === 0) {
     return (
-      <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
-        <h3 className="text-lg font-semibold text-gray-100">No Audit Reports Found</h3>
-        <p className="text-sm text-gray-400 mt-2">
-          No reports were found for deployer address{' '}
-          <span className="text-cyan-300 font-mono">{address}</span>.
+      <div className="text-center py-10">
+        <p className="text-sm font-mono text-gray-400">
+          No audit reports found for{" "}
+          <span className="text-cyan-400 font-bold">{fmt.address(displayAddr)}</span>.
+        </p>
+        <p className="text-xs font-mono text-gray-600 mt-2 max-w-xs mx-auto">
+          Reports appear here once an audit job for your deployed contract completes.
         </p>
       </div>
     );
   }
 
   return (
-    <section>
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-gray-100">My Reports ({reports.length})</h3>
-        <p className="text-sm text-gray-400 mt-1">
-          Reports generated for contracts deployed by your connected wallet.
-        </p>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <div className="space-y-4">
+      <p className="text-[11px] font-mono text-gray-500">
+        {reports.length} audit report{reports.length !== 1 ? "s" : ""} for{" "}
+        <span className="text-cyan-400">{fmt.address(displayAddr)}</span>
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {reports.map((report) => (
           <ReportCard key={report.id ?? report.jobId} report={report} />
         ))}
       </div>
-    </section>
+    </div>
   );
 }

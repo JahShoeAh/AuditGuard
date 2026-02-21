@@ -11,10 +11,10 @@ import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
 import { ethers } from "ethers";
 import { formatReport, type Finding as ReportFinding } from "../shared/report-formatter.js";
-import { uploadToIPFSSafe } from "../shared/ipfs-client.js";
 
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
+const REPORT_API_URL = process.env.REPORT_API_URL ?? "http://localhost:4000/api/reports";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const STRICT_LIVE = CONFIG.strictLive;
 const DIRECT_SETTLEMENT = process.env.REPORT_AGENT_DIRECT_SETTLEMENT === "true";
@@ -45,6 +45,8 @@ const jobFindings = new Map<string, {
   submissions: FindingsSubmittedEvent[];
   timer: ReturnType<typeof setTimeout> | null;
   agentAddresses: Map<string, string>; // agentId -> evmAddress
+  contractAddress?: string;
+  deployerAddress?: string;
 }>();
 
 let marketplaceReady = false;
@@ -133,12 +135,16 @@ async function main() {
   // Listen for findings from auditor agents
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
-      await hcs.publishAgentComms({
-        type: "PONG",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {},
-      });
+      try {
+        await hcs.publishAgentComms({
+          type: "PONG",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {},
+        });
+      } catch (err) {
+        log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 
@@ -164,6 +170,16 @@ async function main() {
     const job = jobFindings.get(jobId)!;
     job.submissions.push(submission);
 
+    // Capture contract metadata from first submission that includes it
+    // (agents include contractAddress/deployerAddress in their FINDINGS_SUBMITTED payloads)
+    const p = submission.payload as any;
+    if (!job.contractAddress && p.contractAddress) {
+      job.contractAddress = String(p.contractAddress);
+    }
+    if (!job.deployerAddress && p.deployerAddress) {
+      job.deployerAddress = String(p.deployerAddress);
+    }
+
     // Track agent EVM address for payment settlement
     if (evmAddress) {
       job.agentAddresses.set(submission.agentId, evmAddress);
@@ -173,7 +189,9 @@ async function main() {
     if (!job.timer) {
       log.info(`Starting ${AGGREGATION_WINDOW_MS / 1000}s aggregation window for job ${String(jobId).slice(0, 10)}...`);
       job.timer = setTimeout(() => {
-        aggregateAndPublish(jobId, hcs, contracts, wallet.evmAddress);
+        aggregateAndPublish(jobId, hcs, contracts, wallet.evmAddress).catch((err) => {
+          log.error(`[ReportAgent] aggregateAndPublish failed for job ${jobId}: ${err}`);
+        });
       }, AGGREGATION_WINDOW_MS);
     }
   });
@@ -369,70 +387,63 @@ async function aggregateAndPublish(
   log.info(`[ReportAgent] Generated ${markdownContent.length} char report with ${allFindings.length} findings`);
 
   const contentHash = ethers.keccak256(ethers.toUtf8Bytes(markdownContent));
-  const cid = await uploadToIPFSSafe(markdownContent);
-  log.info(`[ReportAgent] IPFS CID: ${cid}`);
 
-  // Create DataMarketplace listing
-  const numericJobId = Number(jobId);
-  const parentJobId = Number.isFinite(numericJobId) ? numericJobId : 0;
-  let listingId: number | null = null;
-  const canList = await ensureReportAgentCanList(contracts, myAddress);
-  if (canList) {
-    try {
-      const priceRaw = ethers.parseUnits("0.5", GUARD_DECIMALS);
-      const tx = await contracts.createListing(
-        parentJobId,
-        `Audit Report — Job #${jobId}`,
-        "Comprehensive vulnerability audit report",
-        6,
-        priceRaw,
-        contentHash,
-        0,
-        0,
-        0,
-        30 * 24 * 60 * 60
-      );
-      const receipt = await tx.wait();
-      if (receipt?.logs) {
-        for (const logItem of receipt.logs) {
-          try {
-            const parsed = contracts.dataMarketplace.interface.parseLog(logItem);
-            if (parsed?.name === "DataListed") {
-              listingId = Number(parsed.args?.listingId ?? parsed.args?.[0]);
-              break;
-            }
-          } catch {
-            // Ignore unrelated logs.
-          }
-        }
-      }
-      log.info(`[ReportAgent] Marketplace listing: #${listingId}`);
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err);
-      log.warn(`[ReportAgent] Marketplace listing failed: ${errMessage}`);
-    }
-  } else {
-    log.warn(`[ReportAgent] Skipping marketplace listing for job ${jobId}: seller is not active`);
-  }
-
-  // Publish REPORT_METADATA for dashboard
+  // Persist report to Postgres via the dashboard API server.
   const deployer =
     jobMeta?.deployerAddress ||
     jobMeta?.payload?.deployerAddress ||
     firstPayload?.deployerAddress ||
     null;
+
+  try {
+    const res = await fetch(REPORT_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jobId,
+        contractAddress: contractAddr,
+        deployerAddress: deployer ?? ethers.ZeroAddress,
+        chain,
+        contractType,
+        contentHash,
+        mdContent: markdownContent,
+        agentAddresses: Array.from(job.agentAddresses.values()),
+        agentCount: agents.length,
+        findingCount: totalFindings,
+        findingsBySeverity: {
+          critical: totalCritical,
+          high:     totalHigh,
+          medium:   totalMedium,
+          low:      totalLow,
+          info:     0,
+        },
+        timestamp: Date.now(),
+        source: "agent",
+      }),
+    });
+    if (res.ok) {
+      const body = await res.json() as { id?: string };
+      log.info(`[ReportAgent] Report saved to DB: ${body.id}`);
+    } else {
+      const text = await res.text().catch(() => "");
+      log.warn(`[ReportAgent] DB save failed (${res.status}): ${text}`);
+    }
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    log.warn(`[ReportAgent] DB save error: ${errMessage}`);
+  }
+
+  // Publish REPORT_METADATA for dashboard HCS stream.
   await hcs.publishAuditLog({
     type: "REPORT_METADATA",
     agentId: AGENT_ID,
     timestamp: Date.now(),
     payload: {
       jobId,
-      cid,
-      listingId,
       contentHash,
       deployer,
       agentCount: agents.length,
-      findingCount: allFindings.length,
+      findingCount: totalFindings,
     },
   });
   log.info(`[ReportAgent] Published REPORT_METADATA for job ${jobId}`);

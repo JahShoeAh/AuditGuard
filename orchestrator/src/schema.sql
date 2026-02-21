@@ -27,11 +27,12 @@ CREATE TABLE IF NOT EXISTS audit_reports (
   chain                TEXT        NOT NULL,          -- e.g. "hedera-testnet"
   contract_type        TEXT        NOT NULL,          -- "lending"|"dex"|"staking"|...
 
-  -- File reference (markdown content stored in S3, NOT here)
-  s3_key               TEXT        NOT NULL DEFAULT '', -- "reports/{jobId}.md"
-                                                         -- empty string in local dev
+  -- Report content stored inline in the DB (same schema for local dev and production)
   content_hash         TEXT        NOT NULL,          -- SHA3-256 hex digest of markdown
-  cid                  TEXT        NOT NULL DEFAULT '', -- IPFS / 0g content identifier
+  md_content           TEXT        NOT NULL DEFAULT '', -- full markdown text
+  -- Legacy columns kept for backward compatibility with existing rows
+  s3_key               TEXT        NOT NULL DEFAULT '',
+  cid                  TEXT        NOT NULL DEFAULT '',
 
   -- Agent metadata
   agent_addresses      TEXT[]      NOT NULL DEFAULT '{}',
