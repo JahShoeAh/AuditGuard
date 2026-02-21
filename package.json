@@ -74,6 +74,10 @@
     "ethers": "^6.16.0",
     "hardhat": "^2.28.0"
   },
+  "overrides": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@hashgraph/sdk": "^2.80.0",
