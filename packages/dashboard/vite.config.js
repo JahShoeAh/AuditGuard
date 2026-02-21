@@ -13,6 +13,10 @@ export default defineConfig({
     port: 5173,
     open: process.env.DASHBOARD_OPEN === 'true',
     proxy: {
+      '/api': {
+        target: `http://localhost:${process.env.API_PORT ?? 3002}`,
+        changeOrigin: true,
+      },
       '/hedera-rpc': {
         target: 'https://testnet.hashio.io',
         changeOrigin: true,
