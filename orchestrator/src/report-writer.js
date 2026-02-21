@@ -119,7 +119,7 @@ function normalizeContractTypeCandidate(value) {
 }
 
 function resolveClaudeHaikuModel() {
-  const fallback = "claude-3-5-haiku-latest";
+  const fallback = "claude-haiku-4-5-20251001";
   const configured = normalizeText(
     process.env.CLAUDE_HAIKU_MODEL ??
     process.env.CLAUDE_REPORT_MODEL ??
@@ -127,6 +127,21 @@ function resolveClaudeHaikuModel() {
     fallback
   );
   const normalized = configured.toLowerCase();
+  const retiredHaikuModels = new Set([
+    "claude-3-5-haiku-latest",
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+  ]);
+  if (retiredHaikuModels.has(normalized)) {
+    if (!loggedReportHaikuOverride) {
+      console.warn(
+        `[report-writer] Claude model override: configured '${configured}' is retired. ` +
+        `Forcing '${fallback}'.`
+      );
+      loggedReportHaikuOverride = true;
+    }
+    return fallback;
+  }
   if (normalized.includes("haiku")) return configured;
   if (!loggedReportHaikuOverride) {
     console.warn(
