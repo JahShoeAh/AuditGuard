@@ -206,6 +206,16 @@ export class EventListenerService {
     this.maxSeenEventIds = 5_000;
     this.syntheticSequence = 0;
     this.eventsBacklogSkipped = false;
+    this.lastSeq = {
+      discovery: 0,
+      auditLog: 0,
+      agentComms: 0,
+    };
+    this._topicReplayInitialized = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
+    };
 
     // Contract event state
     this.lastProcessedBlock = null;
@@ -397,7 +407,7 @@ export class EventListenerService {
 
     this._intervals.push(setInterval(() => {
       this._pollEventsAPI();
-    }, HCS_POLL_MS));
+    }, this.hcsPollMs));
   }
 
   async _pollEventsAPI() {
@@ -517,10 +527,87 @@ export class EventListenerService {
   async fetchHCSMessages() {
     return this.fetchEvents().map((event) => {
       return {
+        topicKey: event.topicKey,
         sequenceNumber: event.sequenceNumber,
         timestamp: event.timestamp,
         parsedData: event.parsedData,
       };
+    });
+  }
+
+  /**
+   * Backward-compatible topic polling shim retained for tests and legacy callers.
+   */
+  async _pollHCSTopic(topicId, topicKey) {
+    const normalizedTopicKey = String(topicKey || '');
+    if (!['discovery', 'auditLog', 'agentComms'].includes(normalizedTopicKey)) return;
+
+    const rawMessages = await this.fetchHCSMessages(topicId, normalizedTopicKey);
+    const messages = Array.isArray(rawMessages)
+      ? rawMessages
+          .filter((msg) => !msg.topicKey || msg.topicKey === normalizedTopicKey)
+          .map((msg) => ({
+            sequenceNumber: Number(msg?.sequenceNumber ?? 0),
+            timestamp: msg?.timestamp ?? String(Date.now()),
+            parsedData:
+              typeof msg?.parsedData === 'object' && msg.parsedData !== null
+                ? msg.parsedData
+                : {},
+          }))
+          .filter((msg) => Number.isFinite(msg.sequenceNumber) && msg.sequenceNumber > 0)
+          .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      : [];
+
+    if (messages.length === 0) return;
+
+    const latestSeen = messages[messages.length - 1].sequenceNumber;
+    const prevSeq = Number(this.lastSeq[normalizedTopicKey] ?? 0);
+
+    if (this.hcsReplayMode === 'from_now' && !this._topicReplayInitialized[normalizedTopicKey]) {
+      this.lastSeq[normalizedTopicKey] = Math.max(prevSeq, latestSeen);
+      this._topicReplayInitialized[normalizedTopicKey] = true;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        hcsEventsSeen: this.hcsEventsSeen,
+        activeAuctionsCount,
+        lastTopicSeq: { ...this.lastSeq },
+      });
+      return;
+    }
+
+    this._topicReplayInitialized[normalizedTopicKey] = true;
+    let cursor = prevSeq;
+    let processed = 0;
+
+    for (const msg of messages) {
+      if (msg.sequenceNumber <= cursor) continue;
+
+      const eventId = this._mkHcsEventId(topicId, msg.sequenceNumber);
+      cursor = msg.sequenceNumber;
+      if (this.seenEventIds.has(eventId)) continue;
+
+      this._rememberEventId(eventId);
+      this._routeHCSMessage(normalizedTopicKey, {
+        eventId,
+        topicKey: normalizedTopicKey,
+        sequenceNumber: msg.sequenceNumber,
+        timestamp: msg.timestamp,
+        parsedData: msg.parsedData,
+      });
+      processed += 1;
+    }
+
+    this.lastSeq[normalizedTopicKey] = Math.max(Number(this.lastSeq[normalizedTopicKey] ?? 0), cursor);
+    this.hcsEventsSeen += processed;
+    const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+      (job) => !job?.terminalStatus
+    ).length;
+    this.store.setIngestionHealth?.({
+      hcsEventsSeen: this.hcsEventsSeen,
+      activeAuctionsCount,
+      lastTopicSeq: { ...this.lastSeq },
     });
   }
 
