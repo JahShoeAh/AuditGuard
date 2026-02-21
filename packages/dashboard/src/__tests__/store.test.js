@@ -195,6 +195,30 @@ describe('Store — Settlements', () => {
   });
 });
 
+describe('Store — Report persistence', () => {
+  it('should mark a job as report-persisted', () => {
+    useStore.getState().setJob('J9', {
+      jobId: 'J9',
+      contractAddress: '0xabc',
+      contractType: 'lending',
+    });
+    useStore.getState().setJobReportPersisted('J9', {
+      persistedAt: 1700000000000,
+      reportHash: '0xreporthash',
+    });
+
+    const state = useStore.getState();
+    expect(state.jobReportPersisted['J9']).toMatchObject({
+      persistedAt: 1700000000000,
+      reportHash: '0xreporthash',
+    });
+    expect(state.activeJobs['J9']).toMatchObject({
+      reportPersistedAt: 1700000000000,
+      reportPersistedHash: '0xreporthash',
+    });
+  });
+});
+
 describe('Store — GUARD flow tracking', () => {
   it('should add GUARD flow records', () => {
     useStore.getState().addGuardFlow({

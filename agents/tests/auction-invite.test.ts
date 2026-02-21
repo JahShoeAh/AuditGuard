@@ -84,4 +84,62 @@ describe("Agent AUCTION_INVITE handling", () => {
 
     expect(shouldBid(resolved.loc, resolved.contractType, resolved.riskScore)).toBe(false);
   });
+
+  it("static-analysis accepts TASK_ASSIGNED only when target matches agent id or wallet address", async () => {
+    const { isTaskAssignedTarget } = await import("../static-analysis/index.js");
+    expect(
+      isTaskAssignedTarget(
+        { winnerAgentId: "static-analysis-047", winnerAddress: "0x00000000000000000000000000000000000000aa" },
+        "static-analysis-047",
+        "0x00000000000000000000000000000000000000bb"
+      )
+    ).toBe(true);
+    expect(
+      isTaskAssignedTarget(
+        { winnerAgentId: "other-agent", winnerAddress: "0x00000000000000000000000000000000000000bb" },
+        "static-analysis-047",
+        "0x00000000000000000000000000000000000000bb"
+      )
+    ).toBe(true);
+    expect(
+      isTaskAssignedTarget(
+        { winnerAgentId: "other-agent", winnerAddress: "0x00000000000000000000000000000000000000cc" },
+        "static-analysis-047",
+        "0x00000000000000000000000000000000000000bb"
+      )
+    ).toBe(false);
+  });
+
+  it("fuzzer resolves TASK_ASSIGNED payload into executable context", async () => {
+    const { resolveTaskAssignedContext } = await import("../fuzzer/index.js");
+    const resolved = resolveTaskAssignedContext({
+      jobId: "4242",
+      contractAddress: "0x00000000000000000000000000000000000000aa",
+      contractType: "bridge",
+      estimatedLOC: "2200",
+    });
+    expect(resolved).toEqual({
+      jobId: "4242",
+      contractAddress: "0x00000000000000000000000000000000000000aa",
+      contractType: "bridge",
+      loc: 2200,
+    });
+    expect(resolveTaskAssignedContext({ contractAddress: "0xabc" })).toBeNull();
+  });
+
+  it("llm-contextual resolves TASK_ASSIGNED payload with safe defaults", async () => {
+    const { resolveTaskAssignedContext } = await import("../llm-contextual/index.js");
+    const resolved = resolveTaskAssignedContext({
+      jobId: "99",
+      contractAddress: "0x00000000000000000000000000000000000000aa",
+      contractType: "unknown",
+      estimatedLOC: -1,
+    });
+    expect(resolved).toEqual({
+      jobId: "99",
+      contractAddress: "0x00000000000000000000000000000000000000aa",
+      contractType: "lending",
+      loc: 1200,
+    });
+  });
 });

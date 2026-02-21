@@ -103,7 +103,18 @@ export class HCSClient {
     query.subscribe(this.client, null, (msg) => {
         try {
           const parsed = JSON.parse(Buffer.from(msg.contents).toString("utf-8"));
-          handler(parsed);
+          const rawSequence = msg?.sequenceNumber;
+          const sequenceNumber = Number(
+            typeof rawSequence?.toString === "function" ? rawSequence.toString() : rawSequence
+          );
+          const consensusTimestamp = typeof msg?.consensusTimestamp?.toString === "function"
+            ? msg.consensusTimestamp.toString()
+            : null;
+          handler(parsed, {
+            topicId,
+            sequenceNumber: Number.isFinite(sequenceNumber) ? Math.floor(sequenceNumber) : null,
+            consensusTimestamp,
+          });
         } catch (err) {
           console.error("Failed to parse HCS message", err);
         }

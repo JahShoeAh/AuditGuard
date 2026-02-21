@@ -14,7 +14,7 @@ export default defineConfig({
     open: process.env.DASHBOARD_OPEN === 'true',
     proxy: {
       '/api': {
-        target: `http://localhost:${process.env.API_PORT ?? 3002}`,
+        target: `http://localhost:${process.env.API_PORT ?? 4000}`,
         changeOrigin: true,
       },
       '/hedera-rpc': {

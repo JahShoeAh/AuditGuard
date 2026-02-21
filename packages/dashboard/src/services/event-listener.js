@@ -846,6 +846,15 @@ export class EventListenerService {
       return;
     }
 
+    if (parsedData.type === 'REPORT_PERSISTED') {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      this.store.setJobReportPersisted?.(jobId, {
+        persistedAt: Number(payload.persistedAt ?? Date.now()),
+        reportHash: payload.reportHash ?? null,
+      });
+      return;
+    }
+
     if (parsedData.type === 'JOB_CREATED' && !strictOnchain) {
       const contractAddress = String(payload.contractAddress ?? '').toLowerCase();
       if (

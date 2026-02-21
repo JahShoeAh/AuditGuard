@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+
+const IPFS_ENABLED = String(process.env.IPFS_ENABLED ?? "false").toLowerCase() === "true";
 const IPFS_API = process.env.IPFS_API_URL ?? "http://127.0.0.1:5001";
 
 export async function uploadToIPFS(content: string): Promise<string> {
@@ -27,7 +30,17 @@ export async function uploadToIPFS(content: string): Promise<string> {
 }
 
 export async function uploadToIPFSSafe(content: string): Promise<string> {
-  return await uploadToIPFS(content);
+  if (!IPFS_ENABLED) {
+    return `local-${createHash("sha256").update(content).digest("hex").slice(0, 32)}`;
+  }
+  try {
+    return await uploadToIPFS(content);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const fallback = `local-${createHash("sha256").update(content).digest("hex").slice(0, 32)}`;
+    console.warn(`[IPFS] Upload unavailable (${reason}); using fallback cid ${fallback}`);
+    return fallback;
+  }
 }
 
 export function ipfsGatewayUrl(cid: string): string {

@@ -39,22 +39,17 @@ const GUARD_DECIMALS = 8;
 
 const log = createAgentLogger(AGENT_ID, "static_analysis");
 
-// Track pending jobs awaiting winner selection
-const pendingJobs = new Map<string, {
+type PendingJobContext = {
   jobId: string;
   contractAddress: string;
   contractType: ContractType;
   loc: number;
-}>();
-const startedJobs = new Set<string>();
+};
 
-function hasStartedJob(jobId: string): boolean {
-  const prefix = `${jobId}:`;
-  for (const key of startedJobs) {
-    if (key.startsWith(prefix)) return true;
-  }
-  return false;
-}
+// Track pending jobs awaiting winner selection
+const pendingJobs = new Map<string, PendingJobContext>();
+const auditInFlightJobs = new Set<string>();
+const auditCompletedJobs = new Set<string>();
 
 // Dynamic pricing state — EMA of win rate adjusts bid multiplier
 let bidMultiplier = 1.0;
@@ -269,6 +264,41 @@ export function resolveAuctionInviteContext(
   return { contractType, loc, riskScore };
 }
 
+export interface TaskAssignedPayload {
+  jobId?: unknown;
+  contractAddress?: unknown;
+  contractType?: unknown;
+  estimatedLOC?: unknown;
+  winnerAgentId?: unknown;
+  winnerAddress?: unknown;
+}
+
+export function isTaskAssignedTarget(
+  payload: TaskAssignedPayload,
+  agentId: string,
+  evmAddress: string
+): boolean {
+  const targetAgentId = typeof payload?.winnerAgentId === "string" ? payload.winnerAgentId : "";
+  const targetAddress = typeof payload?.winnerAddress === "string" ? payload.winnerAddress.toLowerCase() : "";
+  const normalizedAddress = String(evmAddress ?? "").toLowerCase();
+  if (!targetAgentId && !targetAddress) return false;
+  return targetAgentId === agentId || targetAddress === normalizedAddress;
+}
+
+export function resolveTaskAssignedContext(payload: TaskAssignedPayload): PendingJobContext | null {
+  const jobId = String(payload?.jobId ?? "").trim();
+  const contractAddress = String(payload?.contractAddress ?? "").trim();
+  if (!jobId || !contractAddress) return null;
+
+  const rawContractType = String(payload?.contractType ?? "lending").toLowerCase();
+  const contractType = (["lending", "dex", "staking", "bridge", "vault"].includes(rawContractType)
+    ? rawContractType
+    : "lending") as ContractType;
+  const locRaw = Number(payload?.estimatedLOC ?? 1200);
+  const loc = Number.isFinite(locRaw) && locRaw > 0 ? Math.floor(locRaw) : 1200;
+  return { jobId, contractAddress, contractType, loc };
+}
+
 // ---- Main ----
 
 async function main() {
@@ -442,6 +472,78 @@ async function main() {
     loc: number;
   }>();
 
+  const startAuditIfEligible = (
+    jobKey: string,
+    context: PendingJobContext | null,
+    source: "winner_event" | "task_assigned"
+  ) => {
+    if (!context) {
+      void hcs.publishAuditLog({
+        type: "AUDIT_EXECUTION_SKIPPED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { jobId: jobKey, source, reasonCode: "missing_context" },
+      }).catch(() => { });
+      return;
+    }
+
+    if (auditCompletedJobs.has(jobKey)) {
+      void hcs.publishAuditLog({
+        type: "AUDIT_EXECUTION_SKIPPED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { jobId: jobKey, source, reasonCode: "already_completed" },
+      }).catch(() => { });
+      return;
+    }
+
+    if (auditInFlightJobs.has(jobKey)) {
+      void hcs.publishAuditLog({
+        type: "AUDIT_EXECUTION_SKIPPED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { jobId: jobKey, source, reasonCode: "duplicate_start" },
+      }).catch(() => { });
+      return;
+    }
+
+    auditInFlightJobs.add(jobKey);
+    pendingJobs.delete(jobKey);
+    bidSubmittedJobs.delete(jobKey);
+    updatePricingAfterOutcome(true);
+
+    void hcs.publishAuditLog({
+      type: "AUDIT_EXECUTION_STARTED",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        jobId: jobKey,
+        source,
+        contractAddress: context.contractAddress,
+        contractType: context.contractType,
+        estimatedLOC: context.loc,
+      },
+    }).catch(() => { });
+
+    log.info(`WON auction for job #${jobKey}! Starting audit via ${source}.`);
+    simulateAuditCycle(
+      context.jobId,
+      context.contractAddress,
+      context.contractType,
+      context.loc,
+      hcs,
+      contracts,
+      wallet.evmAddress
+    )
+      .then(() => {
+        auditCompletedJobs.add(jobKey);
+      })
+      .catch(err => log.error(`Audit cycle failed: ${err}`))
+      .finally(() => {
+        auditInFlightJobs.delete(jobKey);
+      });
+  };
+
   // Listen for AUCTION_INVITE from orchestrator (carries real jobId)
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
@@ -451,6 +553,31 @@ async function main() {
         timestamp: Date.now(),
         payload: {},
       });
+      return;
+    }
+
+    if (msg.type === "TASK_ASSIGNED") {
+      const payload = (msg as any).payload ?? {};
+      const jobKey = String(payload?.jobId ?? "");
+      if (!isTaskAssignedTarget(payload, AGENT_ID, wallet.evmAddress)) {
+        await hcs.publishAuditLog({
+          type: "WINNER_AUDIT_HANDOFF_SKIPPED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {
+            jobId: jobKey,
+            source: "task_assigned",
+            reasonCode: "not_target",
+          },
+        });
+        return;
+      }
+
+      const context = resolveTaskAssignedContext(payload);
+      if (context) {
+        pendingJobs.set(jobKey, context);
+      }
+      startAuditIfEligible(jobKey, context ?? pendingJobs.get(jobKey) ?? null, "task_assigned");
       return;
     }
 
@@ -820,6 +947,12 @@ async function main() {
 
       if (alreadyBidOnChain) {
         bidSubmittedJobs.add(jobKey);
+        pendingJobs.set(jobKey, {
+          jobId: jobKey,
+          contractAddress,
+          contractType: resolved.contractType,
+          loc: resolved.loc,
+        });
         log.info(`On-chain bid already exists for job #${jobKey}; skipping duplicate submit`);
         return;
       }
@@ -852,6 +985,12 @@ async function main() {
       const reasonCode = normalizeBidFailureReasonCode(error);
       if (reasonCode === "duplicate_bid") {
         bidSubmittedJobs.add(jobKey);
+        pendingJobs.set(jobKey, {
+          jobId: jobKey,
+          contractAddress,
+          contractType: resolved.contractType,
+          loc: resolved.loc,
+        });
       }
       const guardBalance = Number(
         ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)
@@ -898,28 +1037,13 @@ async function main() {
     const myAddress = wallet.evmAddress.toLowerCase();
     const isWinner = winners.some((w) => String(w).toLowerCase() === myAddress);
 
-    pendingJobs.delete(jobKey);
-    bidSubmittedJobs.delete(jobKey);
-
     if (!isWinner) {
+      pendingJobs.delete(jobKey);
+      bidSubmittedJobs.delete(jobKey);
       log.info(`LOST auction for job #${jobKey}; cleared local bid state`);
       return;
     }
-    if (!pending) return;
-
-    log.info(`WON auction for job #${jobKey}!`);
-    updatePricingAfterOutcome(true);
-
-    simulateAuditCycle(
-      pending.jobId,
-      pending.contractAddress,
-      pending.contractType,
-      pending.loc,
-      hcs,
-      contracts,
-      wallet.evmAddress
-    )
-      .catch(err => log.error(`Audit cycle failed: ${err}`));
+    startAuditIfEligible(jobKey, pending ?? null, "winner_event");
   });
 
   contracts.onJobCancelled((jobId) => {

@@ -10,6 +10,11 @@ import { MessageType, now } from "../../agents/shared/types.js";
 import { parseUnits } from "ethers";
 import { normalizeDeployer } from "../../packages/sdk/db/report-types.js";
 import { generateAndStoreReport } from "./report-writer.js";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Orchestrator Agent — isolated implementation.
@@ -43,6 +48,14 @@ export class OrchestratorAgent {
     this.staleAuctionReconcileMaxPerCycle = Number(
       process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE ?? "3"
     );
+    const staleAuctionReconcileMaxSelectsPerCycleRaw = Number(
+      process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE ?? "5"
+    );
+    this.staleAuctionReconcileMaxSelectsPerCycle =
+      Number.isFinite(staleAuctionReconcileMaxSelectsPerCycleRaw) &&
+      staleAuctionReconcileMaxSelectsPerCycleRaw > 0
+        ? Math.floor(staleAuctionReconcileMaxSelectsPerCycleRaw)
+        : 5;
     this.staleAuctionReconcileFailureCooldownMs = Number(
       process.env.ORCHESTRATOR_RECONCILE_FAILURE_COOLDOWN_MS ?? "15000"
     );
@@ -57,6 +70,14 @@ export class OrchestratorAgent {
     this.activeCheckFailOpen = (process.env.ORCHESTRATOR_ACTIVE_CHECK_FAIL_OPEN ?? "false") === "true";
     this.discoveryDedupeEnabled = (process.env.ORCHESTRATOR_ENABLE_DISCOVERY_DEDUPE ?? "true") !== "false";
     this.discoveryDedupeTtlMs = Number(process.env.ORCHESTRATOR_DISCOVERY_DEDUPE_TTL_MS ?? "120000");
+    this.discoverySequenceCursorEnabled =
+      (process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_ENABLED ?? "true") !== "false";
+    this.discoverySequenceCursorPath = String(
+      process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_PATH ??
+      join(__dirname, "..", ".runtime", "orchestrator-discovery-cursor.json")
+    );
+    this.discoveryLastSequence = this.loadDiscoverySequenceCursor();
+    this.discoverySubscriptionQueue = Promise.resolve();
     this.auctionCloseSingleflightEnabled = (process.env.ORCHESTRATOR_AUCTION_CLOSE_SINGLEFLIGHT ?? "true") !== "false";
     this.onchainActiveCache = new Map();
     this.recentDiscovery = new Map();
@@ -64,9 +85,14 @@ export class OrchestratorAgent {
     this.inflightCloseJobs = new Map();
     this.inflightSelectWinnerJobs = new Map();
     this.recentWinnerAnnouncements = new Map();
+    this.recentWinnerAssignments = new Map();
     const winnerAnnounceDedupRaw = Number(process.env.ORCHESTRATOR_WINNER_ANNOUNCE_DEDUP_MS ?? "15000");
     this.winnerAnnounceDedupMs = Number.isFinite(winnerAnnounceDedupRaw)
       ? Math.max(1_000, Math.floor(winnerAnnounceDedupRaw))
+      : 15_000;
+    const winnerAssignmentDedupRaw = Number(process.env.ORCHESTRATOR_WINNER_ASSIGNMENT_DEDUP_MS ?? "15000");
+    this.winnerAssignmentDedupMs = Number.isFinite(winnerAssignmentDedupRaw)
+      ? Math.max(1_000, Math.floor(winnerAssignmentDedupRaw))
       : 15_000;
     this.reconcileCloseCooldown = new Map();
     this._isReconcileRunning = false;
@@ -97,8 +123,18 @@ export class OrchestratorAgent {
       if (typeof client.getAllAgents !== "function") missing.push("getAllAgents");
       if (typeof client.getAgent !== "function") missing.push("getAgent");
       if (typeof client.isActiveAgent !== "function") missing.push("isActiveAgent");
-      if (typeof client.dataMarketplace?.purchaseData !== "function") missing.push("dataMarketplace.purchaseData");
-      if (typeof client.paymentSettlement?.settleJob !== "function") missing.push("paymentSettlement.settleJob");
+      if (typeof client.purchaseData !== "function" && typeof client.dataMarketplace?.purchaseData !== "function") {
+        missing.push("purchaseData");
+      }
+      if (typeof client.createSubAuction !== "function" && typeof client.subAuction?.createSubAuction !== "function") {
+        missing.push("createSubAuction");
+      }
+      if (typeof client.acceptSubResult !== "function" && typeof client.subAuction?.acceptResult !== "function") {
+        missing.push("acceptSubResult");
+      }
+      if (typeof client.settleJob !== "function" && typeof client.paymentSettlement?.settleJob !== "function") {
+        missing.push("settleJob");
+      }
       if (missing.length) {
         throw new Error(`Contract client missing required methods: ${missing.join(", ")}`);
       }
@@ -145,6 +181,63 @@ export class OrchestratorAgent {
     this.jobs.set(key, job);
   }
 
+  parseSequenceNumber(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    return Math.floor(numeric);
+  }
+
+  loadDiscoverySequenceCursor() {
+    if (!this.discoverySequenceCursorEnabled) return 0;
+    try {
+      if (!existsSync(this.discoverySequenceCursorPath)) return 0;
+      const raw = readFileSync(this.discoverySequenceCursorPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      return this.parseSequenceNumber(parsed?.lastSequence) ?? 0;
+    } catch (err) {
+      this.log.warn(
+        `[Orchestrator] Failed to load discovery sequence cursor: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+      );
+      return 0;
+    }
+  }
+
+  persistDiscoverySequenceCursor() {
+    if (!this.discoverySequenceCursorEnabled) return;
+    const seq = this.parseSequenceNumber(this.discoveryLastSequence);
+    if (!seq) return;
+    try {
+      mkdirSync(dirname(this.discoverySequenceCursorPath), { recursive: true });
+      const tmp = `${this.discoverySequenceCursorPath}.tmp`;
+      writeFileSync(
+        tmp,
+        JSON.stringify(
+          {
+            lastSequence: seq,
+            updatedAt: Date.now(),
+          },
+          null,
+          2
+        ),
+        "utf-8"
+      );
+      renameSync(tmp, this.discoverySequenceCursorPath);
+    } catch (err) {
+      this.log.warn(
+        `[Orchestrator] Failed to persist discovery sequence cursor: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  updateDiscoverySequenceCursor(sequenceNumber) {
+    const nextSeq = this.parseSequenceNumber(sequenceNumber);
+    if (!nextSeq || nextSeq <= this.discoveryLastSequence) return;
+    this.discoveryLastSequence = nextSeq;
+    this.persistDiscoverySequenceCursor();
+  }
+
   normalizeWinnerAddresses(winners) {
     if (!Array.isArray(winners)) return [];
     const seen = new Set();
@@ -174,6 +267,104 @@ export class OrchestratorAgent {
         this.recentWinnerAnnouncements.delete(jobId);
       }
     }
+  }
+
+  pruneWinnerAssignmentCache(nowMs = Date.now()) {
+    for (const [key, entry] of this.recentWinnerAssignments.entries()) {
+      const publishedAt = Number(entry?.publishedAt ?? 0);
+      if (!Number.isFinite(publishedAt) || nowMs - publishedAt > this.winnerAssignmentDedupMs) {
+        this.recentWinnerAssignments.delete(key);
+      }
+    }
+  }
+
+  async publishWinnerAssignment(jobId, job, winner, extras = {}) {
+    const key = this.normalizeJobId(jobId);
+    const winnerAddress = this.normalizeAddress(winner?.evmAddress);
+    const winnerAgentId = String(winner?.agentId ?? "");
+    if (!winnerAddress && !winnerAgentId) {
+      await this.hcs.publishAuditLog({
+        type: "WINNER_AUDIT_HANDOFF_SKIPPED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId: key,
+          contractAddress: job?.contractAddress ?? "",
+          reasonCode: "missing_target",
+        },
+      }).catch(() => { });
+      return false;
+    }
+
+    const assignmentKey = `${key}:${String(winnerAddress ?? winnerAgentId).toLowerCase()}`;
+    const txHash = typeof extras?.txHash === "string" && extras.txHash ? extras.txHash : null;
+    const nowMs = Date.now();
+    this.pruneWinnerAssignmentCache(nowMs);
+    const existing = this.recentWinnerAssignments.get(assignmentKey);
+    if (existing && nowMs - Number(existing?.publishedAt ?? 0) <= this.winnerAssignmentDedupMs) {
+      await this.hcs.publishAuditLog({
+        type: "WINNER_AUDIT_HANDOFF_SKIPPED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: {
+          jobId: key,
+          contractAddress: job?.contractAddress ?? "",
+          winnerAgentId: winnerAgentId || null,
+          winnerAddress: winnerAddress || null,
+          reasonCode: "duplicate_assignment",
+          ...(txHash ? { txHash } : {}),
+        },
+      }).catch(() => { });
+      return false;
+    }
+
+    this.recentWinnerAssignments.set(assignmentKey, {
+      publishedAt: nowMs,
+      txHash: txHash ? txHash.toLowerCase() : null,
+    });
+
+    const assignmentPayload = {
+      jobId: key,
+      contractAddress: job?.contractAddress ?? "",
+      contractType: job?.contractType ?? "unknown",
+      estimatedLOC: Number(job?.estimatedLOC ?? 0) || 0,
+      winnerAgentId: winnerAgentId || undefined,
+      winnerAddress: winnerAddress || undefined,
+      ...(txHash ? { txHash } : {}),
+    };
+
+    await this.hcs.publishAgentComms({
+      type: MessageType.TASK_ASSIGNED,
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: assignmentPayload,
+    }).catch(() => { });
+
+    if (winnerAgentId) {
+      const entry = this.roster.get(winnerAgentId);
+      if (entry?.endpoint) {
+        this.dispatchToUcpEndpoint(entry.endpoint, {
+          type: "TASK_ASSIGNED",
+          agentId: "orchestrator",
+          timestamp: now(),
+          payload: assignmentPayload,
+        }).catch(() => { });
+      }
+    }
+
+    await this.hcs.publishAuditLog({
+      type: "WINNER_AUDIT_HANDOFF_SENT",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId: key,
+        contractAddress: job?.contractAddress ?? "",
+        winnerAgentId: winnerAgentId || null,
+        winnerAddress: winnerAddress || null,
+        ...(txHash ? { txHash } : {}),
+      },
+    }).catch(() => { });
+    return true;
   }
 
   async publishWinnerSelectedAuditLog(jobId, winners, extras = {}) {
@@ -730,11 +921,37 @@ export class OrchestratorAgent {
   // ─── Subscriptions ─────────────────────────────────────────────────────
 
   subscribeDiscovery() {
-    this.hcs.subscribeDiscovery(async (msg) => {
-      if (msg.type !== MessageType.CONTRACT_DISCOVERED) return;
-      await this.handleDiscovery(msg);
+    this.hcs.subscribeDiscovery((msg, meta = {}) => {
+      this.discoverySubscriptionQueue = this.discoverySubscriptionQueue
+        .then(async () => {
+          const incomingSequence = this.parseSequenceNumber(meta?.sequenceNumber);
+          if (
+            incomingSequence &&
+            this.discoverySequenceCursorEnabled &&
+            incomingSequence <= this.discoveryLastSequence
+          ) {
+            return;
+          }
+
+          if (msg.type !== MessageType.CONTRACT_DISCOVERED) {
+            if (incomingSequence) this.updateDiscoverySequenceCursor(incomingSequence);
+            return;
+          }
+
+          await this.handleDiscovery(msg);
+          if (incomingSequence) this.updateDiscoverySequenceCursor(incomingSequence);
+        })
+        .catch((err) => {
+          this.log.warn(
+            `[Orchestrator] Discovery handler failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+          );
+        });
     });
-    this.log.info(`Listening on discovery topic ${CONFIG.hcsTopics.discovery}`);
+    this.log.info(
+      `Listening on discovery topic ${CONFIG.hcsTopics.discovery} ` +
+      `(cursor=${this.discoverySequenceCursorEnabled ? this.discoveryLastSequence : "disabled"})`
+    );
   }
 
   subscribeAgentComms() {
@@ -1148,6 +1365,7 @@ export class OrchestratorAgent {
       contractAddress,
       deployerAddress: normalizeDeployer(deployerAddress ?? ''),
       contractType,
+      estimatedLOC: Number(estimatedLOC ?? 0) || 0,
       classifier: classifierMetadata,
       bidders: [],
       openedAt: now(),
@@ -1363,12 +1581,15 @@ export class OrchestratorAgent {
 
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);
     job.reportPublished = true;
+    job.reportAgentAddress = this.resolveReportAgentAddress(msg);
     this.setJobByKey(key, job);
 
-    // Persist report to S3 + PostgreSQL
-    generateAndStoreReport(key, job, job.findings ?? [])
-      .then(() => this.log.info(`[ReportWriter] Saved report for job ${key}`))
-      .catch((err) => this.log.warn(`[ReportWriter] Failed for job ${key}: ${err.message}`));
+    // Persist report to storage/database in the background.
+    void this.persistReportRecord(key, job, {
+      reportHash,
+      totalFindings,
+      criticalFindings,
+    });
 
     // Relay report publish to auditLog (ensures HCS has the hash)
     await this.hcs.publishAuditLog({
@@ -1389,10 +1610,90 @@ export class OrchestratorAgent {
     }
 
     await this.maybeAlert(key, criticalFindings);
-    const reportAgentAddress = this.resolveReportAgentAddress(msg);
+    const reportAgentAddress = job.reportAgentAddress || this.orchestratorAddress;
     await this.settleAll(key, job, reportAgentAddress);
     await this.updateReputation(key, job.findings);
     await this.inft.markJobCompleted(key, null);
+  }
+
+  formatLogError(err) {
+    if (err instanceof Error) {
+      return err.message || err.stack || err.name || "unknown error";
+    }
+    return String(err);
+  }
+
+  async persistReportRecord(jobIdKey, job, details = {}) {
+    const reportHash = details.reportHash;
+    const totalFindings = Number(details.totalFindings ?? 0);
+    const criticalFindings = Number(details.criticalFindings ?? 0);
+    const maxAttempts = Math.max(
+      1,
+      Number(process.env.ORCHESTRATOR_REPORT_PERSIST_MAX_ATTEMPTS ?? "3")
+    );
+    const retryDelayMs = Math.max(
+      100,
+      Number(process.env.ORCHESTRATOR_REPORT_PERSIST_RETRY_DELAY_MS ?? "1000")
+    );
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await generateAndStoreReport(jobIdKey, job, job.findings ?? []);
+        this.log.info(`[ReportWriter] Saved report for job ${jobIdKey}`);
+        try {
+          await this.hcs.publishAuditLog({
+            type: "REPORT_PERSISTED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              jobId: jobIdKey,
+              reportHash,
+              totalFindings,
+              criticalFindings,
+              persistedAt: Date.now(),
+            },
+          });
+        } catch (publishErr) {
+          this.log.warn(
+            `[ReportWriter] REPORT_PERSISTED publish failed for job ${jobIdKey}: ` +
+            `${this.formatLogError(publishErr)}`
+          );
+        }
+        return;
+      } catch (err) {
+        const reason = this.formatLogError(err);
+        this.log.warn(
+          `[ReportWriter] Persist failed for job ${jobIdKey} ` +
+          `(attempt ${attempt}/${maxAttempts}): ${reason}`
+        );
+
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+          continue;
+        }
+
+        try {
+          await this.hcs.publishAuditLog({
+            type: "REPORT_PERSIST_FAILED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              jobId: jobIdKey,
+              reportHash,
+              totalFindings,
+              criticalFindings,
+              attempts: maxAttempts,
+              error: reason,
+            },
+          });
+        } catch (publishErr) {
+          this.log.warn(
+            `[ReportWriter] REPORT_PERSIST_FAILED publish error for job ${jobIdKey}: ` +
+            `${this.formatLogError(publishErr)}`
+          );
+        }
+      }
+    }
   }
 
   async handleDataListing(msg) {
@@ -1446,7 +1747,13 @@ export class OrchestratorAgent {
     try {
       await this.ensureOrchestratorOperationalHbar("data_marketplace_auto_buy", { force: true });
       const listingKey = this.toChainUint(listingId, "listingId");
-      await this.contracts.dataMarketplace.purchaseData(listingKey);
+      const purchaseData =
+        this.contracts.purchaseData?.bind(this.contracts) ??
+        this.contracts.dataMarketplace?.purchaseData?.bind(this.contracts.dataMarketplace);
+      if (typeof purchaseData !== "function") {
+        throw new Error("purchaseData unavailable on contract client");
+      }
+      await purchaseData(listingKey);
       this.log.info(`Auto-bought listing ${listingId} (${category}) for ${price} GUARD`);
       await this.hcs.publishAuditLog({
         type: "DATA_PURCHASED",
@@ -1483,7 +1790,13 @@ export class OrchestratorAgent {
     try {
       await this.ensureOrchestratorOperationalHbar("create_sub_auction", { force: true });
       const parentId = this.toChainUint(parentJobId, "parentJobId");
-      await this.contracts.subAuction.createSubAuction(
+      const createSubAuction =
+        this.contracts.createSubAuction?.bind(this.contracts) ??
+        this.contracts.subAuction?.createSubAuction?.bind(this.contracts.subAuction);
+      if (typeof createSubAuction !== "function") {
+        throw new Error("createSubAuction unavailable on contract client");
+      }
+      await createSubAuction(
         parentId,
         taskType ?? "dependency_analysis",
         taskType ?? "dependency_analysis",
@@ -1522,7 +1835,13 @@ export class OrchestratorAgent {
     try {
       await this.ensureOrchestratorOperationalHbar("accept_sub_result", { force: true });
       const subId = this.toChainUint(subAuctionId, "subAuctionId");
-      await this.contracts.subAuction.acceptResult(subId);
+      const acceptSubResult =
+        this.contracts.acceptSubResult?.bind(this.contracts) ??
+        this.contracts.subAuction?.acceptResult?.bind(this.contracts.subAuction);
+      if (typeof acceptSubResult !== "function") {
+        throw new Error("acceptSubResult unavailable on contract client");
+      }
+      await acceptSubResult(subId);
       this.log.info(`Accepted sub-auction result ${subAuctionId}`);
       await this.hcs.publishAuditLog({
         type: "SUB_RESULT_ACCEPTED",
@@ -1636,11 +1955,13 @@ export class OrchestratorAgent {
 
     try {
       await this.ensureOrchestratorOperationalHbar("settle_job", { force: true });
-      await this.contracts.paymentSettlement.settleJob(
-        this.toChainJobId(jobId),
-        payments,
-        reportAgent
-      );
+      const settleJob =
+        this.contracts.settleJob?.bind(this.contracts) ??
+        this.contracts.paymentSettlement?.settleJob?.bind(this.contracts.paymentSettlement);
+      if (typeof settleJob !== "function") {
+        throw new Error("settleJob unavailable on contract client");
+      }
+      await settleJob(this.toChainJobId(jobId), payments, reportAgent);
       job.settled = true;
       this.setJobByKey(jobId, job);
       await this.hcs.publishAuditLog({
@@ -1657,6 +1978,23 @@ export class OrchestratorAgent {
       this.log.info(`Settled job ${jobId} to ${payments.length} recipients`);
     } catch (err) {
       this.log.warn(`Settlement failed for job ${jobId}: ${err}`);
+    }
+  }
+
+  async maybeSettlePublishedJob(jobId, source = "unknown") {
+    const key = this.normalizeJobId(jobId);
+    const job = this.getJobByKey(key);
+    if (!job) return;
+    if (!job.reportPublished || job.settled) return;
+    if (!Array.isArray(job.winners) || job.winners.length === 0) return;
+    try {
+      const reportAgentAddress = job.reportAgentAddress || this.orchestratorAddress;
+      await this.settleAll(key, job, reportAgentAddress);
+    } catch (err) {
+      this.log.warn(
+        `[Orchestrator] Post-winner settle retry failed for job ${key} via ${source}: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
@@ -1947,6 +2285,7 @@ export class OrchestratorAgent {
     const nowSec = Math.floor(Date.now() / 1000);
     const nowMs = Date.now();
     let closeAttempts = 0;
+    let selectAttempts = 0;
     for (const rawId of activeJobIds || []) {
       if (closeAttempts >= this.staleAuctionReconcileMaxPerCycle) break;
       const key = this.normalizeJobId(rawId);
@@ -1973,6 +2312,10 @@ export class OrchestratorAgent {
 
         const onChainBidCount = await this.getOnChainBidCount(key);
         if (onChainBidCount > 0) {
+          if (selectAttempts >= this.staleAuctionReconcileMaxSelectsPerCycle) {
+            continue;
+          }
+          selectAttempts += 1;
           this.log.info(
             `[Orchestrator] Reconcile skip-cancel for expired active job ${key}: ` +
             `on-chain bids=${onChainBidCount}; triggering winner selection`
@@ -2218,23 +2561,14 @@ export class OrchestratorAgent {
           });
 
           for (const winner of selectedWinners) {
-            const entry = this.roster.get(winner.agentId);
-            if (entry?.endpoint) {
-              this.dispatchToUcpEndpoint(entry.endpoint, {
-                type: "TASK_ASSIGNED",
-                agentId: "orchestrator",
-                timestamp: now(),
-                payload: {
-                  jobId,
-                  contractAddress: job.contractAddress,
-                  contractType: job.contractType,
-                  winnerAddress: winner.evmAddress,
-                },
-              }).catch(() => { });
-            }
+            await this.publishWinnerAssignment(key, job, winner, {
+              txHash: receipt?.hash ?? null,
+            });
           }
 
           job.winnerSource = "on-chain";
+          this.setJobByKey(key, job);
+          await this.maybeSettlePublishedJob(key, "select_winners_success");
           return;
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
@@ -2324,6 +2658,7 @@ export class OrchestratorAgent {
 
         const winnerAddrs = this.normalizeWinnerAddresses(winners);
         job.winners = winnerAddrs;
+        this.setJobByKey(key, job);
         this.log.info(`On-chain WinnersSelected for job ${key}: ${winnerAddrs.join(", ")}`);
         const txHash = eventMeta?.log?.transactionHash ?? eventMeta?.transactionHash ?? null;
         this.publishWinnerSelectedAuditLog(key, winnerAddrs, {
@@ -2331,6 +2666,7 @@ export class OrchestratorAgent {
           platformFee,
           txHash,
         }).catch(() => {});
+        this.maybeSettlePublishedJob(key, "winners_selected_event").catch(() => {});
       });
 
       this.contracts.auction.on("JobCancelled", (jobId, reason) => {

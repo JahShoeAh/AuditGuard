@@ -172,6 +172,28 @@ const useStore = create((set) => ({
   addReportMetadata: (jobId, meta) => set((s) => ({
     reportMetadata: { ...s.reportMetadata, [jobId]: meta },
   })),
+  // ── Report persistence confirmations (from HCS REPORT_PERSISTED) ─
+  jobReportPersisted: {},
+  setJobReportPersisted: (jobId, persistence) =>
+    set((s) => {
+      const key = String(jobId);
+      const existingJob = s.activeJobs[key];
+      const existingPersistence = s.jobReportPersisted[key] || {};
+      const mergedPersistence = { ...existingPersistence, ...persistence };
+      return {
+        jobReportPersisted: { ...s.jobReportPersisted, [key]: mergedPersistence },
+        activeJobs: existingJob
+          ? {
+            ...s.activeJobs,
+            [key]: {
+              ...existingJob,
+              reportPersistedAt: mergedPersistence.persistedAt ?? existingJob.reportPersistedAt ?? null,
+              reportPersistedHash: mergedPersistence.reportHash ?? existingJob.reportPersistedHash ?? null,
+            },
+          }
+          : s.activeJobs,
+      };
+    }),
 
   // ── Winners (from AuditAuction.WinnersSelected events) ───
   winners: {},
@@ -416,6 +438,7 @@ const useStore = create((set) => ({
     isConnected: false, connectionError: null,
     discoveries: [], discoveriesByAddress: {}, activeJobs: {}, jobTerminal: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
     reportMetadata: {},
+    jobReportPersisted: {},
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},
     settlements: {}, jobSettlements: {}, guardFlows: [],

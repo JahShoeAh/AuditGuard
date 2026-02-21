@@ -188,6 +188,95 @@ async function testDiscoveryDedupeSkipsDuplicate() {
   assert.ok(auditLogMessages.some((m) => m.type === "DISCOVERY_DEDUPED"), "dedupe telemetry should be emitted");
 }
 
+async function testDiscoverySubscriptionSkipsReplaySequence() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "a1",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, agentCommsMessages } = makeMocks();
+
+  let discoveryHandler = null;
+  hcs.subscribeDiscovery = (handler) => {
+    discoveryHandler = handler;
+  };
+
+  const previousCursorEnabled = process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_ENABLED;
+  process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_ENABLED = "true";
+  try {
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+    orch.discoveryLastSequence = 0;
+    orch.persistDiscoverySequenceCursor = () => {};
+    orch.subscribeDiscovery();
+
+    assert.ok(typeof discoveryHandler === "function", "subscribeDiscovery must register a handler");
+
+    discoveryHandler(
+      {
+        type: MessageType.CONTRACT_DISCOVERED,
+        agentId: "scanner",
+        timestamp: now(),
+        payload: {
+          contractAddress: "0xfeed000000000000000000000000000000000101",
+          contractType: "lending",
+          budget: 100,
+          riskScore: 65,
+          estimatedLOC: 1400,
+        },
+      },
+      { sequenceNumber: 10 }
+    );
+    await orch.discoverySubscriptionQueue;
+
+    discoveryHandler(
+      {
+        type: MessageType.CONTRACT_DISCOVERED,
+        agentId: "scanner",
+        timestamp: now(),
+        payload: {
+          contractAddress: "0xfeed000000000000000000000000000000000202",
+          contractType: "lending",
+          budget: 100,
+          riskScore: 65,
+          estimatedLOC: 1400,
+        },
+      },
+      { sequenceNumber: 9 }
+    );
+    await orch.discoverySubscriptionQueue;
+
+    const invitesAfterReplay = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+    assert.equal(invitesAfterReplay.length, 1, "replayed lower sequence should be ignored");
+
+    discoveryHandler(
+      {
+        type: MessageType.CONTRACT_DISCOVERED,
+        agentId: "scanner",
+        timestamp: now(),
+        payload: {
+          contractAddress: "0xfeed000000000000000000000000000000000202",
+          contractType: "lending",
+          budget: 100,
+          riskScore: 65,
+          estimatedLOC: 1400,
+        },
+      },
+      { sequenceNumber: 11 }
+    );
+    await orch.discoverySubscriptionQueue;
+
+    const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+    assert.equal(invites.length, 2, "higher sequence should still process normally");
+  } finally {
+    if (previousCursorEnabled == null) delete process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_ENABLED;
+    else process.env.ORCHESTRATOR_DISCOVERY_SEQUENCE_CURSOR_ENABLED = previousCursorEnabled;
+  }
+}
+
 async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
   const previousRetries = process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
   process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = "1";
@@ -592,6 +681,126 @@ async function testReconcileClosesExpiredActiveAuction() {
   assert.ok(cancelledJobs.includes(4242), "reconcile should cancel expired active job");
 }
 
+async function testReconcileSelectCapLimitsWinnerDispatches() {
+  const previousSelectCap = process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
+  process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = "2";
+  try {
+    const log = mockLog();
+    const roster = new Roster(log);
+    const { hcs, contracts } = makeMocks({
+      onChainBids: [
+        {
+          agent: ADDR_AGENT_A,
+          bidAmount: 1000000000n,
+          collateralLocked: 5000000000n,
+          reputationAtBid: 90n,
+          estimatedCompletionTime: 100n,
+          timestamp: 1n,
+        },
+      ],
+    });
+    contracts.getActiveJobs = async () => [4242n, 4243n, 4244n, 4245n];
+    contracts.getJob = async () => ({
+      auctionDeadline: BigInt(Math.floor(Date.now() / 1000) - 5),
+      status: 0,
+    });
+    let selectCalls = 0;
+    contracts.selectWinners = async () => {
+      selectCalls += 1;
+      return { hash: `0xselect${selectCalls}`, status: 1 };
+    };
+
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+    for (const key of ["4242", "4243", "4244", "4245"]) {
+      orch.setJobByKey(key, {
+        contractAddress: ADDR_JOB,
+        contractType: "vault",
+        bidders: [
+          {
+            agentId: "agent-1",
+            evmAddress: ADDR_AGENT_A,
+            bidAmount: 10,
+            estimatedTimeSec: 100,
+            reputation: 90,
+          },
+        ],
+        winners: [],
+        findings: [],
+        reportPublished: false,
+      });
+    }
+
+    await orch.reconcileExpiredActiveAuctions();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.equal(selectCalls, 2, "reconcile should honor max selects per cycle");
+  } finally {
+    if (previousSelectCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
+    else process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = previousSelectCap;
+  }
+}
+
+async function testOrchestratorPrefersQueuedWriteWrappers() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts } = makeMocks({ activeBuyer: true });
+  let purchasedViaWrapper = false;
+  let subAuctionViaWrapper = false;
+  let subResultViaWrapper = false;
+
+  contracts.purchaseData = async () => {
+    purchasedViaWrapper = true;
+  };
+  contracts.createSubAuction = async () => {
+    subAuctionViaWrapper = true;
+  };
+  contracts.acceptSubResult = async () => {
+    subResultViaWrapper = true;
+  };
+
+  contracts.dataMarketplace.purchaseData = async () => {
+    throw new Error("direct purchaseData path should not be used");
+  };
+  contracts.subAuction.createSubAuction = async () => {
+    throw new Error("direct createSubAuction path should not be used");
+  };
+  contracts.subAuction.acceptResult = async () => {
+    throw new Error("direct acceptResult path should not be used");
+  };
+
+  const orch = new OrchestratorAgent({
+    log,
+    roster,
+    hcs,
+    contracts,
+    enablePing: false,
+    strictLive: true,
+  });
+
+  await orch.handleDataListing({
+    type: MessageType.DATA_LISTING_CREATED,
+    agentId: "static",
+    timestamp: now(),
+    payload: { listingId: "1", category: "SCAN_REPORT", price: 0.5, jobId: "4242" },
+  });
+  await orch.handleSubAuctionRequest({
+    type: MessageType.SUB_AUCTION_POSTED,
+    agentId: "llm",
+    timestamp: now(),
+    payload: { parentJobId: "42", taskType: "dependency_analysis", paymentAmount: 2 },
+  });
+  await orch.handleSubResult({
+    type: MessageType.SUB_RESULT_DELIVERED,
+    agentId: "dependency",
+    timestamp: now(),
+    payload: { subAuctionId: "7" },
+  });
+
+  assert.equal(purchasedViaWrapper, true, "queued purchaseData wrapper should be used");
+  assert.equal(subAuctionViaWrapper, true, "queued createSubAuction wrapper should be used");
+  assert.equal(subResultViaWrapper, true, "queued acceptSubResult wrapper should be used");
+}
+
 async function testTerminalAuctionNoReopenAfterCancel() {
   const log = mockLog();
   const roster = new Roster(log);
@@ -706,7 +915,7 @@ async function testSelectWinnersSingleflight() {
 async function testImmediateWinnerAuditLogAndDeduping() {
   const log = mockLog();
   const roster = new Roster(log);
-  const { hcs, contracts, auditLogMessages } = makeMocks({
+  const { hcs, contracts, auditLogMessages, agentCommsMessages } = makeMocks({
     onChainBids: [
       {
         agent: ADDR_AGENT_A,
@@ -743,6 +952,15 @@ async function testImmediateWinnerAuditLogAndDeduping() {
   const immediateWinnerLogs = auditLogMessages.filter((m) => m.type === "WINNER_SELECTED");
   assert.equal(immediateWinnerLogs.length, 1, "winner should be published immediately after selectWinners tx");
   assert.equal(immediateWinnerLogs[0]?.payload?.txHash, "0xselectwinner");
+  const taskAssignments = agentCommsMessages.filter((m) => m.type === MessageType.TASK_ASSIGNED);
+  assert.equal(taskAssignments.length, 1, "winner selection should publish one TASK_ASSIGNED handoff");
+  assert.ok(
+    typeof taskAssignments[0]?.payload?.winnerAgentId === "string" &&
+      taskAssignments[0].payload.winnerAgentId.length > 0,
+    "winner handoff should include a target agent id"
+  );
+  assert.equal(taskAssignments[0]?.payload?.winnerAddress, ADDR_AGENT_A);
+  assert.equal(taskAssignments[0]?.payload?.jobId, "4242");
 
   orch.subscribeContractEvents();
   await contracts.auction.emit(
@@ -756,6 +974,53 @@ async function testImmediateWinnerAuditLogAndDeduping() {
 
   const dedupedWinnerLogs = auditLogMessages.filter((m) => m.type === "WINNER_SELECTED");
   assert.equal(dedupedWinnerLogs.length, 1, "duplicate winner announcements should be deduped");
+}
+
+async function testWinnerTaskAssignmentDedupingOnRepeatSelection() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages, agentCommsMessages } = makeMocks({
+    onChainBids: [
+      {
+        agent: ADDR_AGENT_A,
+        bidAmount: 1000000000n,
+        collateralLocked: 5000000000n,
+        reputationAtBid: 90n,
+        estimatedCompletionTime: 100n,
+        timestamp: 1n,
+      },
+    ],
+  });
+  contracts.selectWinners = async () => ({ hash: "0xselectwinner", status: 1 });
+
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    estimatedLOC: 1337,
+    bidders: [
+      {
+        agentId: "agent-1",
+        evmAddress: ADDR_AGENT_A,
+        bidAmount: 10,
+        estimatedTimeSec: 100,
+        reputation: 90,
+      },
+    ],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+  });
+
+  await orch.selectWinnersOnChain("4242");
+  await orch.selectWinnersOnChain("4242");
+
+  const taskAssignments = agentCommsMessages.filter((m) => m.type === MessageType.TASK_ASSIGNED);
+  assert.equal(taskAssignments.length, 1, "repeated select should not duplicate TASK_ASSIGNED handoff");
+  assert.ok(
+    auditLogMessages.some((m) => m.type === "WINNER_AUDIT_HANDOFF_SKIPPED"),
+    "duplicate handoff suppression telemetry should be emitted"
+  );
 }
 
 async function testSelectWinnersUsesOnChainBidIndexMapping() {
@@ -1037,6 +1302,7 @@ async function run() {
     ["discovery invites", testDiscoveryInvites],
     ["single invite batch per job", testSingleInviteBatchPerJob],
     ["discovery dedupe", testDiscoveryDedupeSkipsDuplicate],
+    ["discovery subscription skips replay sequence", testDiscoverySubscriptionSkipsReplaySequence],
     ["invite filter fail-closed active check", testInviteFilterFailClosedOnUnavailableActiveCheck],
     ["invite summary telemetry", testInviteSummaryTelemetry],
     ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],
@@ -1046,14 +1312,17 @@ async function run() {
     ["no-bid job failure", testNoBidJobFailure],
     ["bid matching uses jobId", testBidMatchingUsesJobId],
     ["reconcile closes expired active auction", testReconcileClosesExpiredActiveAuction],
+    ["reconcile select cap limits winner dispatches", testReconcileSelectCapLimitsWinnerDispatches],
     ["terminal auction no reopen after cancel", testTerminalAuctionNoReopenAfterCancel],
     ["close expired auction single-flight", testCloseExpiredAuctionSingleflight],
     ["select winners single-flight", testSelectWinnersSingleflight],
     ["winner selected immediate publish + dedupe", testImmediateWinnerAuditLogAndDeduping],
+    ["winner task assignment dedupe on repeat select", testWinnerTaskAssignmentDedupingOnRepeatSelection],
     ["select winners uses on-chain bid index mapping", testSelectWinnersUsesOnChainBidIndexMapping],
     ["select winners ignores local ghost bids when on-chain empty", testSelectWinnersIgnoresLocalGhostBidsWhenOnChainEmpty],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
+    ["orchestrator prefers queued write wrappers", testOrchestratorPrefersQueuedWriteWrappers],
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],
     ["settlement/report/alert", testSettlementOnReport],
     ["skip settlement when already settled", testSkipSettlementWhenAlreadySettled],

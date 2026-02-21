@@ -25,7 +25,9 @@ const REPORT_AGENT_SPECIALIZATIONS = (process.env.REPORT_AGENT_SPECIALIZATIONS ?
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-const AGGREGATION_WINDOW_MS = DEMO_MODE ? 20 * 1000 : 120 * 1000;
+const AGGREGATION_WINDOW_MS = Number(
+  process.env.REPORT_AGGREGATION_WINDOW_MS ?? (DEMO_MODE ? 20 * 1000 : 120 * 1000)
+);
 const REPORT_FEE = 0.1;               // GUARD base fee per submitting agent
 const REPORT_FEE_DISCOUNTED = 0.05;   // GUARD discounted fee for rep > 90
 const HIGH_REP_THRESHOLD = 90;

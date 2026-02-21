@@ -21,6 +21,7 @@ function makeStoreSpies() {
     addDataPurchase: vi.fn(),
     updateDataPurchaseRating: vi.fn(),
     addSettlement: vi.fn(),
+    setJobReportPersisted: vi.fn(),
     addGuardFlow: vi.fn(),
     updateAgentStake: vi.fn(),
     addSlashEvent: vi.fn(),
@@ -101,6 +102,32 @@ describe("EventListenerService", () => {
     expect(store.addJobBidStatus).toHaveBeenCalledWith(
       "123",
       expect.objectContaining({ status: "submitted" })
+    );
+  });
+
+  it("routes REPORT_PERSISTED audit log messages into report persistence state", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "REPORT_PERSISTED",
+        payload: {
+          jobId: "884",
+          persistedAt: 1700001234567,
+          reportHash: "0xabc",
+        },
+      },
+      timestamp: "1700000000.500000000",
+      sequenceNumber: 10,
+    });
+
+    expect(store.setJobReportPersisted).toHaveBeenCalledWith(
+      "884",
+      expect.objectContaining({
+        persistedAt: 1700001234567,
+        reportHash: "0xabc",
+      })
     );
   });
 

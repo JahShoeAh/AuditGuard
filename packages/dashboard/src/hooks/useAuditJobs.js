@@ -8,7 +8,8 @@ import { fmt } from '../utils/format';
  *   JobPosted (no bids)  → AUCTION_OPEN   (stage 1)
  *   Has bids, no winners → AUCTION_OPEN   (stage 1, bidding active)
  *   Has winners          → AUDITING       (stage 2)
- *   Has settlement       → COMPLETED      (stage 3)
+ *   Report persisted     → COMPLETED      (stage 3)
+ *   Has settlement       → COMPLETED      (stage 3 fallback)
  */
 export function useAuditJobs() {
   const activeJobs     = useStore((s) => s.activeJobs);
@@ -18,6 +19,7 @@ export function useAuditJobs() {
   const jobListings    = useStore((s) => s.jobListings);
   const jobSettlements = useStore((s) => s.jobSettlements);
   const settlements    = useStore((s) => s.settlements);
+  const jobReportPersisted = useStore((s) => s.jobReportPersisted);
   const discoveries    = useStore((s) => s.discoveries);
   const discoveriesByAddress = useStore((s) => s.discoveriesByAddress);
   const agents         = useStore((s) => s.agents);
@@ -32,6 +34,7 @@ export function useAuditJobs() {
         const listingIds   = jobListings[jobId] || [];
         const settlementId = jobSettlements[jobId] || null;
         const settlement   = settlementId ? settlements[settlementId] : null;
+        const reportPersisted = jobReportPersisted[jobId] || null;
 
         // Resolve winner agent names from bids or store
         const winnerAddrs = jobWinners?.agents || [];
@@ -43,7 +46,7 @@ export function useAuditJobs() {
         // Derive state + stage
         let state = 'AUCTION_OPEN';
         let currentStage = 1;
-        if (settlement) {
+        if (reportPersisted || settlement) {
           state = 'COMPLETED';
           currentStage = 3;
         } else if (jobWinners) {
@@ -93,15 +96,16 @@ export function useAuditJobs() {
           listingCount:    listingIds.length,
           settlementId,
           settlement,
+          reportPersisted,
           totalDisbursed:  settlement?.totalDisbursedFormatted || null,
           discoveredAt:    job.discoveredAt || disc?.timestamp || null,
           postedAt:        job.postedAt || null,
           winnersAt:       job.winnersAt || jobWinners?.winnersAt || null,
-          settledAt:       job.settledAt || settlement?.settledAt || settlement?.timestamp || null,
+          settledAt:       job.settledAt || settlement?.settledAt || settlement?.timestamp || reportPersisted?.persistedAt || null,
         };
       })
       .sort((a, b) => Number(b.jobId) - Number(a.jobId)); // newest first
-  }, [activeJobs, bids, winners, parentSubJobs, jobListings, jobSettlements, settlements, discoveries, discoveriesByAddress, agents]);
+  }, [activeJobs, bids, winners, parentSubJobs, jobListings, jobSettlements, settlements, jobReportPersisted, discoveries, discoveriesByAddress, agents]);
 
   return { jobs };
 }

@@ -89,6 +89,19 @@ export interface FindingsSubmittedEvent extends HCSMessage {
   };
 }
 
+export interface TaskAssignedEvent extends HCSMessage {
+  type: "TASK_ASSIGNED";
+  payload: {
+    jobId: string;
+    contractAddress: string;
+    contractType?: ContractType;
+    estimatedLOC?: number;
+    winnerAgentId?: string;
+    winnerAddress?: string;
+    txHash?: string | null;
+  };
+}
+
 export interface SubResultDeliveredEvent extends HCSMessage {
   type: "SUB_RESULT_DELIVERED";
   payload: {
@@ -121,6 +134,10 @@ export type AuditLogType =
   | "LLM_INFERENCE_SUCCEEDED"
   | "LLM_INFERENCE_FAILED"
   | "WINNER_SELECTED"
+  | "WINNER_AUDIT_HANDOFF_SENT"
+  | "WINNER_AUDIT_HANDOFF_SKIPPED"
+  | "AUDIT_EXECUTION_STARTED"
+  | "AUDIT_EXECUTION_SKIPPED"
   | "SUB_AUCTION_CREATED"
   | "SUB_BID_SUBMITTED"
   | "SUB_WINNER_SELECTED"
@@ -130,6 +147,7 @@ export type AuditLogType =
   | "DATA_PURCHASED"
   | "PAYMENT_SETTLED"
   | "REPORT_PUBLISHED"
+  | "REPORT_PERSISTED"
   | "REPUTATION_UPDATED"
   | "ALERT_FIRED";
 

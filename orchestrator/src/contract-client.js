@@ -152,6 +152,24 @@ export class ContractClient {
     return receipt;
   }
 
+  async purchaseData(listingId) {
+    return this._enqueueWrite(async () => this.dataMarketplace.purchaseData(listingId));
+  }
+
+  async createSubAuction(...args) {
+    return this._enqueueWrite(async () => this.subAuction.createSubAuction(...args));
+  }
+
+  async acceptSubResult(subAuctionId) {
+    return this._enqueueWrite(async () => this.subAuction.acceptResult(subAuctionId));
+  }
+
+  async settleJob(jobId, payments, reportAgent) {
+    return this._enqueueWrite(async () =>
+      this.paymentSettlement.settleJob(jobId, payments, reportAgent)
+    );
+  }
+
   async getActiveJobs() {
     return this.auction.getActiveJobs();
   }
