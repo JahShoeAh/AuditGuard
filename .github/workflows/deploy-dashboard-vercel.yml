@@ -38,11 +38,27 @@ jobs:
           VITE_HEDERA_JSON_RPC: https://testnet.hashio.io/api
           VITE_HEDERA_MIRROR_NODE: https://testnet.mirrornode.hedera.com
 
-      - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: packages/dashboard
-          vercel-args: "--prod"
+      - name: Create Vercel Build Output
+        run: |
+          mkdir -p .vercel/output/static
+          cp -r dist/* .vercel/output/static/
+          cat > .vercel/output/config.json << 'CONF'
+          {
+            "version": 3,
+            "routes": [
+              { "handle": "filesystem" },
+              { "src": "/(.*)", "dest": "/index.html" }
+            ]
+          }
+          CONF
+        working-directory: packages/dashboard
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy to Vercel production
+        run: vercel deploy --prebuilt --prod --token ${{ secrets.VERCEL_TOKEN }}
+        working-directory: packages/dashboard
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
