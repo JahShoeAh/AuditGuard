@@ -56,10 +56,6 @@ export class OrchestratorAgent {
       process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE,
       10
     );
-    this.staleAuctionReconcileMaxInspectPerCycle = parsePositiveIntEnv(
-      process.env.ORCHESTRATOR_RECONCILE_MAX_INSPECT_PER_CYCLE,
-      Math.max(this.staleAuctionReconcileMaxPerCycle + this.staleAuctionReconcileMaxSelectsPerCycle, 50)
-    );
     this.staleAuctionReconcileFailureCooldownMs = parsePositiveIntEnv(
       process.env.ORCHESTRATOR_RECONCILE_FAILURE_COOLDOWN_MS,
       15000
@@ -99,7 +95,6 @@ export class OrchestratorAgent {
       : 15_000;
     this.reconcileCloseCooldown = new Map();
     this._isReconcileRunning = false;
-    this.staleAuctionReconcileCursor = 0;
     this.scheduledEnrichmentClient = opts.scheduledEnrichmentClient ?? enrichScheduledDiscovery;
     this.scheduledEnrichmentMaxAttempts = Number(
       process.env.ORCHESTRATOR_SCHEDULED_ENRICHMENT_MAX_ATTEMPTS ?? "2"
@@ -119,9 +114,7 @@ export class OrchestratorAgent {
       `reconcile_interval_ms=${this.staleAuctionReconcileIntervalMs}, ` +
       `reconcile_max_closes=${this.staleAuctionReconcileMaxPerCycle}, ` +
       `reconcile_max_selects=${this.staleAuctionReconcileMaxSelectsPerCycle}, ` +
-      `reconcile_max_inspect=${this.staleAuctionReconcileMaxInspectPerCycle}, ` +
-      `bid_finality_grace_ms=${Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0)}, ` +
-      `write_queue_max_high_streak=${Number(CONFIG.queue?.writeQueueMaxHighStreak ?? 0)}`
+      `bid_finality_grace_ms=${Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0)}`
     );
   }
 
@@ -282,10 +275,6 @@ export class OrchestratorAgent {
         attempts: details.attempts ?? 0,
         result: details.result ?? "unknown",
         error: details.error ?? null,
-        priorityUsed: details.priorityUsed ?? "normal",
-        deadlineReached: details.deadlineReached ?? null,
-        onChainBidCount: details.onChainBidCount ?? null,
-        suppressedReason: details.suppressedReason ?? null,
       },
     }).catch(() => {});
   }
@@ -318,201 +307,10 @@ export class OrchestratorAgent {
     this.clearWinnerSelectionTimer(key);
     const winnerTimer = setTimeout(() => {
       this.winnerSelectionTimers.delete(key);
-      this.requestWinnerSelection(key, { sourcePath: triggerPath }).catch((err) => {
-        this.log.warn(
-          `[Orchestrator] Scheduled winner selection dispatch failed for job ${key}: ` +
-          `${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      this.selectWinnersOnChain(key, { path: triggerPath });
     }, delayMs);
     winnerTimer.unref?.();
     this.winnerSelectionTimers.set(key, winnerTimer);
-  }
-
-  resolveWinnerSelectionPriority(readiness = null) {
-    if (!this.fastWinnerPathEnabled) return "normal";
-    if (!readiness?.canSelect) return "normal";
-    if (!readiness?.deadlineReached) return "normal";
-    if (Number(readiness?.onChainBidCount ?? 0) <= 0) return "normal";
-    return "high";
-  }
-
-  async publishWinnerSelectionDeferred(jobId, details = {}) {
-    const key = this.normalizeJobId(jobId);
-    await this.hcs.publishAuditLog({
-      type: "WINNER_SELECTION_DEFERRED",
-      agentId: "orchestrator",
-      timestamp: now(),
-      payload: {
-        jobId: key,
-        reasonCode: details.reasonCode ?? "unknown",
-        sourcePath: details.sourcePath ?? "unknown",
-        deadlineSec: details.deadlineSec ?? null,
-        onChainBidCount: details.onChainBidCount ?? null,
-      },
-    }).catch(() => {});
-  }
-
-  async evaluateWinnerSelectionReadiness(jobId, sourcePath = "unknown", options = {}) {
-    const key = this.normalizeJobId(jobId);
-    const localJob = this.getJobByKey(key);
-    const getJob =
-      this.contracts.getJob?.bind(this.contracts) ??
-      this.contracts.auction?.getJob?.bind(this.contracts.auction);
-
-    let chainJob = options.chainJob ?? null;
-    if (!chainJob && typeof getJob === "function") {
-      try {
-        chainJob = await getJob(this.toChainJobId(key));
-      } catch {
-        chainJob = null;
-      }
-    }
-
-    const chainStatusRaw =
-      options.chainStatus ?? (chainJob?.status != null ? Number(chainJob.status) : null);
-    const chainStatus = Number.isFinite(Number(chainStatusRaw)) ? Number(chainStatusRaw) : null;
-    const terminalStatus = chainStatus != null && chainStatus !== 0 && chainStatus !== 1;
-
-    const deadlineCandidates = [
-      options.deadlineSec,
-      chainJob?.auctionDeadline,
-      localJob?.auctionDeadlineSec,
-    ];
-    let deadlineSec = null;
-    for (const candidate of deadlineCandidates) {
-      const numeric = Number(candidate);
-      if (Number.isFinite(numeric) && numeric > 0) {
-        deadlineSec = Math.floor(numeric);
-        break;
-      }
-    }
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    const deadlineReached = deadlineSec != null ? nowSec >= deadlineSec : false;
-    let onChainBidCount = null;
-    if (Number.isFinite(Number(options.onChainBidCount))) {
-      onChainBidCount = Math.max(0, Math.floor(Number(options.onChainBidCount)));
-    } else {
-      try {
-        onChainBidCount = await this.getOnChainBidCount(key);
-      } catch {
-        onChainBidCount = null;
-      }
-    }
-
-    const hasBids = Number(onChainBidCount ?? 0) > 0;
-    const jobExists = Boolean(localJob || chainJob);
-    let reasonCode = "ready";
-    if (!jobExists) reasonCode = "not_found";
-    else if (terminalStatus) reasonCode = "terminal_status";
-    else if (!deadlineReached) reasonCode = "deadline_not_reached";
-    else if (!hasBids) reasonCode = "no_onchain_bids";
-
-    const readiness = {
-      jobId: key,
-      sourcePath,
-      jobExists,
-      chainStatus,
-      deadlineSec,
-      deadlineReached,
-      onChainBidCount,
-      hasBids,
-      canSelect: reasonCode === "ready",
-      shouldCancelNoBids: reasonCode === "no_onchain_bids",
-      reasonCode,
-    };
-    return readiness;
-  }
-
-  async requestWinnerSelection(jobId, options = {}) {
-    const key = this.normalizeJobId(jobId);
-    const sourcePath =
-      typeof options?.sourcePath === "string" && options.sourcePath
-        ? options.sourcePath
-        : "manual";
-    const readiness = await this.evaluateWinnerSelectionReadiness(key, sourcePath, options.readinessHint ?? {});
-    const graceMs = Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0);
-    const scheduledAtRaw = Number(this.getJobByKey(key)?.winnerSelectionScheduledAt ?? 0);
-    const scheduledAt = Number.isFinite(scheduledAtRaw) && scheduledAtRaw > 0 ? scheduledAtRaw : null;
-
-    if (readiness.canSelect) {
-      const priorityUsed = this.resolveWinnerSelectionPriority(readiness);
-      return this.selectWinnersOnChain(key, {
-        path: sourcePath,
-        readiness,
-        priorityUsed,
-      });
-    }
-
-    await this.publishWinnerSelectionDeferred(key, {
-      reasonCode: readiness.reasonCode,
-      sourcePath,
-      deadlineSec: readiness.deadlineSec,
-      onChainBidCount: readiness.onChainBidCount,
-    });
-
-    if (readiness.reasonCode === "deadline_not_reached" && readiness.deadlineSec != null) {
-      this.scheduleWinnerSelection(key, readiness.deadlineSec, "timer");
-      await this.publishWinnerSelectionTiming(key, {
-        deadlineSec: readiness.deadlineSec,
-        graceMs,
-        scheduledAt,
-        selectStartedAt: Date.now(),
-        txSentAt: null,
-        receiptAt: null,
-        closeToReceiptMs: null,
-        path: sourcePath,
-        attempts: 0,
-        result: "deferred",
-        error: null,
-        priorityUsed: "normal",
-        deadlineReached: false,
-        onChainBidCount: readiness.onChainBidCount,
-        suppressedReason: readiness.reasonCode,
-      });
-      return;
-    }
-
-    if (readiness.shouldCancelNoBids) {
-      await this.closeExpiredAuction(key, `${sourcePath}_no_bids_before_deadline`);
-      await this.publishWinnerSelectionTiming(key, {
-        deadlineSec: readiness.deadlineSec,
-        graceMs,
-        scheduledAt,
-        selectStartedAt: Date.now(),
-        txSentAt: null,
-        receiptAt: null,
-        closeToReceiptMs: null,
-        path: sourcePath,
-        attempts: 0,
-        result: "skipped",
-        error: null,
-        priorityUsed: "normal",
-        deadlineReached: readiness.deadlineReached,
-        onChainBidCount: readiness.onChainBidCount,
-        suppressedReason: readiness.reasonCode,
-      });
-      return;
-    }
-
-    await this.publishWinnerSelectionTiming(key, {
-      deadlineSec: readiness.deadlineSec,
-      graceMs,
-      scheduledAt,
-      selectStartedAt: Date.now(),
-      txSentAt: null,
-      receiptAt: null,
-      closeToReceiptMs: null,
-      path: sourcePath,
-      attempts: 0,
-      result: "skipped",
-      error: null,
-      priorityUsed: "normal",
-      deadlineReached: readiness.deadlineReached,
-      onChainBidCount: readiness.onChainBidCount,
-      suppressedReason: readiness.reasonCode,
-    });
   }
 
   async bootstrapWinnerSelectionFromActiveJobs() {
@@ -527,9 +325,7 @@ export class OrchestratorAgent {
 
     const activeJobIds = await getActiveJobs();
     if (!Array.isArray(activeJobIds) || activeJobIds.length === 0) return;
-    const nowSec = Math.floor(Date.now() / 1000);
     let scheduled = 0;
-    let skippedExpired = 0;
     for (const rawJobId of activeJobIds) {
       if (scheduled >= this.winnerSelectionStartupBackfillMaxJobs) break;
       const key = this.normalizeJobId(rawJobId);
@@ -544,10 +340,6 @@ export class OrchestratorAgent {
       if (status !== 0) continue; // JobStatus.AUCTION_OPEN
       const deadlineSec = Number(chainJob?.auctionDeadline ?? 0);
       if (!Number.isFinite(deadlineSec) || deadlineSec <= 0) continue;
-      if (deadlineSec <= nowSec) {
-        skippedExpired += 1;
-        continue;
-      }
 
       const existingJob = this.getJobByKey(key) ?? {};
       this.setJobByKey(key, {
@@ -570,10 +362,8 @@ export class OrchestratorAgent {
       this.scheduleWinnerSelection(key, deadlineSec, "startup_rearm");
       scheduled += 1;
     }
-    if (scheduled > 0 || skippedExpired > 0) {
-      this.log.info(
-        `[Orchestrator] startup winner re-arm: scheduled=${scheduled} skipped_expired=${skippedExpired}`
-      );
+    if (scheduled > 0) {
+      this.log.info(`[Orchestrator] startup winner re-arm scheduled for ${scheduled} active job(s)`);
     }
   }
 
@@ -1778,12 +1568,7 @@ export class OrchestratorAgent {
     });
 
     if (!job.winners?.length) {
-      this.requestWinnerSelection(key, { sourcePath: "report_published" }).catch((err) => {
-        this.log.warn(
-          `[Orchestrator] report-published winner selection dispatch failed for job ${key}: ` +
-          `${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      this.selectWinnersOnChain(key, { path: "report_published" });
     }
 
     await this.maybeAlert(key, criticalFindings);
@@ -2346,23 +2131,10 @@ export class OrchestratorAgent {
 
     const nowSec = Math.floor(Date.now() / 1000);
     const nowMs = Date.now();
-    const activeIds = Array.isArray(activeJobIds) ? activeJobIds : [];
-    if (activeIds.length === 0) return;
-    const inspectCap = Math.max(1, this.staleAuctionReconcileMaxInspectPerCycle);
-    const inspectCount = Math.min(inspectCap, activeIds.length);
-    const startIndex = ((this.staleAuctionReconcileCursor % activeIds.length) + activeIds.length) % activeIds.length;
-    this.staleAuctionReconcileCursor = (startIndex + inspectCount) % activeIds.length;
     let closeAttempts = 0;
     let selectAttempts = 0;
-    let deferredSelectionCount = 0;
-    for (let offset = 0; offset < inspectCount; offset++) {
-      if (
-        closeAttempts >= this.staleAuctionReconcileMaxPerCycle &&
-        selectAttempts >= this.staleAuctionReconcileMaxSelectsPerCycle
-      ) {
-        break;
-      }
-      const rawId = activeIds[(startIndex + offset) % activeIds.length];
+    for (const rawId of activeJobIds || []) {
+      if (closeAttempts >= this.staleAuctionReconcileMaxPerCycle) break;
       const key = this.normalizeJobId(rawId);
       const job = this.getJobByKey(key);
       if (job?.terminalOnChain || job?.cancelledOnChain) continue;
@@ -2389,7 +2161,10 @@ export class OrchestratorAgent {
         if (onChainBidCount > 0) {
           if (selectAttempts >= this.staleAuctionReconcileMaxSelectsPerCycle) {
             this.reconcileCloseCooldown.set(key, nowMs + this.staleAuctionReconcileFailureCooldownMs);
-            deferredSelectionCount += 1;
+            this.log.info(
+              `[Orchestrator] Reconcile select cap reached (${this.staleAuctionReconcileMaxSelectsPerCycle}) — ` +
+              `deferring winner selection for job ${key}`
+            );
             continue;
           }
           selectAttempts += 1;
@@ -2397,14 +2172,7 @@ export class OrchestratorAgent {
             `[Orchestrator] Reconcile skip-cancel for expired active job ${key}: ` +
             `on-chain bids=${onChainBidCount}; triggering winner selection`
           );
-          this.requestWinnerSelection(key, {
-            sourcePath: "reconcile",
-            readinessHint: {
-              chainStatus: status,
-              deadlineSec,
-              onChainBidCount,
-            },
-          }).catch((err) => {
+          this.selectWinnersOnChain(key, { path: "reconcile" }).catch((err) => {
             this.log.warn(
               `[Orchestrator] Reconcile-triggered selectWinners failed for job ${key}: ` +
               `${err instanceof Error ? err.message : String(err)}`
@@ -2429,12 +2197,6 @@ export class OrchestratorAgent {
           `${err instanceof Error ? err.message : String(err)}`
         );
       }
-    }
-    if (deferredSelectionCount > 0) {
-      this.log.info(
-        `[Orchestrator] Reconcile select cap reached (${this.staleAuctionReconcileMaxSelectsPerCycle}) — ` +
-        `deferred winner selection for ${deferredSelectionCount} expired active job(s)`
-      );
     }
   }
 
@@ -2463,7 +2225,6 @@ export class OrchestratorAgent {
   async selectWinnersOnChain(jobId, options = {}) {
     const key = this.normalizeJobId(jobId);
     const path = typeof options?.path === "string" && options.path ? options.path : "manual";
-    const readiness = options?.readiness && typeof options.readiness === "object" ? options.readiness : null;
     const existingSelect = this.inflightSelectWinnerJobs.get(key);
     if (this.auctionCloseSingleflightEnabled && existingSelect) {
       this.log.info(`[Orchestrator] selectWinners single-flight skip for job ${key}`);
@@ -2493,22 +2254,6 @@ export class OrchestratorAgent {
       const deadlineSecRaw = Number(job?.auctionDeadlineSec ?? 0);
       const deadlineSec = Number.isFinite(deadlineSecRaw) && deadlineSecRaw > 0 ? Math.floor(deadlineSecRaw) : null;
       const graceMs = Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0);
-      const deadlineReached =
-        typeof readiness?.deadlineReached === "boolean"
-          ? readiness.deadlineReached
-          : (deadlineSec != null ? Math.floor(Date.now() / 1000) >= deadlineSec : null);
-      let onChainBidCount =
-        Number.isFinite(Number(readiness?.onChainBidCount))
-          ? Math.max(0, Math.floor(Number(readiness.onChainBidCount)))
-          : null;
-      const priorityUsed =
-        typeof options?.priorityUsed === "string"
-          ? options.priorityUsed
-          : this.resolveWinnerSelectionPriority({
-            ...(readiness ?? {}),
-            deadlineReached,
-            onChainBidCount,
-          });
 
       if (!job) {
         const reason = "missing_job_state";
@@ -2535,10 +2280,6 @@ export class OrchestratorAgent {
           attempts: 0,
           result: "skipped",
           error: reason,
-          priorityUsed,
-          deadlineReached,
-          onChainBidCount,
-          suppressedReason: reason,
         });
         return;
       }
@@ -2552,6 +2293,7 @@ export class OrchestratorAgent {
       const hasOnChainBidApi =
         typeof this.contracts.getBidsForJob === "function" ||
         typeof this.contracts.auction?.getBidsForJob === "function";
+      let onChainBidCount = null;
       if (hasOnChainBidApi) {
         const localBidCount = job.bidders.length;
         try {
@@ -2606,9 +2348,9 @@ export class OrchestratorAgent {
           onChainBidCount != null
             ? onChainBidCount
             : await this.getOnChainBidCount(key).catch(() => 0);
-          const reason = effectiveOnChainBidCount > 0
-            ? "On-chain bids exist but local bidder hydration failed"
-            : "No bids collected before winner deadline";
+        const reason = effectiveOnChainBidCount > 0
+          ? "On-chain bids exist but local bidder hydration failed"
+          : "No bids collected before winner deadline";
         this.log.warn(`Winner selection failed for job ${key}: ${reason}`);
         job.failed = true;
         job.failureReason = reason;
@@ -2642,10 +2384,6 @@ export class OrchestratorAgent {
           attempts: 0,
           result: effectiveOnChainBidCount > 0 ? "failed" : "skipped",
           error: reason,
-          priorityUsed,
-          deadlineReached,
-          onChainBidCount: effectiveOnChainBidCount,
-          suppressedReason: effectiveOnChainBidCount > 0 ? null : "no_onchain_bids",
         });
         return;
       }
@@ -2727,10 +2465,6 @@ export class OrchestratorAgent {
           attempts: 0,
           result: "failed",
           error,
-          priorityUsed,
-          deadlineReached,
-          onChainBidCount,
-          suppressedReason: null,
         });
         return;
       }
@@ -2742,9 +2476,7 @@ export class OrchestratorAgent {
         try {
           await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
           lastTxSentAt = Date.now();
-          const receipt = await this.contracts.selectWinners(Number(key), winningBidIndices, {
-            priority: priorityUsed,
-          });
+          const receipt = await this.contracts.selectWinners(Number(key), winningBidIndices);
           const receiptAt = Date.now();
           this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${key}, tx: ${receipt.hash}`);
           await this.publishWinnerSelectedAuditLog(key, winnerAddresses, {
@@ -2782,10 +2514,6 @@ export class OrchestratorAgent {
             attempts: attempt,
             result: "success",
             error: null,
-            priorityUsed,
-            deadlineReached,
-            onChainBidCount,
-            suppressedReason: null,
           });
           return;
         } catch (err) {
@@ -2864,10 +2592,6 @@ export class OrchestratorAgent {
         attempts: maxAttempts,
         result: "failed",
         error: lastError,
-        priorityUsed,
-        deadlineReached,
-        onChainBidCount,
-        suppressedReason: null,
       });
       this.reconcileCloseCooldown.set(key, Date.now() + this.staleAuctionReconcileFailureCooldownMs);
       return;

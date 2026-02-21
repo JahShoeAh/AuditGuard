@@ -59,7 +59,6 @@ const bidFinalityGraceMs = getPositiveIntEnv(
 const createRetryMaxAttempts = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_MAX_ATTEMPTS", 6);
 const createRetryBackoffMs = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_BACKOFF_MS", 500);
 const createRetryMaxBackoffMs = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_MAX_BACKOFF_MS", 10_000);
-const writeQueueMaxHighStreak = getPositiveIntEnv("ORCHESTRATOR_WRITE_QUEUE_MAX_HIGH_STREAK", 3);
 
 export const CONFIG = {
   network: "testnet",
@@ -126,9 +125,6 @@ export const CONFIG = {
     maxAttempts: createRetryMaxAttempts,
     backoffMs: createRetryBackoffMs,
     maxBackoffMs: createRetryMaxBackoffMs,
-  },
-  queue: {
-    writeQueueMaxHighStreak,
   },
   demoMode,
 };
