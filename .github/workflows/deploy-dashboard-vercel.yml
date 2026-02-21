@@ -9,6 +9,7 @@ on:
       - "packages/sdk/**"
       - "package.json"
       - "package-lock.json"
+      - ".github/workflows/deploy-dashboard-vercel.yml"
   workflow_dispatch:
 
 permissions:
@@ -27,8 +28,11 @@ jobs:
           node-version: "20.19.0"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci --workspaces --include-workspace-root
+      - name: Install dashboard dependencies only
+        run: npm ci -w packages/dashboard --include-workspace-root
+
+      - name: Fix rollup platform binary
+        run: npm install @rollup/rollup-linux-x64-gnu --no-save
 
       - name: Build dashboard
         run: npm --prefix packages/dashboard run build
@@ -43,7 +47,7 @@ jobs:
         run: |
           mkdir -p packages/dashboard/.vercel/output/static
           cp -r packages/dashboard/dist/* packages/dashboard/.vercel/output/static/
-          echo '{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)", "dest":"/index.html"}]}' > packages/dashboard/.vercel/output/config.json
+          echo '{"version":3,"routes":[{"src":"/api/(.*)","dest":"http://${{ secrets.EC2_HOST }}:4000/api/$1"},{"handle":"filesystem"},{"src":"/(.*)","dest":"/index.html"}]}' > packages/dashboard/.vercel/output/config.json
 
       - name: Install Vercel CLI
         run: npm install -g vercel

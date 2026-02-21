@@ -15,10 +15,12 @@
     "test:live-smoke": "node scripts/live-smoke-check.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.995.0",
     "@hashgraph/sdk": "^2.24.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.16.0",
     "hashconnect": "0.2.9",
+    "pg": "^8.18.0",
     "vite": "7.3.1",
     "vitest": "4.0.18",
     "winston": "^3.12.0"

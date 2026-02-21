@@ -40,11 +40,12 @@ function parsePrivateKey(rawKey, keyTypeHint = '') {
 
 async function fundAgents() {
   console.log('╔═══════════════════════════════════════════════════════════════╗');
-  console.log('║              Fund Unfunded Agents with GUARD                  ║');
+  console.log('║             Fund Unfunded Agents with GUARD/HBAR              ║');
   console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
   const guardTokenId = TokenId.fromString(config.guardTokenId);
   const FUND_AMOUNT = parseInt(process.env.FUND_GUARD_AMOUNT || '3000', 10);
+  const FUND_HBAR_AMOUNT = Number(process.env.FUND_HBAR_AMOUNT || '5');
   const MIN_SOURCE_GUARD = FUND_AMOUNT * 2;
 
   const candidates = [];
@@ -114,6 +115,8 @@ async function fundAgents() {
 
   let funded = 0;
   let skipped = 0;
+  let hbarFunded = 0;
+  let hbarSkipped = 0;
 
   for (const agent of agentsToFund) {
     const accountIdStr = process.env[`${agent.envPrefix}_ACCOUNT_ID`];
@@ -166,7 +169,84 @@ async function fundAgents() {
     }
   }
 
-  console.log(`\nResult: ${funded} funded, ${skipped} skipped`);
+  if (Number.isFinite(FUND_HBAR_AMOUNT) && FUND_HBAR_AMOUNT > 0) {
+    console.log(`\nHBAR target per agent: ${FUND_HBAR_AMOUNT.toFixed(4)} HBAR`);
+
+    for (const agent of agentsToFund) {
+      const accountIdStr = process.env[`${agent.envPrefix}_ACCOUNT_ID`];
+      if (!accountIdStr) {
+        console.log(`HBAR SKIP ${agent.name}: ${agent.envPrefix}_ACCOUNT_ID not set`);
+        hbarSkipped++;
+        continue;
+      }
+
+      if (accountIdStr === sourceId.toString()) {
+        console.log(`HBAR SKIP ${agent.name}: same as source account`);
+        hbarSkipped++;
+        continue;
+      }
+
+      const agentId = AccountId.fromString(accountIdStr);
+      const beforeBalance = await new AccountBalanceQuery().setAccountId(agentId).execute(client);
+      const beforeTinybars = Number(beforeBalance?.hbars?.toTinybars?.().toString?.() ?? "0");
+      const beforeHbar = beforeTinybars / 1e8;
+
+      if (beforeHbar >= FUND_HBAR_AMOUNT) {
+        console.log(
+          `HBAR OK   ${agent.name} (${accountIdStr}): ` +
+          `before=${beforeHbar.toFixed(4)} after=${beforeHbar.toFixed(4)}`
+        );
+        hbarSkipped++;
+        continue;
+      }
+
+      const neededHbar = FUND_HBAR_AMOUNT - beforeHbar;
+      const sendTinybars = Math.max(1, Math.ceil(neededHbar * 1e8));
+      const sourceBalance = await new AccountBalanceQuery().setAccountId(sourceId).execute(client);
+      const sourceTinybars = Number(sourceBalance?.hbars?.toTinybars?.().toString?.() ?? "0");
+      if (sourceTinybars <= sendTinybars) {
+        const afterHbar = beforeHbar;
+        console.log(
+          `HBAR FAIL ${agent.name} (${accountIdStr}): source has ${(sourceTinybars / 1e8).toFixed(4)} HBAR, ` +
+          `need ${(sendTinybars / 1e8).toFixed(4)} before=${beforeHbar.toFixed(4)} after=${afterHbar.toFixed(4)}`
+        );
+        continue;
+      }
+
+      console.log(
+        `HBAR FUND ${agent.name} (${accountIdStr}): before=${beforeHbar.toFixed(4)}, ` +
+        `sending ${(sendTinybars / 1e8).toFixed(4)}...`
+      );
+      try {
+        const transferTx = await new TransferTransaction()
+          .addHbarTransfer(sourceId, Hbar.fromTinybars(-sendTinybars))
+          .addHbarTransfer(agentId, Hbar.fromTinybars(sendTinybars))
+          .freezeWith(client);
+        const signed = await transferTx.sign(sourceKey);
+        const submitted = await signed.execute(client);
+        await submitted.getReceipt(client);
+
+        const afterBalance = await new AccountBalanceQuery().setAccountId(agentId).execute(client);
+        const afterTinybars = Number(afterBalance?.hbars?.toTinybars?.().toString?.() ?? "0");
+        const afterHbar = afterTinybars / 1e8;
+        console.log(
+          `  -> HBAR funded (tx: ${submitted.transactionId.toString()}) ` +
+          `after=${afterHbar.toFixed(4)}`
+        );
+        hbarFunded++;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        console.error(`  -> HBAR FAILED: ${error} before=${beforeHbar.toFixed(4)} after=${beforeHbar.toFixed(4)}`);
+      }
+    }
+  } else {
+    console.log('\nHBAR funding disabled (set FUND_HBAR_AMOUNT > 0 to enable)');
+  }
+
+  console.log(
+    `\nResult: GUARD funded=${funded}, GUARD skipped=${skipped}, ` +
+    `HBAR funded=${hbarFunded}, HBAR skipped=${hbarSkipped}`
+  );
 
   console.log('\n╔═══════════════════════════════════════════════════════════════╗');
   console.log('║                       ✅ Funding Complete                      ║');

@@ -1,94 +1,149 @@
-import { useState, useEffect } from 'react';
-import useWalletStore from '../store/wallet';
+import { useEffect, useState } from "react";
+import useWalletStore from "../store/wallet";
 
-// Use VITE_API_BASE_URL so Vercel-deployed builds reach the AWS API server.
-// Leave unset (or empty) for local dev — the Vite proxy routes /api automatically.
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+const REPORTS_API_BASE = (
+  import.meta.env.VITE_REPORTS_API_BASE_URL
+  ?? import.meta.env.VITE_API_BASE_URL
+  ?? ""
+).trim().replace(/\/$/, "");
+
+function apiUrl(path) {
+  return REPORTS_API_BASE ? `${REPORTS_API_BASE}${path}` : path;
+}
 
 /**
- * Fetches all audit reports for the connected wallet's deployer address.
- * Queries /api/reports?deployer={address}
- *
- * @returns {{ reports: import('../../../packages/sdk/db/report-types.js').StoredAuditReport[], loading: boolean, error: string|null }}
+ * @returns {{ reports: import("../../../packages/sdk/db/report-types.js").StoredAuditReport[], loading: boolean, error: string|null }}
  */
 export function useUserReports() {
-  const address         = useWalletStore((s) => s.address);
+  const address = useWalletStore((s) => s.address);
   const hederaAccountId = useWalletStore((s) => s.hederaAccountId);
-  const isConnected     = useWalletStore((s) => s.connectionStatus === 'connected');
+  const isConnected = useWalletStore((s) => s.connectionStatus === "connected");
 
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const deployer = address || hederaAccountId;
+    let cancelled = false;
+
     if (!isConnected || !deployer) {
       setReports([]);
       setError(null);
-      return;
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
+    const loadReports = async () => {
+      setLoading(true);
+      setError(null);
 
-    fetch(`${API_BASE}/api/reports?deployer=${encodeURIComponent(deployer)}`)
-      .then((r) => r.json())
-      .then((d) => {
+      try {
+        const response = await fetch(
+          apiUrl(`/api/reports?deployer=${encodeURIComponent(deployer)}`)
+        );
+        if (response.status === 404) {
+          if (cancelled) return;
+          setReports([]);
+          setError(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Reports API responded ${response.status}`);
+        }
+        const data = await response.json();
         if (cancelled) return;
-        if (!d.success) throw new Error(d.error || 'Failed to fetch reports');
-        setReports(d.data);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message ?? String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
 
-    return () => { cancelled = true; };
+        if (data?.success) {
+          setReports(Array.isArray(data.data) ? data.data : []);
+          setError(null);
+        } else {
+          setReports([]);
+          setError(typeof data?.error === "string" ? data.error : "Failed to load reports");
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setReports([]);
+        setError(err instanceof Error ? err.message : "Failed to load reports");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void loadReports();
+
+    return () => {
+      cancelled = true;
+    };
   }, [address, hederaAccountId, isConnected]);
 
   return { reports, loading, error };
 }
 
 /**
- * Lazily fetches a single report by job ID (includes mdContent from S3).
- * Pass null/undefined to skip fetching.
- *
  * @param {string|null|undefined} jobId
- * @returns {{ report: (import('../../../packages/sdk/db/report-types.js').StoredAuditReport & { mdContent: string })|null, loading: boolean, error: string|null }}
+ * @returns {{ report: (import("../../../packages/sdk/db/report-types.js").StoredAuditReport & { mdContent: string })|null, loading: boolean, error: string|null }}
  */
 export function useReportByJob(jobId) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!jobId) {
       setReport(null);
-      return;
+      setError(null);
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
+    const loadReport = async () => {
+      setLoading(true);
+      setError(null);
 
-    fetch(`${API_BASE}/api/reports/${jobId}`)
-      .then((r) => r.json())
-      .then((d) => {
+      try {
+        const response = await fetch(
+          apiUrl(`/api/reports/${encodeURIComponent(jobId)}`)
+        );
+        if (response.status === 404) {
+          if (cancelled) return;
+          setReport(null);
+          setError(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Reports API responded ${response.status}`);
+        }
+        const data = await response.json();
         if (cancelled) return;
-        setReport(d.success ? d.data : null);
-        if (!d.success) setError(d.error || 'Report not found');
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message ?? String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
 
-    return () => { cancelled = true; };
+        if (data?.success) {
+          setReport(data.data ?? null);
+          setError(null);
+        } else {
+          setReport(null);
+          setError(typeof data?.error === "string" ? data.error : "Failed to load report");
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setReport(null);
+        setError(err instanceof Error ? err.message : "Failed to load report");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void loadReport();
+
+    return () => {
+      cancelled = true;
+    };
   }, [jobId]);
 
   return { report, loading, error };

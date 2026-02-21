@@ -55,6 +55,17 @@ function parsePollIntervalMs(value, fallbackMs) {
   return Math.floor(raw);
 }
 
+function toTimestampMs(value, fallbackMs = Date.now()) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallbackMs;
+}
+
 // ── Helpers ────────────────────────────────────────────────
 
 /** Convert raw 8-decimal BigInt to human-readable "15.00 GUARD" */
@@ -206,6 +217,16 @@ export class EventListenerService {
     this.maxSeenEventIds = 5_000;
     this.syntheticSequence = 0;
     this.eventsBacklogSkipped = false;
+    this.lastSeq = {
+      discovery: 0,
+      auditLog: 0,
+      agentComms: 0,
+    };
+    this._topicReplayInitialized = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
+    };
 
     // Contract event state
     this.lastProcessedBlock = null;
@@ -214,6 +235,7 @@ export class EventListenerService {
     this.hcsEventsSeen = 0;
     this.contractEventsSeen = 0;
     this._contractPollInFlight = false;
+    this._lastEventsApiError = null;
 
     this._intervals = [];
     this._running = false;
@@ -396,12 +418,13 @@ export class EventListenerService {
 
     this._intervals.push(setInterval(() => {
       this._pollEventsAPI();
-    }, HCS_POLL_MS));
+    }, this.hcsPollMs));
   }
 
   async _pollEventsAPI() {
     try {
       const messages = await this.fetchEvents();
+      this._lastEventsApiError = null;
 
       if (this.onlyTestDiscoveries && !this.eventsBacklogSkipped) {
         for (const msg of messages) {
@@ -427,7 +450,11 @@ export class EventListenerService {
         activeAuctionsCount,
       });
     } catch (err) {
-      console.warn('[EventListener] Events API poll error:', err.message);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== this._lastEventsApiError) {
+        console.warn('[EventListener] Events API poll error:', message);
+        this._lastEventsApiError = message;
+      }
     }
   }
 
@@ -443,9 +470,23 @@ export class EventListenerService {
 
   async fetchEvents() {
     const url = `${EVENTS_API_BASE_URL}/events?limit=${EVENT_FETCH_LIMIT}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
     if (!res.ok) {
-      throw new Error(`Events API responded ${res.status}`);
+      throw new Error(`Events API responded ${res.status} for ${url}`);
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const bodyPreview = await res.text().catch(() => '');
+      const compactPreview = String(bodyPreview).replace(/\s+/g, ' ').slice(0, 180);
+      throw new Error(
+        `Events API returned non-JSON (${contentType || 'unknown'}) for ${url}. ` +
+        `Body preview: ${compactPreview}`
+      );
     }
 
     const json = await res.json();
@@ -497,10 +538,87 @@ export class EventListenerService {
   async fetchHCSMessages() {
     return this.fetchEvents().map((event) => {
       return {
+        topicKey: event.topicKey,
         sequenceNumber: event.sequenceNumber,
         timestamp: event.timestamp,
         parsedData: event.parsedData,
       };
+    });
+  }
+
+  /**
+   * Backward-compatible topic polling shim retained for tests and legacy callers.
+   */
+  async _pollHCSTopic(topicId, topicKey) {
+    const normalizedTopicKey = String(topicKey || '');
+    if (!['discovery', 'auditLog', 'agentComms'].includes(normalizedTopicKey)) return;
+
+    const rawMessages = await this.fetchHCSMessages(topicId, normalizedTopicKey);
+    const messages = Array.isArray(rawMessages)
+      ? rawMessages
+          .filter((msg) => !msg.topicKey || msg.topicKey === normalizedTopicKey)
+          .map((msg) => ({
+            sequenceNumber: Number(msg?.sequenceNumber ?? 0),
+            timestamp: msg?.timestamp ?? String(Date.now()),
+            parsedData:
+              typeof msg?.parsedData === 'object' && msg.parsedData !== null
+                ? msg.parsedData
+                : {},
+          }))
+          .filter((msg) => Number.isFinite(msg.sequenceNumber) && msg.sequenceNumber > 0)
+          .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      : [];
+
+    if (messages.length === 0) return;
+
+    const latestSeen = messages[messages.length - 1].sequenceNumber;
+    const prevSeq = Number(this.lastSeq[normalizedTopicKey] ?? 0);
+
+    if (this.hcsReplayMode === 'from_now' && !this._topicReplayInitialized[normalizedTopicKey]) {
+      this.lastSeq[normalizedTopicKey] = Math.max(prevSeq, latestSeen);
+      this._topicReplayInitialized[normalizedTopicKey] = true;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        hcsEventsSeen: this.hcsEventsSeen,
+        activeAuctionsCount,
+        lastTopicSeq: { ...this.lastSeq },
+      });
+      return;
+    }
+
+    this._topicReplayInitialized[normalizedTopicKey] = true;
+    let cursor = prevSeq;
+    let processed = 0;
+
+    for (const msg of messages) {
+      if (msg.sequenceNumber <= cursor) continue;
+
+      const eventId = this._mkHcsEventId(topicId, msg.sequenceNumber);
+      cursor = msg.sequenceNumber;
+      if (this.seenEventIds.has(eventId)) continue;
+
+      this._rememberEventId(eventId);
+      this._routeHCSMessage(normalizedTopicKey, {
+        eventId,
+        topicKey: normalizedTopicKey,
+        sequenceNumber: msg.sequenceNumber,
+        timestamp: msg.timestamp,
+        parsedData: msg.parsedData,
+      });
+      processed += 1;
+    }
+
+    this.lastSeq[normalizedTopicKey] = Math.max(Number(this.lastSeq[normalizedTopicKey] ?? 0), cursor);
+    this.hcsEventsSeen += processed;
+    const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+      (job) => !job?.terminalStatus
+    ).length;
+    this.store.setIngestionHealth?.({
+      hcsEventsSeen: this.hcsEventsSeen,
+      activeAuctionsCount,
+      lastTopicSeq: { ...this.lastSeq },
     });
   }
 
@@ -787,6 +905,7 @@ export class EventListenerService {
         budgetFormatted: parseGuardAmount(payload.budget ?? 0),
         initialRiskScore: Number(payload.riskScore ?? 0),
         lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        auctionDeadline: payload.auctionDeadlineSec ?? payload.auctionDeadline ?? undefined,
         classifier: classifierMetadata,
         postedAt: Date.now(),
       });
@@ -875,6 +994,8 @@ export class EventListenerService {
       }
       const totalEscrowed = normalizeGuardRaw(payload.totalEscrowed);
       const platformFee = normalizeGuardRaw(payload.platformFee);
+      const winnerAtValue = existingWinnerData?.winnersAt ?? (timestamp ?? Date.now());
+      const winnerTsMs = toTimestampMs(winnerAtValue);
 
       this.store.setWinners?.(jobId, {
         agents: winnerAgents,
@@ -882,8 +1003,13 @@ export class EventListenerService {
         totalEscrowedFormatted: totalEscrowed.formatted,
         platformFee: platformFee.raw,
         platformFeeFormatted: platformFee.formatted,
-        winnersAt: existingWinnerData?.winnersAt ?? (timestamp ?? Date.now()),
+        winnersAt: winnerAtValue,
         source: 'auditLog',
+      });
+      this.store.setIngestionHealth?.({
+        winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
+        lastWinnerEventAt: winnerTsMs,
+        winnerSource: 'auditLog',
       });
       return;
     }
@@ -1282,14 +1408,21 @@ export class EventListenerService {
         const a = ev.args;
         const jobId = a.jobId.toString();
         const existingWinnerData = this.store.winners?.[jobId];
+        const winnerAtValue = existingWinnerData?.winnersAt ?? Date.now();
+        const winnerTsMs = toTimestampMs(winnerAtValue);
         this.store.setWinners(jobId, {
           agents: Array.from(a.winners),
           totalEscrowed: a.totalEscrowed,
           totalEscrowedFormatted: parseGuardAmount(a.totalEscrowed),
           platformFee: a.platformFee,
           platformFeeFormatted: parseGuardAmount(a.platformFee),
-          winnersAt: existingWinnerData?.winnersAt ?? Date.now(),
+          winnersAt: winnerAtValue,
           source: 'contract',
+        });
+        this.store.setIngestionHealth?.({
+          winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
+          lastWinnerEventAt: winnerTsMs,
+          winnerSource: 'contract',
         });
         if ((a.platformFee ?? 0n) > 0n) {
           this._addGuardFlow({

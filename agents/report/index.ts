@@ -2,6 +2,8 @@ import {
   HCSClient,
   ContractClient,
   CONFIG,
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
   createAgentLogger,
   createAgentWallet,
   randomFloat,
@@ -128,6 +130,28 @@ async function main() {
   const contracts = new ContractClient(wallet.evmWallet);
 
   log.info(`Wallet: ${wallet.evmAddress}`);
+  if (!DEMO_MODE) {
+    try {
+      const hbarTopUpConfig = getHbarTopUpConfig();
+      log.info(
+        `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
+        `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR, ` +
+        `target=${ethers.formatEther(hbarTopUpConfig.targetWei)} HBAR)`
+      );
+      const startupPayer = await ensureOperationalHbar({
+        contracts,
+        recipientAddress: wallet.evmAddress,
+        requiredWei: hbarTopUpConfig.targetWei,
+        logger: log,
+      });
+      if (!startupPayer.ok) {
+        log.warn(`Startup preflight: ${startupPayer.reason ?? "Insufficient payer HBAR for transaction fees"}`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup HBAR preflight failed: ${error}`);
+    }
+  }
   await ensureReportAgentCanList(contracts, wallet.evmAddress);
 
   // Listen for findings from auditor agents
@@ -205,6 +229,28 @@ async function aggregateAndPublish(
 ) {
   const job = jobFindings.get(jobId);
   if (!job || job.submissions.length === 0) return;
+
+  if (!DEMO_MODE) {
+    try {
+      const hbarTopUpConfig = getHbarTopUpConfig();
+      const payerReady = await ensureOperationalHbar({
+        contracts,
+        recipientAddress: myAddress,
+        requiredWei: hbarTopUpConfig.minRequiredWei,
+        logger: log,
+      });
+      if (!payerReady.ok) {
+        log.warn(
+          `Aggregation preflight: ${payerReady.reason ?? "Insufficient payer HBAR for transaction fees"} (continuing)`
+        );
+      } else if (payerReady.toppedUpWei > 0n) {
+        log.info(`Auto top-up applied before aggregation: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Aggregation HBAR preflight failed: ${error} (continuing)`);
+    }
+  }
 
   log.info(`═══════════════════════════════════════════`);
   log.info(`AGGREGATING REPORT for job ${jobId.slice(0, 10)}...`);

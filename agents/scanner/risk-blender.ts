@@ -25,6 +25,7 @@ export const CATEGORY_RISK_BASE: Record<DefiCategory, number> = {
   dex: 58,
   staking: 42,
   vault: 48,
+  nft: 48,
 };
 
 export function scoreBytecodeComplexity(bytecodeHex: string): number {

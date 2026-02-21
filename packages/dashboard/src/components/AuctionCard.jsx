@@ -118,7 +118,10 @@ const AuctionCard = forwardRef(function AuctionCard({
         latestByAgent.set(key, item);
       }
     }
-    return Array.from(latestByAgent.values()).slice(0, 6);
+    // Suppress invite-only noise in card view; keep actionable lifecycle states.
+    return Array.from(latestByAgent.values())
+      .filter((item) => item?.status !== 'invite_sent')
+      .slice(0, 6);
   }, [bidLifecycle]);
   const llmPreview = useMemo(() => {
     const latestByAgent = new Map();

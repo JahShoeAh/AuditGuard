@@ -20,7 +20,7 @@ COPY packages/dashboard/package.json packages/dashboard/package.json
 COPY packages/inft/package.json packages/inft/package.json
 COPY packages/events-api/package.json packages/events-api/package.json
 
-# Install all workspace dependencies required by dev:backend.
+# Install all workspace dependencies.
 RUN npm ci --workspaces --include-workspace-root
 
 # Copy full source after dependency install.

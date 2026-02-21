@@ -18836,5 +18836,897 @@
     },
     "createdAt": "2026-02-21T04:59:03.561Z",
     "updatedAt": "2026-02-21T04:59:03.561Z"
+  },
+  "auditJob:335": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:335",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x00000000000000000000000000000000007a0524",
+      "chain": "hedera-testnet",
+      "contractType": "lending",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T05:48:33.000Z",
+      "initialRiskScore": 63,
+      "hcsMessageId": "1885",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T05:48:33.613Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T05:48:33.613Z",
+    "updatedAt": "2026-02-21T05:48:33.613Z"
+  },
+  "auditJob:336": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:336",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x00000000000000000000000000000000007a05f0",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T05:48:43.000Z",
+      "initialRiskScore": 60,
+      "hcsMessageId": "1887",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T05:48:43.858Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T05:48:43.858Z",
+    "updatedAt": "2026-02-21T05:48:43.858Z"
+  },
+  "contractHealth:249": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:249",
+    "contract": {
+      "contractAddress": "0x00000000000000000000000000000000007a0524",
+      "chain": "hedera-testnet",
+      "contractType": "lending",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 37,
+      "scoreHistory": [
+        {
+          "score": 37,
+          "timestamp": "2026-02-21T05:48:50.180Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T05:48:50.180Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T05:48:50.180Z",
+    "updatedAt": "2026-02-21T05:48:50.180Z"
+  },
+  "auditJob:337": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:337",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x00000000000000000000000000000000007a05f2",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T05:48:53.000Z",
+      "initialRiskScore": 57,
+      "hcsMessageId": "1889",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T05:48:53.839Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T05:48:53.839Z",
+    "updatedAt": "2026-02-21T05:48:53.839Z"
+  },
+  "contractHealth:250": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:250",
+    "contract": {
+      "contractAddress": "0x00000000000000000000000000000000007a05f0",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 40,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-21T05:49:02.369Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T05:49:02.369Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T05:49:02.369Z",
+    "updatedAt": "2026-02-21T05:49:02.369Z"
+  },
+  "contractHealth:251": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:251",
+    "contract": {
+      "contractAddress": "0x00000000000000000000000000000000007a05f2",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 43,
+      "scoreHistory": [
+        {
+          "score": 43,
+          "timestamp": "2026-02-21T05:49:26.563Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T05:49:26.563Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T05:49:26.563Z",
+    "updatedAt": "2026-02-21T05:49:26.563Z"
+  },
+  "auditJob:612": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:612",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x00000000000000000000000000000000007a0e8a",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 12000,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:13.000Z",
+      "initialRiskScore": 60,
+      "hcsMessageId": "2292",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:13.984Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:13.984Z",
+    "updatedAt": "2026-02-21T10:31:13.984Z"
+  },
+  "auditJob:613": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:613",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xd3f5c6196cb8365ab10a6425aa75de7d86da7730",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 3184,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:21.000Z",
+      "initialRiskScore": 56,
+      "hcsMessageId": "2294",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:21.970Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:21.970Z",
+    "updatedAt": "2026-02-21T10:31:21.970Z"
+  },
+  "auditJob:614": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:614",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xc0ce82258533db8afd097b42dfec6cb5d3924712",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:29.000Z",
+      "initialRiskScore": 56,
+      "hcsMessageId": "2296",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:29.899Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:29.899Z",
+    "updatedAt": "2026-02-21T10:31:29.899Z"
+  },
+  "auditJob:615": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:615",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xbd98fee1a431da49a18e39e3e7dc56fe8b8fb7ad",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 4789,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:33.000Z",
+      "initialRiskScore": 56,
+      "hcsMessageId": "2298",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:33.783Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:33.783Z",
+    "updatedAt": "2026-02-21T10:31:33.783Z"
+  },
+  "contractHealth:436": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:436",
+    "contract": {
+      "contractAddress": "0x00000000000000000000000000000000007a0e8a",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 40,
+      "scoreHistory": [
+        {
+          "score": 40,
+          "timestamp": "2026-02-21T10:31:35.494Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T10:31:35.494Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T10:31:35.494Z",
+    "updatedAt": "2026-02-21T10:31:35.494Z"
+  },
+  "auditJob:616": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:616",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x5af7325e5e149d47e8ece44f572a00f19876dbb2",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:39.000Z",
+      "initialRiskScore": 56,
+      "hcsMessageId": "2300",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:39.893Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:39.893Z",
+    "updatedAt": "2026-02-21T10:31:39.893Z"
+  },
+  "auditJob:617": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:617",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0x9df63bf6a1297666bfbe22fde2b877afaba60809",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 7282,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:42.000Z",
+      "initialRiskScore": 57,
+      "hcsMessageId": "2302",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:42.167Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:42.167Z",
+    "updatedAt": "2026-02-21T10:31:42.167Z"
+  },
+  "contractHealth:437": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:437",
+    "contract": {
+      "contractAddress": "0xd3f5c6196cb8365ab10a6425aa75de7d86da7730",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 44,
+      "scoreHistory": [
+        {
+          "score": 44,
+          "timestamp": "2026-02-21T10:31:47.758Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T10:31:47.758Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T10:31:47.758Z",
+    "updatedAt": "2026-02-21T10:31:47.758Z"
+  },
+  "auditJob:618": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:618",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xeca4b61c027a7d72c6914c7ba8ff10d4d53eb2ec",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 1200,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:48.000Z",
+      "initialRiskScore": 57,
+      "hcsMessageId": "2304",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:48.210Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:48.210Z",
+    "updatedAt": "2026-02-21T10:31:48.210Z"
+  },
+  "auditJob:619": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982095:619",
+    "jobId": 0,
+    "target": {
+      "contractAddress": "0xdadb1be8e05c55fa95b40321f27d9eac082a55e4",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "lineCount": 3184,
+      "codeHash": null
+    },
+    "discovery": {
+      "scannerAgentId": "scanner-001",
+      "timestamp": "2026-02-21T10:31:50.000Z",
+      "initialRiskScore": 56,
+      "hcsMessageId": "2306",
+      "discoveryTrigger": "new_deployment"
+    },
+    "state": {
+      "current": "DISCOVERED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "DISCOVERED",
+          "timestamp": "2026-02-21T10:31:50.051Z",
+          "trigger": "hcs_discovery_event"
+        }
+      ]
+    },
+    "participants": [],
+    "reports": {
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "duplicatesDetected": 0
+      }
+    },
+    "createdAt": "2026-02-21T10:31:50.051Z",
+    "updatedAt": "2026-02-21T10:31:50.051Z"
+  },
+  "contractHealth:438": {
+    "schemaVersion": "1.0.0",
+    "tokenId": "0.0.7982097:438",
+    "contract": {
+      "contractAddress": "0xc0ce82258533db8afd097b42dfec6cb5d3924712",
+      "chain": "hedera-testnet",
+      "contractType": "vault",
+      "deployer": "0x0000000000000000000000000000000000000000",
+      "deployedAt": null,
+      "currentCodeHash": null
+    },
+    "health": {
+      "securityScore": 44,
+      "scoreHistory": [
+        {
+          "score": 44,
+          "timestamp": "2026-02-21T10:31:59.808Z",
+          "jobId": 0,
+          "delta": 0
+        }
+      ],
+      "riskLevel": "high",
+      "lastAuditTimestamp": null,
+      "totalAuditsCompleted": 0
+    },
+    "vulnerabilities": {
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "informational": 0,
+        "total": 0,
+        "remediated": 0,
+        "open": 0
+      },
+      "catalog": []
+    },
+    "auditHistory": [],
+    "monitoring": {
+      "isActive": false,
+      "agentAddress": null,
+      "weeklyRate": 0,
+      "startedAt": null
+    },
+    "vault": {
+      "vaultAddress": null,
+      "creator": null,
+      "currentBalance": 0,
+      "reservedForEscrow": 0,
+      "weeklyMonitoringBudget": 0,
+      "criticalBountyAllocation": 0,
+      "reauditIntervalSeconds": 0
+    },
+    "state": {
+      "current": "UNAUDITED",
+      "history": [
+        {
+          "from": "NONE",
+          "to": "UNAUDITED",
+          "timestamp": "2026-02-21T10:31:59.808Z",
+          "trigger": "contract_health_inft_created"
+        }
+      ]
+    },
+    "createdAt": "2026-02-21T10:31:59.808Z",
+    "updatedAt": "2026-02-21T10:31:59.808Z"
   }
 }

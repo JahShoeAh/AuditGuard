@@ -1,4 +1,7 @@
 import { EvmDecoder } from "evmdecoder";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 
 export interface ClassificationResult {
@@ -11,6 +14,8 @@ export interface ClassificationResult {
 }
 
 export type DefiCategory = "lending" | "dex" | "staking" | "bridge" | "vault" | "nft";
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Convert Hedera contract ID to EVM address.
@@ -74,11 +79,31 @@ function getRpcUrl(): string {
   );
 }
 
+function resolveAbiDirectory(): string {
+  const override = String(process.env.SCANNER_EVMDECODER_ABI_DIR || "").trim();
+  const candidates = [
+    override || null,
+    resolve(MODULE_DIR, "..", "..", "packages", "sdk", "abis"),
+    resolve(process.cwd(), "packages", "sdk", "abis"),
+    resolve(process.cwd(), "abis"),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `evmdecoder ABI directory not found; tried: ${candidates.join(", ")}. ` +
+    `Set SCANNER_EVMDECODER_ABI_DIR to a valid ABI folder.`
+  );
+}
+
 async function ensureDecoder(): Promise<EvmDecoder> {
   if (decoderInstance) return decoderInstance;
 
   if (!initPromise) {
     initPromise = (async () => {
+      const abiDirectory = resolveAbiDirectory();
       decoderInstance = new EvmDecoder({
         eth: {
           url: getRpcUrl(),
@@ -95,7 +120,7 @@ async function ensureDecoder(): Promise<EvmDecoder> {
           },
         },
         abi: {
-          directory: "./abis",
+          directory: abiDirectory,
           searchRecursive: true,
           fingerprintContracts: true,
           requireContractMatch: false,

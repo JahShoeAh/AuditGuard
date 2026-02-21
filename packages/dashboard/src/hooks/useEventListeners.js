@@ -78,6 +78,10 @@ export function useEventListeners(connection) {
         addTreasuryRevenue:        useStore.getState().addTreasuryRevenue,
         addTreasuryDistribution:   useStore.getState().addTreasuryDistribution,
         setIngestionHealth:        useStore.getState().setIngestionHealth,
+        // Auction bid lifecycle + LLM inference tracking
+        addJobBidStatus:           useStore.getState().addJobBidStatus,
+        setLlmProviderStatus:      useStore.getState().setLlmProviderStatus,
+        addLlmInferenceStatus:     useStore.getState().addLlmInferenceStatus,
       };
       const service = new EventListenerService(config, contracts, storeActions, ethersProvider);
       const stop = service.startAll();
