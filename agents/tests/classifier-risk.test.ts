@@ -1072,7 +1072,7 @@ describe("risk-inference.ts — assessRisk()", () => {
     expect(getCurrentInferenceSource()).toBe("claude");
   });
 
-  it("model field in result reflects ZG_MODEL env var", async () => {
+  it("model field in result reflects provider model when configured model is unsupported", async () => {
     process.env.ZG_MODEL = "custom-model-v1";
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -1085,7 +1085,11 @@ describe("risk-inference.ts — assessRisk()", () => {
     const { assessRisk, _resetRiskInference } = await import("../scanner/risk-inference.js");
     _resetRiskInference();
     const result = await assessRisk(makeRiskCtx(), mockLog);
-    expect(result.model).toBe("custom-model-v1");
+    expect(result.model).toBe("qwen/qwen-2.5-7b-instruct");
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const requestInit = callArgs?.[1] as { body?: string } | undefined;
+    const parsed = JSON.parse(String(requestInit?.body ?? "{}"));
+    expect(parsed.model).toBe("qwen/qwen-2.5-7b-instruct");
   });
 
   it("_resetRiskInference() restores zgHealthy to true", async () => {

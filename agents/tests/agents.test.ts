@@ -291,11 +291,18 @@ describe("Fuzzer Agent", () => {
             expect(at70!.amount).toBe(at50!.amount);
         });
 
-        it("applies 15% discount for specializations (dex, bridge)", async () => {
+        it("applies 15% discount for specializations (dex, bridge) vs non-specialized baseline", async () => {
             const { calculateBid } = await import("../fuzzer/index.js");
-            const general = calculateBid(5000, "lending", 50);
+            const baseline = calculateBid(5000, "unknown" as any, 50);
             const special = calculateBid(5000, "dex", 50);
-            expect(special!.amount).toBeLessThan(general!.amount);
+            expect(special!.amount).toBeLessThan(baseline!.amount);
+        });
+
+        it("applies specialization discount to lending contracts", async () => {
+            const { calculateBid } = await import("../fuzzer/index.js");
+            const baseline = calculateBid(5000, "unknown" as any, 50);
+            const lending = calculateBid(5000, "lending", 50);
+            expect(lending!.amount).toBeLessThan(baseline!.amount);
         });
 
         it("sets collateral at 60% of bid", async () => {

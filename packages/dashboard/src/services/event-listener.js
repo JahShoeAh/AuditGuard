@@ -1,7 +1,7 @@
 /**
  * EventListenerService
  *
- * Unified event ingestion — manages Cloudflare events API polling
+ * Unified event ingestion — manages EC2 events API polling
  * and ethers.js contract-event polling, routing everything into
  * the Zustand store.
  */
@@ -389,29 +389,19 @@ export class EventListenerService {
   // ── HCS polling ──────────────────────────────────────────
 
   startHCSPolling() {
-    if (!this.config?.hcsTopics) {
-      console.warn('[EventListener] No HCS topics in config — skipping event polling');
-      return;
-    }
-
-    // Discovery topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.discovery, 'discovery');
-    }, this.hcsPollMs));
+    // Initial poll to reduce startup latency.
+    this._pollEventsAPI().catch((err) => {
+      console.warn('[EventListener] Initial events API poll failed:', err.message);
+    });
 
     this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.auditLog, 'auditLog');
-    }, this.hcsPollMs));
-
-    // AgentComms topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.agentComms, 'agentComms');
-    }, this.hcsPollMs));
+      this._pollEventsAPI();
+    }, HCS_POLL_MS));
   }
 
-  async _pollCloudflareEvents() {
+  async _pollEventsAPI() {
     try {
-      const messages = await this.fetchCloudflareEvents();
+      const messages = await this.fetchEvents();
 
       if (this.onlyTestDiscoveries && !this.eventsBacklogSkipped) {
         for (const msg of messages) {
@@ -451,7 +441,7 @@ export class EventListenerService {
     }
   }
 
-  async fetchCloudflareEvents() {
+  async fetchEvents() {
     const url = `${EVENTS_API_BASE_URL}/events?limit=${EVENT_FETCH_LIMIT}`;
     const res = await fetch(url);
     if (!res.ok) {
@@ -505,7 +495,7 @@ export class EventListenerService {
    * Compatibility shim for older tests/imports.
    */
   async fetchHCSMessages() {
-    return this.fetchCloudflareEvents().map((event) => {
+    return this.fetchEvents().map((event) => {
       return {
         sequenceNumber: event.sequenceNumber,
         timestamp: event.timestamp,
