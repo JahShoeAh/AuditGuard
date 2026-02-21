@@ -81,17 +81,129 @@ let totalWins = 0;
 const PRICING_ALPHA = 0.3;
 const bidInFlightJobs = new Set<string>();
 const bidSubmittedJobs = new Set<string>();
-let bidSubmissionQueue: Promise<void> = Promise.resolve();
+const BID_DEADLINE_SAFETY_MARGIN_MS = Number(process.env.BID_DEADLINE_SAFETY_MARGIN_MS ?? "15000");
+const BID_SUBMIT_TIMEOUT_MS = Number(process.env.BID_SUBMIT_TIMEOUT_MS ?? "20000");
+
+type BidQueueTask = {
+  jobId: string;
+  enqueueAt: number;
+  contractAddress: string;
+  deadlineHintSec: number | null;
+  execute: () => Promise<void>;
+};
+
+type EnqueuedBidQueueTask = BidQueueTask & {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+
+const bidQueue: EnqueuedBidQueueTask[] = [];
+let bidQueueInFlight = false;
 const zgRuntime = {
   providerAddress: "",
   model: "",
   endpoint: "",
 };
 
-function queueBidSubmission(task: () => Promise<void>): Promise<void> {
-  const next = bidSubmissionQueue.then(task);
-  bidSubmissionQueue = next.catch(() => undefined);
-  return next;
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(label)), timeoutMs);
+        timeoutHandle.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+function normalizeDeadlineHintSec(value: unknown): number | null {
+  const deadline = Number(value);
+  if (!Number.isFinite(deadline) || deadline <= 0) return null;
+  return Math.floor(deadline);
+}
+
+function getRemainingMsFromDeadline(deadlineSec: number | null): number {
+  if (!Number.isFinite(Number(deadlineSec)) || Number(deadlineSec) <= 0) return Number.POSITIVE_INFINITY;
+  return (Number(deadlineSec) * 1000) - Date.now();
+}
+
+async function getBidWindowSnapshot(
+  contracts: ContractClient,
+  jobId: string,
+  deadlineHintSec: number | null
+): Promise<{ remainingMs: number; reasonCode: string }> {
+  let effectiveDeadlineSec = normalizeDeadlineHintSec(deadlineHintSec);
+  let jobState: number | null = null;
+  try {
+    const auction = await contracts.getAuction(jobId);
+    const chainDeadlineSec = normalizeDeadlineHintSec(auction?.deadline ?? null);
+    if (chainDeadlineSec != null) effectiveDeadlineSec = chainDeadlineSec;
+    const state = Number(auction?.jobState ?? NaN);
+    if (Number.isFinite(state)) jobState = Math.floor(state);
+  } catch {
+    // Fall back to invite hint only.
+  }
+
+  if (jobState != null && jobState !== 0) {
+    return { remainingMs: 0, reasonCode: "auction_not_open" };
+  }
+
+  const remainingMs = getRemainingMsFromDeadline(effectiveDeadlineSec);
+  if (remainingMs <= BID_DEADLINE_SAFETY_MARGIN_MS) {
+    return { remainingMs, reasonCode: "deadline_window_exhausted" };
+  }
+  return { remainingMs, reasonCode: "ok" };
+}
+
+async function drainBidQueue(hcs: HCSClient, contracts: ContractClient): Promise<void> {
+  if (bidQueueInFlight) return;
+  bidQueueInFlight = true;
+  try {
+    while (bidQueue.length > 0) {
+      const task = bidQueue.shift();
+      if (!task) continue;
+      try {
+        const window = await getBidWindowSnapshot(contracts, task.jobId, task.deadlineHintSec);
+        if (window.reasonCode !== "ok") {
+          await hcs.publishAuditLog({
+            type: "BID_QUEUE_DROPPED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              jobId: task.jobId,
+              contractAddress: task.contractAddress,
+              reasonCode: window.reasonCode,
+              remainingMs: window.remainingMs,
+              queuedForMs: Date.now() - task.enqueueAt,
+            },
+          });
+          task.resolve();
+          continue;
+        }
+        await task.execute();
+        task.resolve();
+      } catch (err) {
+        task.reject(err);
+      }
+    }
+  } finally {
+    bidQueueInFlight = false;
+  }
+}
+
+function queueBidSubmission(
+  task: BidQueueTask,
+  hcs: HCSClient,
+  contracts: ContractClient
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    bidQueue.push({ ...task, resolve, reject });
+    void drainBidQueue(hcs, contracts);
+  });
 }
 
 function parseChainUint(value: string | number | bigint): bigint {
@@ -622,6 +734,7 @@ async function main() {
         estimatedLOC,
         estimatedLineCount,
         budget,
+        auctionDeadlineSec,
         eligibleAgentIds,
         eligibleEvmAddresses,
       } = (msg as any).payload;
@@ -838,101 +951,143 @@ async function main() {
 
         let submittedOnChain = false;
         let alreadyBidOnChain = false;
-        await queueBidSubmission(async () => {
-          alreadyBidOnChain = await contracts.hasAgentBid(jobId, wallet.evmAddress);
-          if (alreadyBidOnChain) return;
+        const deadlineHint = normalizeDeadlineHintSec(auctionDeadlineSec);
+        await queueBidSubmission(
+          {
+            jobId: jobKey,
+            enqueueAt: Date.now(),
+            contractAddress,
+            deadlineHintSec: deadlineHint,
+            execute: async () => {
+              alreadyBidOnChain = await contracts.hasAgentBid(jobId, wallet.evmAddress);
+              if (alreadyBidOnChain) return;
 
-          // Add jitter to avoid race conditions between competing agents.
-          const jitter = randomInt(1000, 5000);
-          log.info(`Waiting ${jitter}ms jitter before bidding...`);
-          await sleep(jitter);
+              // Add jitter to avoid race conditions between competing agents.
+              const jitter = randomInt(1000, 5000);
+              log.info(`Waiting ${jitter}ms jitter before bidding...`);
+              await sleep(jitter);
 
-          const maxAttempts = 3;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              const tx = await contracts.submitBid(
-                jobId,
-                finalBid.amountWei,
-                finalBid.collateralWei,
-                finalBid.estimatedTimeSec,
-                SPECIALIZATIONS[0]
-              );
-              log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
-              submittedOnChain = true;
-              return;
-            } catch (err) {
-              const error = err instanceof Error ? err.message : String(err);
-              const reasonCode = normalizeBidFailureReasonCode(error);
-              if (reasonCode === "duplicate_bid") {
-                alreadyBidOnChain = true;
-                return;
-              }
-              const payerFailure =
-                reasonCode === "insufficient_payer_hbar" ||
-                error.toLowerCase().includes("insufficient funds for transfer");
-              if (payerFailure && attempt < maxAttempts) {
-                const recoveredPayer = await ensureOperationalHbar({
-                  contracts,
-                  recipientAddress: wallet.evmAddress,
-                  requiredWei: getHbarTopUpConfig().minRequiredWei,
-                  logger: log,
-                });
-                if (recoveredPayer.ok) {
-                  if (recoveredPayer.toppedUpWei > 0n) {
-                    log.info(
-                      `Recovered payer gas before retry: +${ethers.formatEther(recoveredPayer.toppedUpWei)} HBAR`
-                    );
-                  }
-                  await sleep(300 * attempt);
-                  continue;
-                }
-              }
-              const errorLower = error.toLowerCase();
-              const collateralFailure =
-                !DEMO_MODE &&
-                (
-                  reasonCode === "insufficient_funds" ||
-                  errorLower.includes("collateral") ||
-                  errorLower.includes("allowance") ||
-                  errorLower.includes("transfer amount exceeds balance") ||
-                  errorLower.includes("insufficient guard")
-                );
-              if (collateralFailure && attempt < maxAttempts) {
-                const recoveredCollateral = await ensureBidCollateralBalance({
-                  contracts,
-                  recipientAddress: wallet.evmAddress,
-                  requiredWei: finalBid.collateralWei,
-                  logger: log,
-                });
-                if (recoveredCollateral.ok) {
-                  if (recoveredCollateral.toppedUpWei > 0n) {
-                    log.info(
-                      `Recovered collateral before retry: +${ethers.formatUnits(recoveredCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
-                    );
-                  }
-                  const approvalTx = await contracts.ensureGuardAllowance(
-                    contracts.getAuctionAddress(),
-                    finalBid.collateralWei
+              const maxAttempts = 3;
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                  const tx = await withTimeout(
+                    contracts.submitBid(
+                      jobId,
+                      finalBid.amountWei,
+                      finalBid.collateralWei,
+                      finalBid.estimatedTimeSec,
+                      SPECIALIZATIONS[0]
+                    ),
+                    BID_SUBMIT_TIMEOUT_MS,
+                    `submitBid timeout after ${BID_SUBMIT_TIMEOUT_MS}ms`
                   );
-                  if (approvalTx) {
-                    await approvalTx.wait?.();
+                  log.info(`On-chain bid submitted (tx: ${tx.hash?.slice(0, 14)}...)`);
+                  submittedOnChain = true;
+                  return;
+                } catch (err) {
+                  const error = err instanceof Error ? err.message : String(err);
+                  const reasonCode = normalizeBidFailureReasonCode(error);
+                  if (reasonCode === "duplicate_bid") {
+                    alreadyBidOnChain = true;
+                    return;
                   }
+                  const ambiguousFailure = /timeout/i.test(error) || isRetriableBidFailure(error);
+                  if (ambiguousFailure) {
+                    try {
+                      alreadyBidOnChain = await contracts.hasAgentBid(jobId, wallet.evmAddress);
+                    } catch {
+                      // Continue into retry path below.
+                    }
+                    if (alreadyBidOnChain) return;
+                  }
+
+                  const window = await getBidWindowSnapshot(contracts, jobKey, deadlineHint);
+                  if (window.reasonCode !== "ok") {
+                    await hcs.publishAuditLog({
+                      type: "BID_LATE_DROP",
+                      agentId: AGENT_ID,
+                      timestamp: Date.now(),
+                      payload: {
+                        jobId: jobKey,
+                        contractAddress,
+                        reasonCode: window.reasonCode,
+                        remainingMs: window.remainingMs,
+                        attempt,
+                      },
+                    });
+                    return;
+                  }
+
+                  const payerFailure =
+                    reasonCode === "insufficient_payer_hbar" ||
+                    error.toLowerCase().includes("insufficient funds for transfer");
+                  if (payerFailure && attempt < maxAttempts) {
+                    const recoveredPayer = await ensureOperationalHbar({
+                      contracts,
+                      recipientAddress: wallet.evmAddress,
+                      requiredWei: getHbarTopUpConfig().minRequiredWei,
+                      logger: log,
+                    });
+                    if (recoveredPayer.ok) {
+                      if (recoveredPayer.toppedUpWei > 0n) {
+                        log.info(
+                          `Recovered payer gas before retry: +${ethers.formatEther(recoveredPayer.toppedUpWei)} HBAR`
+                        );
+                      }
+                      await sleep(300 * attempt);
+                      continue;
+                    }
+                  }
+                  const errorLower = error.toLowerCase();
+                  const collateralFailure =
+                    !DEMO_MODE &&
+                    (
+                      reasonCode === "insufficient_funds" ||
+                      errorLower.includes("collateral") ||
+                      errorLower.includes("allowance") ||
+                      errorLower.includes("transfer amount exceeds balance") ||
+                      errorLower.includes("insufficient guard")
+                    );
+                  if (collateralFailure && attempt < maxAttempts) {
+                    const recoveredCollateral = await ensureBidCollateralBalance({
+                      contracts,
+                      recipientAddress: wallet.evmAddress,
+                      requiredWei: finalBid.collateralWei,
+                      logger: log,
+                    });
+                    if (recoveredCollateral.ok) {
+                      if (recoveredCollateral.toppedUpWei > 0n) {
+                        log.info(
+                          `Recovered collateral before retry: +${ethers.formatUnits(recoveredCollateral.toppedUpWei, GUARD_DECIMALS)} GUARD`
+                        );
+                      }
+                      const approvalTx = await contracts.ensureGuardAllowance(
+                        contracts.getAuctionAddress(),
+                        finalBid.collateralWei
+                      );
+                      if (approvalTx) {
+                        await approvalTx.wait?.();
+                      }
+                      await sleep(300 * attempt);
+                      continue;
+                    }
+                  }
+                  const retriable = isRetriableBidFailure(error) || /timeout/i.test(error);
+                  if (!retriable || attempt === maxAttempts) {
+                    throw err;
+                  }
+                  log.warn(
+                    `Transient bid submit failure for job #${jobId} ` +
+                    `(attempt ${attempt}/${maxAttempts}): ${error}`
+                  );
                   await sleep(300 * attempt);
-                  continue;
                 }
               }
-              const retriable = isRetriableBidFailure(error);
-              if (!retriable || attempt === maxAttempts) {
-                throw err;
-              }
-              log.warn(
-                `Transient bid submit failure for job #${jobId} ` +
-                `(attempt ${attempt}/${maxAttempts}): ${error}`
-              );
-              await sleep(300 * attempt);
-            }
-          }
-        });
+            },
+          },
+          hcs,
+          contracts
+        );
 
         if (alreadyBidOnChain) {
           bidSubmittedJobs.add(jobKey);
@@ -998,17 +1153,25 @@ async function main() {
 
   // Listen for winner selection events on-chain
   contracts.onWinnerSelected((jobId, winners, totalEscrowed, platformFee) => {
-    const myAddress = wallet.evmAddress.toLowerCase();
-    const winnerIndex = winners.findIndex(w => w.toLowerCase() === myAddress);
-    if (winnerIndex === -1) return;
-
     const jobKey = jobId.toString();
     const pending = pendingJobs.get(jobKey);
+    const hadSubmittedBid = bidSubmittedJobs.has(jobKey);
+    if (!pending && !hadSubmittedBid) return;
+
+    const myAddress = wallet.evmAddress.toLowerCase();
+    const isWinner = winners.some((w) => String(w).toLowerCase() === myAddress);
+
+    pendingJobs.delete(jobKey);
+    bidSubmittedJobs.delete(jobKey);
+
+    if (!isWinner) {
+      log.info(`LOST auction for job #${jobKey}; cleared local bid state`);
+      return;
+    }
     if (!pending) return;
 
     log.info(`WON auction for job #${jobKey}! Premium contract.`);
     updatePricingAfterOutcome(true);
-    pendingJobs.delete(jobKey);
 
     simulateAuditCycle(
       pending.jobId,
@@ -1021,6 +1184,15 @@ async function main() {
       wallet.evmAddress
     )
       .catch(err => log.error(`Audit cycle failed: ${err}`));
+  });
+
+  contracts.onJobCancelled((jobId) => {
+    const jobKey = jobId.toString();
+    const clearedPending = pendingJobs.delete(jobKey);
+    const clearedSubmittedBid = bidSubmittedJobs.delete(jobKey);
+    if (clearedPending || clearedSubmittedBid) {
+      log.info(`Job #${jobKey} cancelled on-chain; cleared local bid state`);
+    }
   });
 
   // Listen for discoveries — queue until AUCTION_INVITE arrives

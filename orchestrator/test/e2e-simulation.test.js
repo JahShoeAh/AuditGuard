@@ -73,7 +73,9 @@ function registerAgent(orch, { agentId, evmAddress, stake, reputation, specializ
 
 async function testE2EBasicFlow() {
   const originalWinnerWaitMs = CONFIG.timeouts.winnerWaitMs;
-  CONFIG.timeouts.winnerWaitMs = 10;
+  const originalBidFinalityGraceMs = CONFIG.timeouts.bidFinalityGraceMs;
+  CONFIG.timeouts.winnerWaitMs = 1000;
+  CONFIG.timeouts.bidFinalityGraceMs = 0;
 
   try {
     const log = mockLog();
@@ -134,6 +136,7 @@ async function testE2EBasicFlow() {
       agentId: "static-47",
       timestamp: now(),
       payload: {
+        jobId: 101,
         contractAddress: "0xdeadbeef00000000000000000000000000beef01",
         bidAmount: 12,
         collateral: 6,
@@ -147,6 +150,7 @@ async function testE2EBasicFlow() {
       agentId: "fuzzer-12",
       timestamp: now(),
       payload: {
+        jobId: 101,
         contractAddress: "0xdeadbeef00000000000000000000000000beef01",
         bidAmount: 14,
         collateral: 6,
@@ -156,7 +160,7 @@ async function testE2EBasicFlow() {
       },
     });
 
-    await sleep(30);
+    await sleep(1300);
     const selectedJob = orch.jobs.get("101");
     assert.ok(selectedJob?.winners?.length > 0, "winners should be selected by on-chain path");
 
@@ -192,6 +196,7 @@ async function testE2EBasicFlow() {
     assert.equal(settledJobs.length, 1, "should settle the job once");
   } finally {
     CONFIG.timeouts.winnerWaitMs = originalWinnerWaitMs;
+    CONFIG.timeouts.bidFinalityGraceMs = originalBidFinalityGraceMs;
   }
 }
 
