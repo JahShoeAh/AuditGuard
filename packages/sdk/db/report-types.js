@@ -35,18 +35,6 @@
 //   Local dev only (optional fallbacks):
 //   LOCAL_REPORTS_DIR     absolute path — used when AWS_S3_BUCKET is not set
 
-// ── S3 key helpers ────────────────────────────────────────────────────────────
-
-/**
- * Canonical S3 object key for a report's markdown file.
- * e.g. "reports/42.md"
- * @param {string|number} jobId
- * @returns {string}
- */
-export function s3Key(jobId) {
-  return `reports/${String(jobId)}.md`;
-}
-
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
 /**
@@ -128,10 +116,8 @@ export const EMPTY_FINDINGS = Object.freeze({
  * @property {string|null}         hederaAccountId   - Hedera 0.0.NNNN ID if available, else null
  * @property {string}              chain             - e.g. "hedera-testnet"
  * @property {string}              contractType      - "lending"|"dex"|"staking"|"bridge"|"vault"
- * @property {string}              s3Key             - S3 object key, e.g. "reports/42.md"
- *                                                     Empty string when AWS_S3_BUCKET not set (local dev)
  * @property {string}              contentHash       - SHA3-256 hex digest of markdown content
- * @property {string}              cid               - IPFS / 0g content identifier
+ * @property {string}              mdContent         - Full markdown text, stored inline in DB
  * @property {string[]}            agentAddresses    - EVM addresses of winning agents
  * @property {number}              agentCount
  * @property {number}              findingCount

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, forwardRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Countdown from './Countdown';
 import BidRow from './BidRow';
@@ -78,14 +78,14 @@ function resolveState(job, winnerData) {
 
 // ── Main AuctionCard ───────────────────────────────────────
 
-export default function AuctionCard({
+const AuctionCard = forwardRef(function AuctionCard({
   job,
   bids,
   bidLifecycle = [],
   llmInference = [],
   winnerData,
   recentBidTimestamps,
-}) {
+}, ref) {
   const state = resolveState(job, winnerData);
   const canonicalType = normalizeAuctionType(job.contractType);
   const accentColor = auctionTypeColor(canonicalType);
@@ -137,6 +137,7 @@ export default function AuctionCard({
 
   return (
     <motion.div
+      ref={ref}
       layout
       initial={{ opacity: 0, y: -20, scale: 0.96 }}
       animate={{
@@ -328,4 +329,6 @@ export default function AuctionCard({
       <SubContractTree parentJobId={job.jobId} />
     </motion.div>
   );
-}
+});
+
+export default AuctionCard;

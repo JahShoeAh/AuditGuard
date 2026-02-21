@@ -8,6 +8,7 @@ import { InftBridge } from "./inft-bridge.js";
 import { enrichScheduledDiscovery } from "./scheduled-enrichment-client.js";
 import { MessageType, now } from "../../agents/shared/types.js";
 import { parseUnits } from "ethers";
+import { generateAndStoreReport } from "./report-writer.js";
 
 /**
  * Orchestrator Agent — isolated implementation.
@@ -864,7 +865,7 @@ export class OrchestratorAgent {
 
   async handleDiscovery(msg) {
     await this.rosterBootstrapPromise.catch(() => { });
-    const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
+    const { contractAddress, contractType, budget, riskScore, estimatedLOC, deployerAddress } = msg.payload;
     const classifierMetadata = this.extractClassifierMetadata(msg.payload || {});
     if (this.shouldDedupeDiscovery(contractAddress)) {
       this.log.info(`Discovery deduped for ${String(contractAddress).slice(0, 12)}…`);
@@ -1144,6 +1145,7 @@ export class OrchestratorAgent {
 
     this.setJobByKey(jobId, {
       contractAddress,
+      deployerAddress: String(deployerAddress ?? '').trim().toLowerCase(),
       contractType,
       classifier: classifierMetadata,
       bidders: [],
@@ -2039,6 +2041,28 @@ export class OrchestratorAgent {
     const runSelect = async () => {
       const job = this.getJobByKey(key);
       if (!job) return;
+
+      // Pre-check on-chain job status before attempting selectWinners.
+      // Contract requires AUCTION_OPEN (0) or BIDDING_CLOSED (1).
+      // Any other status means the job has already been settled, cancelled,
+      // or selectWinners was already called — skip gracefully.
+      try {
+        const onChainJob = await this.contracts.getJob(Number(jobId));
+        const status = Number(onChainJob?.status ?? -1);
+        if (status !== 0 && status !== 1) {
+          this.log.info(
+            `[Orchestrator] selectWinners skipped for job ${jobId}: ` +
+            `on-chain status=${status} (already past bidding phase)`
+          );
+          return;
+        }
+      } catch (preCheckErr) {
+        this.log.warn(
+          `[Orchestrator] selectWinners status pre-check failed for job ${jobId}: ` +
+          `${preCheckErr instanceof Error ? preCheckErr.message : preCheckErr} — proceeding anyway`
+        );
+      }
+
       const eligibleInvitedCount = Number(job.eligibleInvitedCount ?? 0);
       const bidsReceivedHcsCount = Number(job.hcsBidCount ?? (Array.isArray(job.bidders) ? job.bidders.length : 0));
 
@@ -2323,6 +2347,12 @@ export class OrchestratorAgent {
           platformFee,
           txHash,
         }).catch(() => {});
+
+        if (!job.reportPublished) {
+          generateAndStoreReport(key, job, job.findings ?? [])
+            .then(() => this.log.info(`[ReportWriter] Saved report for job ${key}`))
+            .catch((err) => this.log.warn(`[ReportWriter] Failed for job ${key}: ${err.message}`));
+        }
       });
 
       this.contracts.auction.on("JobCancelled", (jobId, reason) => {

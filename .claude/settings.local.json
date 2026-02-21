@@ -30,7 +30,9 @@
       "Bash(find:*)",
       "Bash(npm show:*)",
       "Bash(npm test:*)",
-      "Bash(npx hardhat run:*)"
+      "Bash(npx hardhat run:*)",
+      "Bash(curl:*)",
+      "Bash(chmod:*)"
     ]
   }
 }

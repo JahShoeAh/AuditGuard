@@ -4,6 +4,7 @@ const CANONICAL_TYPE = {
   bridge: 'bridge',
   vault: 'vault',
   staking: 'staking',
+  nft: 'nft',
   unknown: 'unknown',
 };
 
@@ -13,6 +14,7 @@ const LABELS = {
   bridge: 'BRIDGE',
   vault: 'VAULT',
   staking: 'STAKING',
+  nft: 'NFT',
   unknown: 'UNKNOWN',
 };
 
@@ -22,6 +24,7 @@ const COLORS = {
   bridge: 'var(--accent-purple)',
   vault: 'var(--accent-green)',
   staking: 'var(--accent-gold)',
+  nft: '#a78bfa',
   unknown: 'var(--accent-amber)',
 };
 
@@ -41,6 +44,10 @@ const RAW_TO_CANONICAL = new Map([
   ['staking', CANONICAL_TYPE.staking],
   ['staking_pool', CANONICAL_TYPE.staking],
   ['stake', CANONICAL_TYPE.staking],
+  ['nft', CANONICAL_TYPE.nft],
+  ['erc721', CANONICAL_TYPE.nft],
+  ['erc1155', CANONICAL_TYPE.nft],
+  ['multitoken', CANONICAL_TYPE.nft],
 ]);
 
 export function normalizeAuctionType(rawValue) {

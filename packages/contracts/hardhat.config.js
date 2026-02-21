@@ -21,7 +21,7 @@ function normalizeEvmPrivateKey(raw) {
 }
 
 const normalizedPk = normalizeEvmPrivateKey(
-  process.env.HEDERA_PRIVATE_KEY || process.env.OPERATOR_PRIVATE_KEY
+  process.env.PERSONAL_PRIV
 );
 
 module.exports = {

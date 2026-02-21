@@ -1,3 +1,18 @@
+import { createRequire } from 'module';
+import { resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const require = createRequire(import.meta.url);
+
+// Load .env from repo root before anything else reads process.env
+try {
+  const dotenv = await import('dotenv');
+  dotenv.config({ path: resolve(__dirname, '../../../.env') });
+} catch {
+  // dotenv optional — env vars may be injected by the host (ECS, etc.)
+}
+
 import express from 'express';
 import reportsRouter from './api/reports.js';
 

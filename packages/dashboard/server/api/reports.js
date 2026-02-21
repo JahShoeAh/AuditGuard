@@ -24,7 +24,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/reports/:jobId
-// Returns the report + mdContent fetched from S3.
+// Returns the report including mdContent (stored inline in DB).
 router.get('/:jobId', async (req, res) => {
   const { jobId } = req.params;
   if (!JOB_ID_RE.test(jobId)) {
@@ -41,8 +41,7 @@ router.get('/:jobId', async (req, res) => {
 });
 
 // POST /api/reports
-// Creates a new report record (called from orchestrator report-writer.js).
-// Body: Partial<StoredAuditReport> — mdContent is NOT accepted here (it lives in S3).
+// Creates a new report record. Body: Partial<StoredAuditReport> + optional mdContent.
 router.post('/', async (req, res) => {
   const required = ['jobId', 'contractAddress', 'deployerAddress', 'contentHash'];
   const missing  = required.filter((f) => !req.body[f]);
@@ -55,8 +54,9 @@ router.post('/', async (req, res) => {
       id:              reportId(req.body.jobId),
       deployerAddress: normalizeDeployer(req.body.deployerAddress),
       contractAddress: normalizeDeployer(req.body.contractAddress),
-      timestamp:       req.body.timestamp ?? Date.now(),
-      source:          req.body.source    ?? 'orchestrator',
+      mdContent:       req.body.mdContent  ?? '',
+      timestamp:       req.body.timestamp  ?? Date.now(),
+      source:          req.body.source     ?? 'agent',
     });
     res.status(201).json({ success: true, id });
   } catch (err) {
