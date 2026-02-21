@@ -887,6 +887,7 @@ export class EventListenerService {
         budgetFormatted: parseGuardAmount(payload.budget ?? 0),
         initialRiskScore: Number(payload.riskScore ?? 0),
         lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        auctionDeadline: payload.auctionDeadlineSec ?? payload.auctionDeadline ?? undefined,
         classifier: classifierMetadata,
         postedAt: Date.now(),
       });
