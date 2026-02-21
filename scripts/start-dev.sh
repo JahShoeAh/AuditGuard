@@ -32,7 +32,7 @@ trap cleanup INT TERM
 echo "[startup] Launching events-api..."
 (cd packages/events-api && exec node src/index.js) > /tmp/ag-events-api.log 2>&1 &
 
-sleep 1
+/bin/sleep 1
 
 echo "[startup] events-api log:"
 cat /tmp/ag-events-api.log

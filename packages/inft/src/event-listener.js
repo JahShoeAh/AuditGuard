@@ -28,6 +28,8 @@ const CURSOR_PATH = path.join(__dirname, "..", "data", "event-cursor.json");
 
 const MIRROR_BASE = "https://testnet.mirrornode.hedera.com";
 const POLL_INTERVAL_MS = 10_000; // 10 seconds
+const JOB_LINK_RETRY_MAX_ATTEMPTS = 30;
+const JOB_LINK_RETRY_TTL_MS = 5 * 60 * 1000;
 
 function readConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
@@ -184,10 +186,13 @@ class EventListener {
     // Lookup indices: jobId -> auditJob serial, agentAddress -> agentProfile serial
     // These are populated from the storage adapter on startup
     this._jobIndex = new Map();
+    this._auditJobContractIndex = new Map();
     this._agentIndex = new Map();
     this._contractIndex = new Map(); // contractAddress -> contractHealth serial
     this._subJobToParentJob = new Map(); // subJobId -> parentJobId
     this._vaultAddresses = new Map(); // vaultAddress -> contractAddress (for AuditVault event polling)
+    this._pendingJobLinks = new Map(); // jobId -> pending link payload
+    this._processedJobPosts = new Set(); // jobIds already linked+transitioned
     this._initIndices();
 
     // AuditVault ABI loaded separately — vault instances are dynamic, not in config
@@ -201,7 +206,30 @@ class EventListener {
   _initIndices() {
     // Rebuild indices from existing iNFTs in storage
     for (const item of this.storage.listAll("auditJob")) {
-      if (item.jobId) this._jobIndex.set(item.jobId, this.storage.findSerialBy("auditJob", "jobId", item.jobId));
+      const targetAddress = item?.target?.contractAddress;
+      const serial =
+        this._extractSerialFromTokenId(item.tokenId) ??
+        (item.jobId
+          ? this.storage.findSerialBy("auditJob", "jobId", item.jobId)
+          : targetAddress
+            ? this.storage.findSerialBy(
+                "auditJob",
+                "target.contractAddress",
+                targetAddress
+              )
+            : null);
+
+      if (!serial) continue;
+      if (item.jobId) {
+        this._jobIndex.set(item.jobId, serial);
+      }
+      const contractAddress = this._normalizeAddress(item?.target?.contractAddress);
+      if (contractAddress) {
+        this._auditJobContractIndex.set(contractAddress, serial);
+      }
+      if (item.jobId && item?.state?.current && item.state.current !== "DISCOVERED") {
+        this._processedJobPosts.add(item.jobId);
+      }
     }
     for (const item of this.storage.listAll("agentProfile")) {
       if (item.agentAddress) this._agentIndex.set(item.agentAddress.toLowerCase(), this.storage.findSerialBy("agentProfile", "agentAddress", item.agentAddress));
@@ -220,7 +248,212 @@ class EventListener {
         );
       }
     }
-    console.log(`  [events] Index: ${this._jobIndex.size} jobs, ${this._agentIndex.size} agents, ${this._contractIndex.size} contracts, ${this._vaultAddresses.size} vaults`);
+    console.log(
+      `  [events] Index: ${this._jobIndex.size} jobs, ${this._agentIndex.size} agents, ${this._contractIndex.size} contracts, ${this._vaultAddresses.size} vaults`
+    );
+  }
+
+  _normalizeAddress(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed.toLowerCase() : null;
+  }
+
+  _extractSerialFromTokenId(tokenId) {
+    if (typeof tokenId !== "string") return null;
+    const parts = tokenId.split(":");
+    if (parts.length < 2) return null;
+    const serial = Number(parts[parts.length - 1]);
+    return Number.isInteger(serial) && serial > 0 ? serial : null;
+  }
+
+  _resolveAuditJobSerialByContract(contractAddress) {
+    const normalizedAddress = this._normalizeAddress(contractAddress);
+    if (!normalizedAddress) return null;
+
+    const indexed = this._auditJobContractIndex.get(normalizedAddress);
+    if (indexed) return indexed;
+
+    const exact = this.storage.findSerialBy(
+      "auditJob",
+      "target.contractAddress",
+      contractAddress
+    );
+    if (exact) {
+      this._auditJobContractIndex.set(normalizedAddress, exact);
+      return exact;
+    }
+
+    for (const item of this.storage.listAll("auditJob")) {
+      const candidate = this._normalizeAddress(item?.target?.contractAddress);
+      if (candidate !== normalizedAddress) continue;
+      const serial =
+        this._extractSerialFromTokenId(item.tokenId) ??
+        this.storage.findSerialBy(
+          "auditJob",
+          "target.contractAddress",
+          item?.target?.contractAddress
+        );
+      if (!serial) continue;
+      this._auditJobContractIndex.set(normalizedAddress, serial);
+      return serial;
+    }
+    return null;
+  }
+
+  _queuePendingJobLink(jobEvent) {
+    const jobId = Number(jobEvent?.jobId);
+    if (!Number.isInteger(jobId) || jobId <= 0) return;
+
+    const now = Date.now();
+    const existing = this._pendingJobLinks.get(jobId);
+    if (existing) {
+      existing.lastSeenAt = now;
+      if (jobEvent.contractAddress) {
+        existing.contractAddress = jobEvent.contractAddress;
+      }
+      if (Number.isFinite(jobEvent.auctionDeadlineSec)) {
+        existing.auctionDeadlineSec = jobEvent.auctionDeadlineSec;
+      }
+      if (Number.isFinite(jobEvent.budgetAvailable)) {
+        existing.budgetAvailable = jobEvent.budgetAvailable;
+      }
+      return;
+    }
+
+    this._pendingJobLinks.set(jobId, {
+      jobId,
+      contractAddress: jobEvent.contractAddress,
+      auctionDeadlineSec: jobEvent.auctionDeadlineSec,
+      budgetAvailable: jobEvent.budgetAvailable,
+      timestamp: jobEvent.timestamp,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      attempts: 0,
+    });
+  }
+
+  async _applyJobPostedLink(jobEvent, serial, source) {
+    const jobId = Number(jobEvent.jobId);
+    if (!Number.isInteger(jobId) || jobId <= 0) return false;
+    if (!Number.isInteger(serial) || serial <= 0) return false;
+
+    const existing = this._jobIndex.get(jobId);
+    if (existing && existing !== serial) {
+      console.warn(
+        `    JobPosted link conflict for jobId=${jobId}: existing serial=${existing}, candidate serial=${serial} (${source})`
+      );
+      return false;
+    }
+
+    const metadata = await this.storage.load("auditJob", serial);
+    if (!metadata) {
+      console.warn(`    Could not load Audit Job iNFT serial=${serial} for jobId=${jobId}`);
+      return false;
+    }
+
+    const eventContract = this._normalizeAddress(jobEvent.contractAddress);
+    const metadataContract = this._normalizeAddress(metadata?.target?.contractAddress);
+    if (eventContract && metadataContract && eventContract !== metadataContract) {
+      console.warn(
+        `    JobPosted contract mismatch for jobId=${jobId}: event=${eventContract} metadata=${metadataContract}`
+      );
+      return false;
+    }
+
+    const existingJobId = Number(metadata.jobId || 0);
+    if (existingJobId > 0 && existingJobId !== jobId) {
+      console.warn(
+        `    JobPosted serial conflict for jobId=${jobId}: serial #${serial} already linked to jobId=${existingJobId}`
+      );
+      return false;
+    }
+
+    this._jobIndex.set(jobId, serial);
+    if (eventContract) this._auditJobContractIndex.set(eventContract, serial);
+    if (metadataContract) this._auditJobContractIndex.set(metadataContract, serial);
+
+    const alreadyLinked =
+      existingJobId === jobId &&
+      metadata?.state?.current === "AUCTION_OPEN" &&
+      !!metadata?.auction?.deadline;
+    if (alreadyLinked || this._processedJobPosts.has(jobId)) {
+      this._processedJobPosts.add(jobId);
+      return true;
+    }
+
+    if (existingJobId !== jobId) {
+      metadata.jobId = jobId;
+      await this.storage.save("auditJob", serial, metadata);
+    }
+
+    if (metadata?.state?.current === "DISCOVERED") {
+      await this.inftService.transitionAuditJobState(
+        serial,
+        "AUCTION_OPEN",
+        "AuditAuction.JobPosted"
+      );
+
+      await this.inftService.publishToAuditLog("INFT_STATE_TRANSITION", {
+        collection: "auditJob",
+        serialNumber: serial,
+        jobId,
+        from: "DISCOVERED",
+        to: "AUCTION_OPEN",
+      });
+    } else if (metadata?.state?.current !== "AUCTION_OPEN") {
+      console.log(
+        `    Linking jobId=${jobId} to serial=${serial} without state transition (current=${metadata?.state?.current || "unknown"})`
+      );
+    }
+
+    const auctionDeadlineSec = Number(jobEvent.auctionDeadlineSec);
+    const budgetAvailable = Number(jobEvent.budgetAvailable);
+    const currentAuction = metadata?.auction && typeof metadata.auction === "object" ? metadata.auction : {};
+
+    await this.inftService.updateAuctionData(serial, {
+      deadline: Number.isFinite(auctionDeadlineSec)
+        ? new Date(auctionDeadlineSec * 1000).toISOString()
+        : currentAuction.deadline ?? null,
+      budgetGuard: Number.isFinite(budgetAvailable)
+        ? budgetAvailable / 1e8
+        : Number(currentAuction.budgetGuard || 0),
+      totalBids: Number(currentAuction.totalBids || 0),
+      winningAgents: Array.isArray(currentAuction.winningAgents)
+        ? currentAuction.winningAgents
+        : [],
+      platformFeePaid: Number(currentAuction.platformFeePaid || 0),
+    });
+
+    this._processedJobPosts.add(jobId);
+    return true;
+  }
+
+  async _replayPendingJobLinks() {
+    if (this._pendingJobLinks.size === 0) return;
+    const now = Date.now();
+
+    for (const [jobId, pending] of this._pendingJobLinks.entries()) {
+      const expiredByTime = now - pending.firstSeenAt > JOB_LINK_RETRY_TTL_MS;
+      const expiredByAttempts = pending.attempts >= JOB_LINK_RETRY_MAX_ATTEMPTS;
+      if (expiredByTime || expiredByAttempts) {
+        console.warn(
+          `    Dropping pending JobPosted link for jobId=${jobId} after ${pending.attempts} retries`
+        );
+        this._pendingJobLinks.delete(jobId);
+        continue;
+      }
+
+      pending.attempts += 1;
+      const serial = this._resolveAuditJobSerialByContract(pending.contractAddress);
+      if (!serial) continue;
+
+      const linked = await this._applyJobPostedLink(pending, serial, "retry");
+      if (!linked) continue;
+
+      this._pendingJobLinks.delete(jobId);
+      console.log(`    Linked delayed Audit Job iNFT for jobId=${jobId} on retry`);
+    }
   }
 
   async start() {
@@ -247,6 +480,11 @@ class EventListener {
         await this._pollAllContracts();
       } catch (err) {
         console.error(`  [events] Poll error: ${err.message}`);
+      }
+      try {
+        await this._replayPendingJobLinks();
+      } catch (err) {
+        console.error(`  [events] Pending-link replay error: ${err.message}`);
       }
       setTimeout(poll, POLL_INTERVAL_MS);
     };
@@ -338,49 +576,34 @@ class EventListener {
     const jobId = Number(args.jobId);
     console.log(`  [event] JobPosted: jobId=${jobId}`);
 
-    // Find the audit job iNFT by matching target contract address
-    const contractAddr = args.contractAddress;
+    // Find the audit job iNFT by matching target contract address.
+    const contractAddr = this._normalizeAddress(args.contractAddress);
+    const jobEvent = {
+      jobId,
+      contractAddress: contractAddr,
+      auctionDeadlineSec: Number(args.auctionDeadline),
+      budgetAvailable: Number(args.budgetAvailable),
+      timestamp,
+    };
     let serial = this._jobIndex.get(jobId);
 
     if (!serial) {
-      // Try to find by contract address (discovery listener may have created it)
-      serial = this.storage.findSerialBy("auditJob", "target.contractAddress", contractAddr);
+      // Discovery listener may have minted the iNFT using a different address case.
+      serial = this._resolveAuditJobSerialByContract(contractAddr);
     }
 
     if (!serial) {
+      this._queuePendingJobLink(jobEvent);
       console.log(`    No Audit Job iNFT found for jobId=${jobId} — it may not have been discovered via HCS yet`);
       return;
     }
 
-    // Link jobId to serial
-    this._jobIndex.set(jobId, serial);
-
-    // Update jobId on the iNFT
-    const metadata = await this.storage.load("auditJob", serial);
-    if (metadata) {
-      metadata.jobId = jobId;
-      await this.storage.save("auditJob", serial, metadata);
+    const linked = await this._applyJobPostedLink(jobEvent, serial, "event");
+    if (linked) {
+      this._pendingJobLinks.delete(jobId);
+    } else {
+      this._queuePendingJobLink(jobEvent);
     }
-
-    // Transition state
-    await this.inftService.transitionAuditJobState(serial, "AUCTION_OPEN", "AuditAuction.JobPosted");
-
-    // Update auction metadata
-    await this.inftService.updateAuctionData(serial, {
-      deadline: new Date(Number(args.auctionDeadline) * 1000).toISOString(),
-      budgetGuard: Number(args.budgetAvailable) / 1e8,
-      totalBids: 0,
-      winningAgents: [],
-      platformFeePaid: 0,
-    });
-
-    await this.inftService.publishToAuditLog("INFT_STATE_TRANSITION", {
-      collection: "auditJob",
-      serialNumber: serial,
-      jobId,
-      from: "DISCOVERED",
-      to: "AUCTION_OPEN",
-    });
   }
 
   async _onAuditAuction_BidSubmitted(args, timestamp) {

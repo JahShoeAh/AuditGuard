@@ -74,6 +74,8 @@ class INFTService {
     this.client.setDefaultMaxTransactionFee(new Hbar(5));
     this.config = readConfig();
     this.storage = storage || new StorageAdapter();
+    this.eventRelayUrl = String(process.env.EVENT_RELAY_URL || "").trim();
+    this.eventRelayToken = String(process.env.EVENT_RELAY_TOKEN || "").trim();
   }
 
   /** Gracefully close the Hedera client. */
@@ -1304,12 +1306,8 @@ class INFTService {
       return null;
     }
 
-    const message = JSON.stringify({
-      type: eventType,
-      timestamp: Date.now(),
-      source: "inft-service",
-      data: payload,
-    });
+    const messageBody = this._buildAuditLogMessage(eventType, payload);
+    const message = JSON.stringify(messageBody);
 
     const tx = await new TopicMessageSubmitTransaction()
       .setTopicId(topicId)
@@ -1320,7 +1318,73 @@ class INFTService {
     const receipt = await tx.getReceipt(this.client);
     const sequenceNumber = receipt.topicSequenceNumber?.toString();
     console.log(`  [iNFT] Published ${eventType} to HCS auditLog (seq: ${sequenceNumber})`);
+    void this._relayAuditLogEvent(topicId, messageBody);
     return sequenceNumber;
+  }
+
+  /**
+   * Build canonical audit log message envelope for HCS and relay ingestion.
+   *
+   * @param {string} eventType
+   * @param {object} payload
+   * @param {number} [timestamp]
+   * @returns {{type: string, agentId: string, timestamp: number, payload: object, data: object}}
+   */
+  _buildAuditLogMessage(eventType, payload, timestamp = Date.now()) {
+    const normalizedPayload =
+      typeof payload === "object" && payload !== null
+        ? payload
+        : { value: payload ?? null };
+    return {
+      type: eventType,
+      agentId: "inft-service",
+      timestamp,
+      payload: normalizedPayload,
+      // Backward-compatibility for older consumers still reading `data`.
+      data: normalizedPayload,
+    };
+  }
+
+  /**
+   * Best-effort event relay publish. HCS remains authoritative.
+   *
+   * @param {string} topicId
+   * @param {object} message
+   * @returns {Promise<boolean>}
+   */
+  async _relayAuditLogEvent(topicId, message) {
+    if (!this.eventRelayUrl) return false;
+
+    const headers = {
+      "content-type": "application/json",
+    };
+    if (this.eventRelayToken) {
+      headers.authorization = `Bearer ${this.eventRelayToken}`;
+    }
+
+    try {
+      const response = await fetch(this.eventRelayUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "inft",
+          topicId,
+          message,
+        }),
+      });
+      if (!response.ok) {
+        console.warn(
+          `  [iNFT] Event relay publish failed (${response.status}) for ${message?.type}`
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn(
+        `  [iNFT] Event relay error for ${message?.type}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────
