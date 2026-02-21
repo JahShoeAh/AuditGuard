@@ -11,6 +11,7 @@ import ReportViewer from '../components/reports/ReportViewer';
 import PurchaseHistory from '../components/reports/PurchaseHistory';
 import { HUMAN_FILTER_TABS, HUMAN_CATEGORY_IDS, fmtGuard } from '../components/reports/reportConstants';
 import { fmt } from '../utils/format';
+import UserReportList from '../components/reports/UserReportList';
 
 // ── Filter pill ────────────────────────────────────────────
 function FilterPill({ label, icon, active, count, onClick }) {
@@ -392,6 +393,14 @@ export default function ReportMarketplace() {
               })
             )}
           </AnimatePresence>
+        </div>
+
+        {/* ── My Reports — wallet-filtered audit reports (deployer view) ── */}
+        <div className="mt-10 pt-8 border-t border-gray-900">
+          <h2 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-300 mb-4">
+            My Reports
+          </h2>
+          <UserReportList />
         </div>
 
         {/* ── Purchase history ── */}
