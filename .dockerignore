@@ -15,7 +15,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Exclude frontend — not needed in backend Docker image
-packages/dashboard
+# Exclude unused packages
 packages/cloudflare-api
 docs
