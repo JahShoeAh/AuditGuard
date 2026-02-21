@@ -502,7 +502,18 @@ export class ContractClient {
     spender: string,
     minRequired: bigint
   ): Promise<ethers.ContractTransactionResponse | null> {
-    const allowance = await this.getGuardAllowance(this.wallet.address, spender);
+    // Retry the allowance read — a transient 502 here would otherwise cause
+    // the preflight to mark allowance as missing and attempt a failing approve.
+    let allowance = 0n;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        allowance = await this.getGuardAllowance(this.wallet.address, spender);
+        break;
+      } catch {
+        if (attempt === 2) throw new Error("Could not read GUARD allowance after 3 attempts");
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+      }
+    }
     if (allowance >= minRequired) return null;
 
     // Hedera HTS ERC-20 precompile frequently rejects MaxUint256 approvals.

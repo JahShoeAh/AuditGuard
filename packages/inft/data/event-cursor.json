@@ -1,9 +1,9 @@
 {
-  "AuditAuction_lastTimestamp": "1771669219.716512000",
+  "AuditAuction_lastTimestamp": "1771685098.623550264",
   "SubAuction_lastTimestamp": "1771476432.049878000",
-  "DataMarketplace_lastTimestamp": "1771668946.388159000",
+  "DataMarketplace_lastTimestamp": "1771683994.029431971",
   "PaymentSettlement_lastTimestamp": "1771476466.484421000",
   "StakingManager_lastTimestamp": "1771476622.001228000",
-  "Treasury_lastTimestamp": "1771476696.841911384",
+  "Treasury_lastTimestamp": "1771680658.487699572",
   "VaultFactory_lastTimestamp": "1771476703.999674000"
 }

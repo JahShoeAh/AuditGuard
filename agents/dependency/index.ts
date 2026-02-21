@@ -340,6 +340,14 @@ async function main() {
 }
 
 if (!process.env.VITEST) {
+  process.on("unhandledRejection", (reason) => {
+    const msg = String(reason instanceof Error ? reason.message : reason);
+    if (msg.includes("502") || msg.includes("Bad Gateway") || msg.includes("rate limit") || msg.includes("-32005")) {
+      log.warn(`[unhandledRejection] transient RPC error (swallowed): ${msg.slice(0, 120)}`);
+    } else {
+      log.error(`[unhandledRejection] ${msg}`);
+    }
+  });
   main().catch((err) => {
     log.error(`Fatal: ${err}`);
     process.exit(1);
