@@ -19,6 +19,7 @@ let brokerReady = false;
 let zgHealthy = true;
 let healthCheckTimer: NodeJS.Timeout | null = null;
 let loggedModelOverride = false;
+let loggedClaudeHaikuOverride = false;
 
 const CANONICAL_MODEL_ALIASES: Record<string, string> = {
   "qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
@@ -64,6 +65,26 @@ export function getZgModel(): string {
 
 function getZgTimeoutMs(): number {
   return Number(process.env.ZG_RISK_TIMEOUT_MS ?? 30_000);
+}
+
+function resolveClaudeHaikuModel(log?: { warn: (msg: string) => void }): string {
+  const fallback = "claude-3-5-haiku-latest";
+  const configured = String(
+    process.env.CLAUDE_HAIKU_MODEL ??
+    process.env.CLAUDE_RISK_MODEL ??
+    fallback
+  ).trim();
+  const normalized = configured.toLowerCase();
+  if (normalized.includes("haiku")) return configured;
+
+  if (!loggedClaudeHaikuOverride && log) {
+    log.warn(
+      `Claude model override: configured '${configured}' is not Haiku. ` +
+      `Forcing '${fallback}' for lower-cost inference.`
+    );
+    loggedClaudeHaikuOverride = true;
+  }
+  return fallback;
 }
 
 async function initZgBroker(): Promise<void> {
@@ -192,7 +213,8 @@ async function callZgInference(
 }
 
 async function callClaudeInference(
-  messages: { role: "system" | "user"; content: string }[]
+  messages: { role: "system" | "user"; content: string }[],
+  log?: { warn: (msg: string) => void }
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
@@ -206,7 +228,7 @@ async function callClaudeInference(
     .map((m) => ({ role: "user" as const, content: m.content }));
 
   const response = await client.messages.create({
-    model: process.env.CLAUDE_RISK_MODEL ?? "claude-sonnet-4-20250514",
+    model: resolveClaudeHaikuModel(log),
     max_tokens: 1024,
     system: systemMsg,
     messages: userMsgs,
@@ -325,7 +347,7 @@ export async function assessRisk(
   }
 
   try {
-    const raw = await callClaudeInference(messages);
+    const raw = await callClaudeInference(messages, log);
     const risk = parseRiskResponse(raw);
 
     if (!risk) {
@@ -335,7 +357,7 @@ export async function assessRisk(
     return {
       risk,
       source: "claude",
-      model: process.env.CLAUDE_RISK_MODEL ?? "claude-sonnet-4-20250514",
+      model: resolveClaudeHaikuModel(log),
       latencyMs: Date.now() - start,
     };
   } catch (err) {
@@ -352,5 +374,6 @@ export function _resetRiskInference(): void {
   brokerReady = false;
   zgHealthy = true;
   loggedModelOverride = false;
+  loggedClaudeHaikuOverride = false;
   stopZgHealthCheckLoop();
 }
