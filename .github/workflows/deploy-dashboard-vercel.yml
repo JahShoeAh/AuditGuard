@@ -34,6 +34,7 @@ jobs:
         run: npm --prefix packages/dashboard run build
         env:
           VITE_EVENTS_API_BASE_URL: ${{ secrets.VITE_EVENTS_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
           VITE_HEDERA_NETWORK: testnet
           VITE_HEDERA_JSON_RPC: https://testnet.hashio.io/api
           VITE_HEDERA_MIRROR_NODE: https://testnet.mirrornode.hedera.com

@@ -125,9 +125,7 @@ Ports assigned:
 |---------|------|
 | Dashboard (Vite) | 5173 |
 | Events API (SQLite) | 4000 |
-| Report API (Postgres) | 3002 |
-
-> The Report API (`packages/dashboard/server`) is **not** started by `dev:all:unsafe`. Start it separately — see the Report Persistence section below.
+| Reports endpoints (`/api/reports`) | 4000 |
 
 ### Option B — Full preflight + live agent verification (production-like)
 
@@ -206,6 +204,7 @@ The report generation pipeline writes audit reports to PostgreSQL after each `Wi
 
 ```bash
 docker run -d --name pg-local \
+  -e POSTGRES_USER=auditguard \
   -e POSTGRES_PASSWORD=dev \
   -e POSTGRES_DB=auditguard \
   -p 5432:5432 \
@@ -215,7 +214,7 @@ docker run -d --name pg-local \
 ### 2. Add to `.env`
 
 ```
-DATABASE_URL=postgresql://postgres:dev@localhost:5432/auditguard
+DATABASE_URL=postgresql://auditguard:dev@localhost:5432/auditguard
 ```
 
 ### 3. Run the schema migration (one-time)
@@ -224,12 +223,10 @@ DATABASE_URL=postgresql://postgres:dev@localhost:5432/auditguard
 psql "$DATABASE_URL" -f orchestrator/src/schema.sql
 ```
 
-### 4. Start the Report API server (port 3002)
-
-The Vite proxy routes `/api/reports` to this server.
+### 4. Verify reports route on the Events API (port 4000)
 
 ```bash
-node packages/dashboard/server/index.js
+curl "http://localhost:4000/api/reports?deployer=0x0000000000000000000000000000000000000000"
 ```
 
 ### S3 (optional — local dev skips it)
@@ -308,7 +305,6 @@ AuditGuard/
 ├── packages/
 │   ├── contracts/           # Solidity smart contracts (Hardhat)
 │   ├── dashboard/           # React 18 + Vite + TailwindCSS observer UI
-│   │   └── server/          # Express report API (port 3002)
 │   ├── events-api/          # Express + SQLite event persistence (port 4000)
 │   ├── inft/                # 0g Labs DA layer, iNFT minting
 │   └── sdk/
@@ -348,8 +344,8 @@ HTS fungible token — **8 decimal places** (not 18). Always use `parseUnits(amo
 | Agents | TypeScript / Node.js 20 / tsx |
 | Orchestrator | JavaScript / ES Modules |
 | Dashboard | React 18 / Vite / TailwindCSS / Zustand / Framer Motion |
-| Events API | Express / better-sqlite3 |
-| Report API | Express / PostgreSQL (pg) |
+| Events API | Express / better-sqlite3 + reports routes |
+| Reports Storage | PostgreSQL (pg) |
 | iNFT | 0g Labs DA layer (`@0gfoundation/0g-ts-sdk`) |
 | Hosting | Vercel (dashboard) · AWS EC2 Docker (backend) |
 
@@ -359,7 +355,7 @@ HTS fungible token — **8 decimal places** (not 18). Always use `parseUnits(amo
 
 - **Dashboard**: Deployed to Vercel via `.github/workflows/deploy-dashboard-vercel.yml`
 - **Backend (orchestrator + agents + events-api)**: AWS EC2 via Docker/GHCR — `.github/workflows/ghcr-build-devall.yml`
-- **Report API**: Runs in the same EC2 container on port 3002. Set `DATABASE_URL` in the ECS/EC2 task environment.
+- **Reports API**: Served by `packages/events-api` on port 4000 (`/api/reports`). Set `DATABASE_URL` in the EC2 runtime env.
 - Full runbook: `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
 
 ---

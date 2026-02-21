@@ -16,3 +16,8 @@ dist/
 agents/node_modules/
 agents/.env
 agents/dist/
+
+# events-api local sqlite files
+packages/events-api/data/events.db
+packages/events-api/data/events.db-shm
+packages/events-api/data/events.db-wal

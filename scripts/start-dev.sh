@@ -29,16 +29,13 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "[startup] Launching events-api and dashboard-server..."
+echo "[startup] Launching events-api..."
 (cd packages/events-api && exec node src/index.js) > /tmp/ag-events-api.log 2>&1 &
-(cd packages/dashboard && exec node server/index.js) > /tmp/ag-dashboard-api.log 2>&1 &
 
 sleep 1
 
 echo "[startup] events-api log:"
 cat /tmp/ag-events-api.log
-echo "[startup] dashboard-api log:"
-cat /tmp/ag-dashboard-api.log
 echo "---"
 
 npm --prefix packages/dashboard run dev &
