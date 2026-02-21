@@ -8,6 +8,8 @@ import { InftBridge } from "./inft-bridge.js";
 import { enrichScheduledDiscovery } from "./scheduled-enrichment-client.js";
 import { MessageType, now } from "../../agents/shared/types.js";
 import { parseUnits } from "ethers";
+import { normalizeDeployer } from "../../packages/sdk/db/report-types.js";
+import { generateAndStoreReport } from "./report-writer.js";
 
 /**
  * Orchestrator Agent — isolated implementation.
@@ -864,7 +866,7 @@ export class OrchestratorAgent {
 
   async handleDiscovery(msg) {
     await this.rosterBootstrapPromise.catch(() => { });
-    const { contractAddress, contractType, budget, riskScore, estimatedLOC } = msg.payload;
+    const { contractAddress, contractType, budget, riskScore, estimatedLOC, deployerAddress } = msg.payload;
     const classifierMetadata = this.extractClassifierMetadata(msg.payload || {});
     if (this.shouldDedupeDiscovery(contractAddress)) {
       this.log.info(`Discovery deduped for ${String(contractAddress).slice(0, 12)}…`);
@@ -1144,6 +1146,7 @@ export class OrchestratorAgent {
 
     this.setJobByKey(jobId, {
       contractAddress,
+      deployerAddress: normalizeDeployer(deployerAddress ?? ''),
       contractType,
       classifier: classifierMetadata,
       bidders: [],
@@ -1361,6 +1364,11 @@ export class OrchestratorAgent {
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);
     job.reportPublished = true;
     this.setJobByKey(key, job);
+
+    // Persist report to S3 + PostgreSQL
+    generateAndStoreReport(key, job, job.findings ?? [])
+      .then(() => this.log.info(`[ReportWriter] Saved report for job ${key}`))
+      .catch((err) => this.log.warn(`[ReportWriter] Failed for job ${key}: ${err.message}`));
 
     // Relay report publish to auditLog (ensures HCS has the hash)
     await this.hcs.publishAuditLog({
