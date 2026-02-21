@@ -18,9 +18,9 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/hedera-rpc/, '/api'),
       },
-      // Reports API — must be listed before /api so its prefix wins (first-match)
+      // Reports API — served by events-api on port 4000; listed before /api so its prefix wins
       '/api/reports': {
-        target: `http://localhost:${process.env.API_PORT ?? 3002}`,
+        target: 'http://localhost:4000',
         changeOrigin: true,
       },
       // Events API (packages/events-api — port 4000, started by npm run dev:all)

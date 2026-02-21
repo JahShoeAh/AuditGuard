@@ -14,7 +14,7 @@ import { formatReport, type Finding as ReportFinding } from "../shared/report-fo
 
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
-const REPORT_API_URL = process.env.REPORT_API_URL ?? "http://localhost:3002/api/reports";
+const REPORT_API_URL = process.env.REPORT_API_URL ?? "http://localhost:4000/api/reports";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const STRICT_LIVE = CONFIG.strictLive;
 const DIRECT_SETTLEMENT = process.env.REPORT_AGENT_DIRECT_SETTLEMENT === "true";
@@ -43,6 +43,8 @@ const jobFindings = new Map<string, {
   submissions: FindingsSubmittedEvent[];
   timer: ReturnType<typeof setTimeout> | null;
   agentAddresses: Map<string, string>; // agentId -> evmAddress
+  contractAddress?: string;
+  deployerAddress?: string;
 }>();
 
 let marketplaceReady = false;
@@ -131,12 +133,16 @@ async function main() {
   // Listen for findings from auditor agents
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
-      await hcs.publishAgentComms({
-        type: "PONG",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {},
-      });
+      try {
+        await hcs.publishAgentComms({
+          type: "PONG",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {},
+        });
+      } catch (err) {
+        log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 
@@ -161,6 +167,16 @@ async function main() {
 
     const job = jobFindings.get(jobId)!;
     job.submissions.push(submission);
+
+    // Capture contract metadata from first submission that includes it
+    // (agents include contractAddress/deployerAddress in their FINDINGS_SUBMITTED payloads)
+    const p = submission.payload as any;
+    if (!job.contractAddress && p.contractAddress) {
+      job.contractAddress = String(p.contractAddress);
+    }
+    if (!job.deployerAddress && p.deployerAddress) {
+      job.deployerAddress = String(p.deployerAddress);
+    }
 
     // Track agent EVM address for payment settlement
     if (evmAddress) {
@@ -391,7 +407,7 @@ async function aggregateAndPublish(
         mdContent: markdownContent,
         agentAddresses: Array.from(job.agentAddresses.values()),
         agentCount: agents.length,
-        findingCount: allFindings.length,
+        findingCount: totalFindings,
         findingsBySeverity: {
           critical: totalCritical,
           high:     totalHigh,
@@ -425,7 +441,7 @@ async function aggregateAndPublish(
       contentHash,
       deployer,
       agentCount: agents.length,
-      findingCount: allFindings.length,
+      findingCount: totalFindings,
     },
   });
   log.info(`[ReportAgent] Published REPORT_METADATA for job ${jobId}`);

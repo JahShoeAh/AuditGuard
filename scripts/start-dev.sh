@@ -1,6 +1,14 @@
 #!/bin/bash
 # scripts/start-dev.sh — starts all AuditGuard services for local development.
 
+# Load .env so all child processes inherit DATABASE_URL, keys, etc.
+if [[ -f .env ]]; then
+  set -a
+  source .env
+  set +a
+fi
+
+# Override with dev-specific values (win over .env)
 export APP_ENV=local
 export EVENT_RELAY_URL=http://localhost:4000/api/events
 
@@ -10,7 +18,8 @@ else
   export DEMO_MODE=true
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Append homebrew as fallback (don't override conda/nvm node)
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 
 cleanup() {
   echo ""
@@ -20,24 +29,18 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-# ── Events API (port 4000) — log to file so crashes are visible ──
-echo "[startup] Launching events-api..."
+echo "[startup] Launching events-api and dashboard-server..."
 (cd packages/events-api && exec node src/index.js) > /tmp/ag-events-api.log 2>&1 &
-
-# ── Dashboard API (port 3002) — log to file so crashes are visible ──
-echo "[startup] Launching dashboard-server..."
 (cd packages/dashboard && exec node server/index.js) > /tmp/ag-dashboard-api.log 2>&1 &
 
 sleep 1
 
-# Show if they started or crashed
 echo "[startup] events-api log:"
 cat /tmp/ag-events-api.log
 echo "[startup] dashboard-api log:"
 cat /tmp/ag-dashboard-api.log
 echo "---"
 
-# ── Core services ──
 npm --prefix packages/dashboard run dev &
 npm run orchestrator &
 npm run agents &

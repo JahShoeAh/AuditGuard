@@ -86,7 +86,9 @@ export async function saveReport(report) {
       md_content           = EXCLUDED.md_content,
       finding_count        = EXCLUDED.finding_count,
       findings_by_severity = EXCLUDED.findings_by_severity,
-      agent_count          = EXCLUDED.agent_count
+      agent_count          = EXCLUDED.agent_count,
+      contract_address     = COALESCE(NULLIF(EXCLUDED.contract_address, ''), audit_reports.contract_address),
+      deployer_address     = COALESCE(NULLIF(EXCLUDED.deployer_address, '0x0000000000000000000000000000000000000000'), audit_reports.deployer_address)
   `, [
     id,
     String(report.jobId),

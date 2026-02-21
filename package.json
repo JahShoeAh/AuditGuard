@@ -18,7 +18,7 @@
     "dev:all": "npm run stop:all && npm run preflight:live && npm run dev:all:unsafe",
     "dev:all:unsafe": "bash scripts/start-dev.sh",
     "dev:all:test": "npm run stop:all && npm run preflight:live && bash scripts/start-dev.sh --test",
-    "dev:backend": "bash -lc 'export APP_ENV=local EVENT_RELAY_URL=http://localhost:4000/api/events; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm --prefix packages/events-api run dev & npm --prefix packages/dashboard run server & wait'",
+    "dev:backend": "bash -lc 'export APP_ENV=local EVENT_RELAY_URL=http://localhost:4000/api/events; export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm --prefix packages/events-api run dev & npm --prefix packages/dashboard run server & wait'",
     "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|packages/dashboard run server|vite|events-api/src/index.js|events-api run dev|dashboard/server/index.js\" >/dev/null 2>&1 || true; sleep 2'",
     "start:all": "npm run dev:all",
     "start:all:unsafe": "npm run stop:all && npm run dev:all:unsafe",

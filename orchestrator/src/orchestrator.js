@@ -1387,6 +1387,12 @@ export class OrchestratorAgent {
     await this.settleAll(key, job, reportAgentAddress);
     await this.updateReputation(key, job.findings);
     await this.inft.markJobCompleted(key, null);
+
+    // Upsert the report now that findings are collected. This overwrites the
+    // partial row written at WinnersSelected time (which had 0 findings).
+    generateAndStoreReport(key, job, job.findings ?? [])
+      .then(() => this.log.info(`[ReportWriter] Updated report for job ${key} with findings`))
+      .catch((err) => this.log.warn(`[ReportWriter] Failed to update report for job ${key}: ${err.message}`));
   }
 
   async handleDataListing(msg) {
@@ -1728,6 +1734,7 @@ export class OrchestratorAgent {
     const invitePayload = {
       jobId,
       contractAddress: payload.contractAddress,
+      deployerAddress: payload.deployerAddress ?? "",
       contractType: payload.contractType,
       budget: payload.budget ?? CONFIG.payments.totalGuard,
       riskScore: payload.riskScore ?? payload.initialRiskScore ?? 0,

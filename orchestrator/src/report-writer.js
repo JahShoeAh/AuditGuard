@@ -22,8 +22,6 @@ import { saveReport, reportExists } from '../../packages/sdk/db/report-db.js';
  * @param {Array<{agentId:string, evmAddress?:string, findingsHash?:string, findingsCount?:number, criticalCount?:number}>} findings
  */
 export async function generateAndStoreReport(jobId, job, findings) {
-  if (await reportExists(jobId)) return;
-
   const mdContent   = formatMarkdown(jobId, job, findings);
   const contentHash = crypto.createHash('sha3-256').update(mdContent).digest('hex');
 
