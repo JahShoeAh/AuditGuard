@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import type { ContractType } from "../shared/types.js";
+import { inferBaselineContractType } from "./baseline-contract-type.js";
 
 type DefiCategory = ContractType;
 
@@ -94,8 +95,7 @@ let classifierModulesLoadError: string | null = null;
 let classifierModulesPromise: Promise<ClassifierModules> | null = null;
 
 function inferContractType(contract: MirrorContractLike): ContractType | "unknown" {
-  void contract;
-  return "unknown";
+  return inferBaselineContractType(contract);
 }
 
 function deriveRiskScore(contractAddress: string): number {
@@ -306,4 +306,3 @@ export async function getClassifierRuntimeStatus(): Promise<{
     startHealthLoop: (logger: ScannerLogger) => modules.startZgHealthCheckLoop(logger),
   };
 }
-
