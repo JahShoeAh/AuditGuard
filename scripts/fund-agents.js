@@ -44,7 +44,8 @@ async function fundAgents() {
   console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
   const guardTokenId = TokenId.fromString(config.guardTokenId);
-  const MIN_SOURCE_GUARD = 150;
+  const FUND_AMOUNT = parseInt(process.env.FUND_GUARD_AMOUNT || '500', 10);
+  const MIN_SOURCE_GUARD = FUND_AMOUNT * 2;
 
   const candidates = [];
   if (process.env.OPERATOR_ACCOUNT_ID && process.env.OPERATOR_PRIVATE_KEY) {
@@ -100,33 +101,72 @@ async function fundAgents() {
   console.log(`\nUsing source: ${sourceId.toString()}`);
   console.log(`GUARD Token:  ${guardTokenId.toString()}\n`);
 
-  // Agents to fund
   const agentsToFund = [
-    { name: 'static-analysis-047', accountId: '0.0.7951945', amount: 50 },
-    { name: 'llm-contextual-003', accountId: '0.0.7951947', amount: 100 },
+    { name: 'operator',              envPrefix: 'OPERATOR' },
+    { name: 'scanner-001',           envPrefix: 'SCANNER' },
+    { name: 'static-analysis-047',   envPrefix: 'STATIC' },
+    { name: 'fuzzer-012',            envPrefix: 'FUZZER' },
+    { name: 'llm-contextual-003',    envPrefix: 'LLM' },
+    { name: 'dependency-analyzer-008', envPrefix: 'DEPENDENCY' },
+    { name: 'report-aggregator-001', envPrefix: 'REPORT' },
+    { name: 'alert-sentinel-001',    envPrefix: 'ALERT' },
   ];
 
+  let funded = 0;
+  let skipped = 0;
+
   for (const agent of agentsToFund) {
-    console.log(`\n📤 Transferring ${agent.amount} GUARD to ${agent.name} (${agent.accountId})...`);
+    const accountIdStr = process.env[`${agent.envPrefix}_ACCOUNT_ID`];
+    if (!accountIdStr) {
+      console.log(`SKIP ${agent.name}: ${agent.envPrefix}_ACCOUNT_ID not set`);
+      skipped++;
+      continue;
+    }
+
+    if (accountIdStr === sourceId.toString()) {
+      console.log(`SKIP ${agent.name}: same as source account`);
+      skipped++;
+      continue;
+    }
+
+    const agentId = AccountId.fromString(accountIdStr);
+
+    let currentGuard = 0;
+    try {
+      const bal = await new AccountBalanceQuery().setAccountId(agentId).execute(client);
+      const tokenBal = bal.tokens.get(guardTokenId);
+      currentGuard = tokenBal ? fromTokenUnits(tokenBal.toNumber()) : 0;
+    } catch {
+      // Token not associated or query failed — will attempt transfer anyway.
+    }
+
+    if (currentGuard >= FUND_AMOUNT) {
+      console.log(`OK   ${agent.name} (${accountIdStr}): already has ${currentGuard.toFixed(2)} GUARD — skipping`);
+      skipped++;
+      continue;
+    }
+
+    const needed = FUND_AMOUNT - Math.floor(currentGuard);
+    console.log(`FUND ${agent.name} (${accountIdStr}): has ${currentGuard.toFixed(2)}, sending ${needed} GUARD...`);
 
     try {
-      const agentId = AccountId.fromString(agent.accountId);
-
       const transferTx = await new TransferTransaction()
-        .addTokenTransfer(guardTokenId, sourceId, -toTokenUnits(agent.amount))
-        .addTokenTransfer(guardTokenId, agentId, toTokenUnits(agent.amount))
+        .addTokenTransfer(guardTokenId, sourceId, -toTokenUnits(needed))
+        .addTokenTransfer(guardTokenId, agentId, toTokenUnits(needed))
         .freezeWith(client);
 
       const signed = await transferTx.sign(sourceKey);
       const submitted = await signed.execute(client);
-      const receipt = await submitted.getReceipt(client);
+      await submitted.getReceipt(client);
 
-      console.log(`✅ Successfully transferred ${agent.amount} GUARD to ${agent.name}`);
-      console.log(`   Transaction: ${submitted.transactionId.toString()}`);
+      console.log(`  -> transferred ${needed} GUARD (tx: ${submitted.transactionId.toString()})`);
+      funded++;
     } catch (err) {
-      console.error(`❌ Failed to transfer to ${agent.name}: ${err.message}`);
+      console.error(`  -> FAILED: ${err.message}`);
     }
   }
+
+  console.log(`\nResult: ${funded} funded, ${skipped} skipped`);
 
   console.log('\n╔═══════════════════════════════════════════════════════════════╗');
   console.log('║                       ✅ Funding Complete                      ║');
