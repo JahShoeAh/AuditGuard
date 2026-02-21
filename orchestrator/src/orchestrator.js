@@ -937,6 +937,106 @@ export class OrchestratorAgent {
     };
   }
 
+  normalizeOptionalText(value) {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    return trimmed;
+  }
+
+  isMissingReportMetadata(value) {
+    const normalized = this.normalizeOptionalText(value).toLowerCase();
+    if (!normalized) return true;
+    return (
+      normalized === "unknown" ||
+      normalized === "n/a" ||
+      normalized === "null" ||
+      normalized === "undefined" ||
+      normalized === "0x0000000000000000000000000000000000000000"
+    );
+  }
+
+  applyReportMetadataHints(job, payload = {}) {
+    if (!job || typeof job !== "object" || !payload || typeof payload !== "object") return false;
+    let changed = false;
+
+    const payloadContractAddress = this.normalizeAddress(payload.contractAddress);
+    if (payloadContractAddress && this.isMissingReportMetadata(job.contractAddress)) {
+      job.contractAddress = payloadContractAddress;
+      changed = true;
+    }
+
+    const rawDeployer = normalizeDeployer(payload.deployerAddress ?? "");
+    const deployerIsUseful =
+      !!rawDeployer && rawDeployer !== "0x0000000000000000000000000000000000000000";
+    if (deployerIsUseful && this.isMissingReportMetadata(job.deployerAddress)) {
+      job.deployerAddress = rawDeployer;
+      changed = true;
+    }
+
+    const payloadContractType = this.normalizeOptionalText(payload.contractType).toLowerCase();
+    if (payloadContractType && !this.isMissingReportMetadata(payloadContractType)) {
+      if (this.isMissingReportMetadata(job.contractType)) {
+        job.contractType = payloadContractType;
+        changed = true;
+      }
+    }
+
+    const payloadContractChain =
+      this.normalizeOptionalText(payload.contractChain) ||
+      this.normalizeOptionalText(payload.chain);
+    if (payloadContractChain && this.isMissingReportMetadata(job.contractChain)) {
+      job.contractChain = payloadContractChain;
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  async hydrateReportMetadataFromChain(jobId, job) {
+    if (!job || typeof job !== "object") return;
+
+    let changed = false;
+    if (Array.isArray(job.findings)) {
+      for (const finding of job.findings) {
+        changed = this.applyReportMetadataHints(job, finding ?? {}) || changed;
+      }
+    }
+
+    const needsChainLookup =
+      this.isMissingReportMetadata(job.contractAddress) ||
+      this.isMissingReportMetadata(job.contractType) ||
+      this.isMissingReportMetadata(job.contractChain) ||
+      (!Array.isArray(job.winners) || job.winners.length === 0);
+
+    if (needsChainLookup) {
+      const getJob =
+        this.contracts.getJob?.bind(this.contracts) ??
+        this.contracts.auction?.getJob?.bind(this.contracts.auction);
+      if (typeof getJob === "function") {
+        try {
+          const chainJob = await getJob(this.toChainJobId(jobId));
+          if (chainJob && typeof chainJob === "object") {
+            changed = this.applyReportMetadataHints(job, {
+              contractAddress: chainJob.contractAddress,
+              contractType: chainJob.contractType,
+              contractChain: chainJob.contractChain,
+            }) || changed;
+            const chainWinners = this.normalizeWinnerAddresses(chainJob.winningAgents);
+            if ((!Array.isArray(job.winners) || job.winners.length === 0) && chainWinners.length > 0) {
+              job.winners = chainWinners;
+              changed = true;
+            }
+          }
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          this.log.warn(`[Orchestrator] report metadata chain hydrate failed for job ${jobId}: ${reason}`);
+        }
+      }
+    }
+
+    if (changed) this.setJobByKey(jobId, job);
+  }
+
   hasOpenJobForContract(contractAddress) {
     const normalized = this.normalizeAddress(contractAddress).toLowerCase();
     if (!normalized) return false;
@@ -1698,21 +1798,39 @@ export class OrchestratorAgent {
   }
 
   async handleFindings(msg) {
-    const { jobId, findingsHash, evmAddress, findingsCount = 0, criticalCount = 0 } = msg.payload;
+    const payload = msg?.payload ?? {};
+    const {
+      jobId,
+      findingsHash,
+      evmAddress,
+      findingsCount = 0,
+      criticalCount = 0,
+    } = payload;
     this.log.info(`Findings submitted for job ${jobId}: ${findingsHash?.slice(0, 12)}…`);
 
     const key = this.normalizeJobId(jobId);
     const job = this.getJobByKey(key) ?? { findings: [], winners: [], bidders: [], reportPublished: false, settled: false };
+    this.applyReportMetadataHints(job, payload);
     const resolvedAddress =
       (typeof evmAddress === "string" && ethers.isAddress(evmAddress) ? evmAddress : undefined) ??
       this.roster.get(msg.agentId)?.evmAddress;
+    const findingContractAddress = this.normalizeAddress(payload.contractAddress);
+    const findingDeployerAddress = normalizeDeployer(payload.deployerAddress ?? "");
+    const findingContractType = this.normalizeOptionalText(payload.contractType).toLowerCase();
+    const findingContractChain =
+      this.normalizeOptionalText(payload.contractChain) ||
+      this.normalizeOptionalText(payload.chain);
 
     job.findings.push({
       agentId: msg.agentId,
       evmAddress: resolvedAddress,
       findingsHash,
       findingsCount,
-      criticalCount
+      criticalCount,
+      contractAddress: findingContractAddress || undefined,
+      deployerAddress: findingDeployerAddress || undefined,
+      contractType: findingContractType || undefined,
+      contractChain: findingContractChain || undefined,
     });
     this.setJobByKey(key, job);
 
@@ -1752,6 +1870,7 @@ export class OrchestratorAgent {
     const criticalFindings = Number(msg.payload?.criticalFindings ?? msg.payload?.criticalCount ?? 0);
     const key = this.normalizeJobId(jobId);
     const job = this.getJobByKey(key) ?? { findings: [], winners: [], reportPublished: false, settled: false };
+    await this.hydrateReportMetadataFromChain(key, job);
     if (job.reportPublished) return;
 
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);

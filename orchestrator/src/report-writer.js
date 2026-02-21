@@ -59,17 +59,70 @@ function extractTags(findings) {
   return [...tags];
 }
 
+function normalizeText(value) {
+  if (typeof value !== "string") return "";
+  return value.trim();
+}
+
+function isMissing(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  return (
+    !normalized ||
+    normalized === "unknown" ||
+    normalized === "n/a" ||
+    normalized === "null" ||
+    normalized === "undefined" ||
+    normalized === "0x0000000000000000000000000000000000000000"
+  );
+}
+
+function firstPresent(candidates) {
+  for (const candidate of candidates) {
+    const text = normalizeText(candidate);
+    if (!isMissing(text)) return text;
+  }
+  return "";
+}
+
+function resolveMetadata(job, findings) {
+  const safeFindings = Array.isArray(findings) ? findings : [];
+  const contractAddress = firstPresent([
+    job?.contractAddress,
+    ...safeFindings.map((finding) => finding?.contractAddress),
+  ]);
+  const deployerAddress = firstPresent([
+    job?.deployerAddress,
+    ...safeFindings.map((finding) => finding?.deployerAddress),
+  ]);
+  const contractType = firstPresent([
+    job?.contractType,
+    ...safeFindings.map((finding) => finding?.contractType),
+  ]);
+  const contractChain = firstPresent([
+    job?.contractChain,
+    ...safeFindings.map((finding) => finding?.contractChain),
+    "hedera-testnet",
+  ]);
+  return {
+    contractAddress: contractAddress || "unknown",
+    deployerAddress: deployerAddress || "unknown",
+    contractType: contractType || "unknown",
+    contractChain: contractChain || "hedera-testnet",
+  };
+}
+
 function formatMarkdown(jobId, job, findings) {
   const sev = calculateSeverity(findings);
   const total = totalFindings(findings);
   const agents = job.winners ?? [];
+  const metadata = resolveMetadata(job, findings);
   const reportDate = new Date().toISOString().split("T")[0];
 
   let md = `# Audit Report — Job #${jobId}\n\n`;
-  md += `**Contract:** \`${job.contractAddress ?? "unknown"}\`\n`;
-  md += `**Chain:** ${job.contractChain ?? "hedera-testnet"}\n`;
-  md += `**Deployer:** \`${job.deployerAddress ?? "unknown"}\`\n`;
-  md += `**Contract Type:** ${job.contractType ?? "unknown"}\n`;
+  md += `**Contract:** \`${metadata.contractAddress}\`\n`;
+  md += `**Chain:** ${metadata.contractChain}\n`;
+  md += `**Deployer:** \`${metadata.deployerAddress}\`\n`;
+  md += `**Contract Type:** ${metadata.contractType}\n`;
   md += `**Report Date:** ${reportDate}\n\n`;
 
   md += "## Executive Summary\n\n";
@@ -99,10 +152,8 @@ function formatMarkdown(jobId, job, findings) {
     md += "\n";
   }
 
-  md += "## Winning Agents\n\n";
-  if (agents.length === 0) {
-    md += "No winning agents recorded.\n\n";
-  } else {
+  if (agents.length > 0) {
+    md += "## Winning Agents\n\n";
     for (const addr of agents) {
       md += `- \`${addr}\`\n`;
     }
@@ -123,6 +174,7 @@ function formatMarkdown(jobId, job, findings) {
 export async function generateAndStoreReport(jobId, job, findings) {
   const safeFindings = Array.isArray(findings) ? findings : [];
   const hasFindings = safeFindings.length > 0;
+  const metadata = resolveMetadata(job, safeFindings);
 
   if (!hasFindings && (await reportExists(jobId))) {
     return;
@@ -134,11 +186,11 @@ export async function generateAndStoreReport(jobId, job, findings) {
   await saveReport({
     id: reportId(jobId),
     jobId: String(jobId),
-    contractAddress: normalizeDeployer(job.contractAddress ?? ""),
-    deployerAddress: normalizeDeployer(job.deployerAddress ?? ""),
+    contractAddress: normalizeDeployer(metadata.contractAddress),
+    deployerAddress: normalizeDeployer(metadata.deployerAddress),
     hederaAccountId: job.hederaAccountId ?? null,
-    chain: job.contractChain ?? "hedera-testnet",
-    contractType: job.contractType ?? "unknown",
+    chain: metadata.contractChain,
+    contractType: metadata.contractType,
     s3Key: "",
     contentHash,
     cid: job.cid ?? "",

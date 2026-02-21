@@ -173,9 +173,22 @@ export async function saveReport(report) {
       agent_addresses      = EXCLUDED.agent_addresses,
       tags                 = EXCLUDED.tags,
       source               = EXCLUDED.source,
-      contract_address     = COALESCE(NULLIF(EXCLUDED.contract_address, ''), audit_reports.contract_address),
+      contract_address     = COALESCE(
+        NULLIF(NULLIF(EXCLUDED.contract_address, ''), 'unknown'),
+        audit_reports.contract_address
+      ),
+      contract_type        = COALESCE(
+        NULLIF(NULLIF(EXCLUDED.contract_type, ''), 'unknown'),
+        audit_reports.contract_type
+      ),
       deployer_address     = COALESCE(
-        NULLIF(EXCLUDED.deployer_address, '0x0000000000000000000000000000000000000000'),
+        NULLIF(
+          NULLIF(
+            NULLIF(EXCLUDED.deployer_address, ''),
+            'unknown'
+          ),
+          '0x0000000000000000000000000000000000000000'
+        ),
         audit_reports.deployer_address
       )
   `, [
