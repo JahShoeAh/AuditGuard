@@ -71,7 +71,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@hashgraph/sdk": "^2.80.0",
     "@openzeppelin/contracts": "^5.4.0",
-    "evmdecoder": "^0.0.69"
+    "checkout": "^1.0.1",
+    "evmdecoder": "^0.0.69",
+    "git": "^0.1.5",
+    "main": "^1000.0.1"
   }
 }
