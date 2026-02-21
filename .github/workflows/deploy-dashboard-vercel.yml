@@ -40,18 +40,9 @@ jobs:
 
       - name: Create Vercel Build Output
         run: |
-          mkdir -p .vercel/output/static
-          cp -r dist/* .vercel/output/static/
-          cat > .vercel/output/config.json << 'CONF'
-          {
-            "version": 3,
-            "routes": [
-              { "handle": "filesystem" },
-              { "src": "/(.*)", "dest": "/index.html" }
-            ]
-          }
-          CONF
-        working-directory: packages/dashboard
+          mkdir -p packages/dashboard/.vercel/output/static
+          cp -r packages/dashboard/dist/* packages/dashboard/.vercel/output/static/
+          echo '{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)", "dest":"/index.html"}]}' > packages/dashboard/.vercel/output/config.json
 
       - name: Install Vercel CLI
         run: npm install -g vercel
