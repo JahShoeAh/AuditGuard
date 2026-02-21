@@ -1,3 +1,12 @@
+import Database from "better-sqlite3";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+const DB_PATH = process.env.EVENTS_DB_PATH || "data/events.db";
+
+let db;
+
+const MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   source TEXT NOT NULL,
@@ -40,3 +49,23 @@ CREATE INDEX IF NOT EXISTS idx_bid_skips_reason_code
 
 CREATE INDEX IF NOT EXISTS idx_bid_skips_agent_id
   ON bid_skips(agent_id);
+`;
+
+export function initDb() {
+  const dir = dirname(DB_PATH);
+  if (dir && dir !== "." && !existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  db = new Database(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.exec(MIGRATION_SQL);
+  console.log(`[events-api] SQLite database initialised at ${DB_PATH}`);
+  return db;
+}
+
+export function getDb() {
+  if (!db) {
+    throw new Error("Database not initialised. Call initDb() first.");
+  }
+  return db;
+}

@@ -2,19 +2,20 @@
 
 ## 1. Scope (Verified from this codebase)
 
-Container runtime starts `npm run dev:backend` and runs four long-running backend processes from `package.json`:
+Container runtime starts `npm run dev:backend` and runs five long-running backend processes from `package.json`:
 
 1. `npm run orchestrator`
 2. `npm run agents`
 3. `npm run inft:listen`
 4. `npm run inft:listen:events`
+5. `node packages/events-api/src/index.js` (Events API on port 4000)
 
 For full flow (scanner -> auction invite/bids -> findings -> report), the critical backend runtimes are:
 
 1. `orchestrator` (`orchestrator/src/orchestrator.js`)
 2. `agents` supervisor (`agents/run-all.ts`) which spawns scanner/static/fuzzer/llm/dependency/report/alert
 
-Cloudflare API ingestion is produced by:
+Events API ingestion is produced by:
 
 1. `agents/shared/hcs-client.ts` relay (`EVENT_RELAY_URL`, `EVENT_RELAY_TOKEN`)
 2. `orchestrator/src/hcs-client.js` relay (`EVENT_RELAY_URL`, `EVENT_RELAY_TOKEN`)
@@ -25,10 +26,11 @@ Dashboard reads those events from:
 
 ## 2. What this repository now includes
 
-1. `Dockerfile.devall` to containerize the backend workload (`dev:backend`).
+1. `Dockerfile.devall` to containerize the backend workload (`dev:backend`), including the Events API.
 2. `.dockerignore` to keep secrets/build context clean.
-3. `.github/workflows/ghcr-build-devall.yml` to build and push to GHCR.
-4. `scripts/ec2/run-devall-container.sh` to pull and run the image on EC2.
+3. `.github/workflows/ghcr-build-devall.yml` to build and push to GHCR, then deploy to EC2.
+4. `.github/workflows/deploy-dashboard-vercel.yml` to build and deploy the dashboard to Vercel.
+5. `scripts/ec2/run-devall-container.sh` to pull and run the image on EC2.
 
 ## 3. Prerequisites (no implicit assumptions)
 
@@ -37,6 +39,7 @@ Dashboard reads those events from:
 1. An EC2 instance with Docker installed and running.
 2. Security Group rules:
    1. SSH (`22`) from your admin IP.
+   2. TCP `4000` for Events API (restrict to Vercel IP ranges or use a reverse proxy for HTTPS).
 
 ### GitHub / GHCR
 
@@ -46,13 +49,21 @@ Dashboard reads those events from:
    1. Username: your GitHub username.
    2. Token: PAT with `read:packages` scope.
 
+### Vercel (frontend)
+
+1. Vercel project connected to the repo with root directory set to `packages/dashboard`.
+2. Framework preset: Vite. Build command and output directory configured via `packages/dashboard/vercel.json`.
+
 ### Runtime environment file on EC2
 
 Create an env file on EC2 (example path: `/opt/auditguard/.env`) containing the same working values you use locally for backend runtimes, including at least:
 
 1. Hedera/operator/agent credentials used by orchestrator + agents.
-2. `EVENT_RELAY_URL=https://<your-cloudflare-api-domain>/api/events`
-3. `EVENT_RELAY_TOKEN=<same INGEST_TOKEN configured in Cloudflare API Worker>`
+2. `EVENT_RELAY_URL=http://localhost:4000/api/events` (Events API runs in the same container)
+3. `EVENT_RELAY_TOKEN=<ingest token>`
+4. `EVENTS_API_PORT=4000`
+5. `EVENTS_API_INGEST_TOKEN=<same as EVENT_RELAY_TOKEN>`
+6. `EVENTS_API_FRONTEND_ORIGIN=https://<your-vercel-domain>` (CORS origin for dashboard)
 
 ## 4. Build and push to GHCR (GitHub Actions)
 
@@ -92,23 +103,25 @@ Set these repository secrets before relying on automatic deploy:
 2. On push to `main`, workflow automatically SSHes to EC2 and redeploys:
    1. Pulls image `ghcr.io/<owner>/<repo>-devall:sha-<commit>`.
    2. Stops/removes existing container.
-   3. Starts new container with `--env-file`.
+   3. Starts new container with `--env-file` and `-p 4000:4000`.
 
-## 5. Frontend CI/CD (Cloudflare)
+## 5. Frontend CI/CD (Vercel)
 
-Workflow file: `.github/workflows/deploy-dashboard-cloudflare.yml`
+Workflow file: `.github/workflows/deploy-dashboard-vercel.yml`
 
 ### 5.1 GitHub Secrets required for frontend CI/CD
 
-1. `CLOUDFLARE_API_TOKEN` - token with Workers deploy permissions.
-2. `CLOUDFLARE_ACCOUNT_ID` - target Cloudflare account ID.
+1. `VERCEL_TOKEN` - Vercel deployment token.
+2. `VERCEL_ORG_ID` - Vercel team/org ID.
+3. `VERCEL_PROJECT_ID` - Vercel project ID for dashboard.
+4. `VITE_EVENTS_API_BASE_URL` - EC2 events API URL (e.g. `https://api.auditguard.dev/api`).
 
 ### 5.2 Frontend deployment behavior
 
-1. On push to `main` with dashboard-related file changes, workflow:
+1. On push to `main` with dashboard/sdk/lockfile changes, workflow:
    1. Installs dependencies.
-   2. Builds dashboard.
-   3. Runs `npm --prefix packages/dashboard run deploy:cf`.
+   2. Builds dashboard with Vite environment variables.
+   3. Deploys to Vercel production via `amondnet/vercel-action`.
 
 ## 6. Run on EC2 (manual fallback)
 
@@ -126,16 +139,8 @@ Use the provided script:
 IMAGE="ghcr.io/<owner>/<repo>-devall:main" \
 ENV_FILE="/opt/auditguard/.env" \
 CONTAINER_NAME="auditguard-devall" \
-scripts/ec2/run-devall-container.sh
-```
-
-Optional: publish a port only if you intentionally expose one:
-
-```bash
-IMAGE="ghcr.io/<owner>/<repo>-devall:main" \
-ENV_FILE="/opt/auditguard/.env" \
-HOST_PORT="5173" \
-CONTAINER_PORT="5173" \
+HOST_PORT="4000" \
+CONTAINER_PORT="4000" \
 scripts/ec2/run-devall-container.sh
 ```
 
@@ -151,10 +156,12 @@ Then run:
 ```bash
 IMAGE="ghcr.io/<owner>/<repo>-devall:main" \
 ENV_FILE="/opt/auditguard/.env" \
+HOST_PORT="4000" \
+CONTAINER_PORT="4000" \
 ~/run-devall-container.sh
 ```
 
-## 7. Cloudflare integration checks
+## 7. Integration checks
 
 After container starts:
 
@@ -162,13 +169,14 @@ After container starts:
 ```bash
 docker logs -f auditguard-devall
 ```
-2. Confirm Cloudflare API receives events:
+2. Confirm Events API is responding:
 ```bash
-curl "https://<your-cloudflare-api-domain>/api/events?limit=20"
+curl "http://<ec2-host>:4000/api/health"
+curl "http://<ec2-host>:4000/api/events?limit=20"
 ```
-3. Open deployed frontend and validate feed/report updates:
+3. Open deployed Vercel frontend and validate feed/report updates:
 ```text
-https://<your-cloudflare-dashboard-domain>/
+https://<your-vercel-domain>/
 ```
 
 ## 8. Upgrade and rollback
@@ -184,9 +192,11 @@ https://<your-cloudflare-dashboard-domain>/
 
 ## 9. Operational notes
 
-1. This container does not run the dashboard frontend; frontend stays on Cloudflare.
-2. For production hardening later, split backend processes into separate services.
-3. Keep `EVENT_RELAY_TOKEN` rotated and never commit runtime `.env` files.
+1. This container does not run the dashboard frontend; frontend is deployed to Vercel.
+2. Events API runs inside the same container and stores data in SQLite at `data/events.db`.
+3. For production hardening later, split backend processes into separate services.
+4. Consider placing Caddy or nginx in front of port 4000 for HTTPS termination.
+5. Keep `EVENT_RELAY_TOKEN` rotated and never commit runtime `.env` files.
 
 ## 10. Official references
 
@@ -196,4 +206,4 @@ https://<your-cloudflare-dashboard-domain>/
 4. Publishing Docker images from GitHub Actions: https://docs.github.com/actions/publishing-packages/publishing-docker-images
 5. Docker Engine install on Ubuntu: https://docs.docker.com/engine/install/ubuntu/
 6. AWS EC2 security groups: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html
-7. Cloudflare Workers secrets (`wrangler secret`): https://developers.cloudflare.com/workers/configuration/secrets/
+7. Vercel CLI & deployment: https://vercel.com/docs/cli

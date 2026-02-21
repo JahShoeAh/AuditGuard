@@ -2,7 +2,7 @@
 
 Autonomous agent-based smart contract security audit marketplace built on Hedera Hashgraph.
 
-> Current build notes (2026-02-19): `AUCTION_INVITE` handling includes race-safe fallback context, agent `PING` -> `PONG` liveness is active, and `npm run dev:test` includes the dedicated agent invite suite.
+> Current build notes (2026-02-20): `AUCTION_INVITE` handling includes race-safe fallback context, agent `PING` -> `PONG` liveness is active, and `npm run dev:test` includes the dedicated agent invite suite.
 
 ## System Architecture
 
@@ -93,8 +93,8 @@ AuditGuard/
 ├── orchestrator/            # Central coordination service
 ├── packages/
 │   ├── contracts/           # 10 Solidity smart contracts (Hardhat)
-│   ├── dashboard/           # React observer dashboard (Vite)
-│   ├── cloudflare-api/      # Cloudflare Worker + D1 event persistence API
+│   ├── dashboard/           # React observer dashboard (Vite) — deployed to Vercel
+│   ├── events-api/          # Express + SQLite event persistence API — runs on EC2
 │   ├── inft/                # iNFT schemas, minting, state transitions
 │   └── sdk/                 # Shared config (deployed addresses, topic IDs)
 └── .env.example             # Required environment variables
@@ -124,16 +124,14 @@ npm run orchestrator
 npm --prefix packages/dashboard run dev
 ```
 
-## Cloudflare Integration
+## Deployment
 
-- Dashboard static deploy config: `packages/dashboard/wrangler.jsonc`
-- D1-backed events API: `packages/cloudflare-api`
-- Dashboard event source env: `VITE_EVENTS_API_BASE_URL` (default `/api`)
-- End-to-end setup guide: `docs/CLOUDFLARE_INTEGRATION_PLAN.md`
-- Docker + EC2 + GHCR backend runbook (`dev:backend`): `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
-- Frontend auto-deploy workflow: `.github/workflows/deploy-dashboard-cloudflare.yml`
+- **Frontend (Dashboard)**: Deployed to Vercel via `.github/workflows/deploy-dashboard-vercel.yml`
+- **Backend (Orchestrator + Agents + Events API)**: Deployed to AWS EC2 via Docker/GHCR, workflow: `.github/workflows/ghcr-build-devall.yml`
+- **Events API**: Runs inside the backend Docker container on port 4000 (Express + SQLite)
+- Full runbook: `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
 
-## Current Integration Items (as of February 18, 2026)
+## Current Integration Items (as of February 20, 2026)
 
 ### Integrated
 - Contract addresses, HCS topics, and iNFT collection IDs are centralized in `packages/sdk/config.json`.
@@ -141,6 +139,8 @@ npm --prefix packages/dashboard run dev
 - Orchestrator is wired for invites, heartbeat PING/PONG, findings intake, and report/alert flow.
 - iNFT discovery listener is wired to mint Audit Job and Contract Health iNFTs from discovery events.
 - Dashboard includes live-feed, agents, contracts, and analytics surfaces.
+- Events API migrated from Cloudflare Workers + D1 to Express + better-sqlite3 on EC2.
+- Dashboard deployment migrated from Cloudflare Workers to Vercel.
 
 ### In Progress / Needs Cleanup
 - Root contract test path is valid, but local execution still depends on environment key format and dependency state.
@@ -157,6 +157,7 @@ npm --prefix packages/dashboard run dev
 - **Smart Contracts**: Solidity 0.8.24 / Hardhat
 - **Agents**: TypeScript / Node.js / tsx
 - **Orchestrator**: JavaScript / ES Modules
-- **Dashboard**: React 18 / Vite / TailwindCSS / Zustand / Framer Motion
+- **Dashboard**: React 18 / Vite / TailwindCSS / Zustand / Framer Motion — hosted on Vercel
+- **Events API**: Express / better-sqlite3 — hosted on EC2
 - **iNFT**: 0g Labs DA layer for evolving NFT metadata
 - **Token**: GUARD (HTS fungible token, 8 decimals)

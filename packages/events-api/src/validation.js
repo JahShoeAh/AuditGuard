@@ -1,12 +1,10 @@
-import type { BidSkipExtract, EventIngestRequest } from "../types/events";
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value) =>
   typeof value === "object" && value !== null;
 
-const asString = (value: unknown): string | null =>
+const asString = (value) =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
-const asNumber = (value: unknown): number | null => {
+const asNumber = (value) => {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -19,7 +17,7 @@ const asNumber = (value: unknown): number | null => {
   return null;
 };
 
-export const parseEventIngestRequest = (value: unknown): EventIngestRequest | null => {
+export const parseEventIngestRequest = (value) => {
   if (!isRecord(value)) return null;
 
   const source = asString(value.source);
@@ -49,10 +47,7 @@ export const parseEventIngestRequest = (value: unknown): EventIngestRequest | nu
   };
 };
 
-export const parseBidSkipPayload = (
-  payload: Record<string, unknown>,
-  fallbackAgentId: string,
-): BidSkipExtract => {
+export const parseBidSkipPayload = (payload, fallbackAgentId) => {
   return {
     jobId: asNumber(payload.jobId),
     agentId: asString(payload.agentId) ?? fallbackAgentId,
@@ -63,11 +58,7 @@ export const parseBidSkipPayload = (
   };
 };
 
-export const parseLimit = (
-  value: string | null,
-  fallback: number,
-  max: number,
-): number => {
+export const parseLimit = (value, fallback, max) => {
   if (!value) return fallback;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return fallback;

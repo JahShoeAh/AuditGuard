@@ -97,4 +97,5 @@ jobs:
               --name "${CONTAINER_NAME}" \
               --restart unless-stopped \
               --env-file "${ENV_FILE}" \
+              -p 4000:4000 \
               "${IMAGE}"
