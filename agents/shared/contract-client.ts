@@ -278,6 +278,15 @@ export class ContractClient {
     this.auction.on("WinnersSelected", callback);
   }
 
+  /**
+   * Event: JobCancelled(uint256 jobId)
+   */
+  onJobCancelled(
+    callback: (jobId: bigint) => void
+  ): void {
+    this.auction.on("JobCancelled", callback);
+  }
+
   // ─── SubAuction Convenience Methods ────────────────────────────────────
 
   /**

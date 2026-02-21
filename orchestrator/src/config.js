@@ -34,6 +34,28 @@ function getEnv(name) {
   return trimmed.replace(/^['"]|['"]$/g, "");
 }
 
+function getPositiveIntEnv(name, fallback) {
+  const raw = getEnv(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+const winnerWaitMs = getPositiveIntEnv(
+  "ORCHESTRATOR_WINNER_WAIT_MS",
+  getPositiveIntEnv("ORCHESTRATOR_AUCTION_DURATION_MS", 120_000)
+);
+const minAuctionDurationMs = getPositiveIntEnv("ORCHESTRATOR_MIN_AUCTION_DURATION_MS", 30_000);
+const auctionDurationMs = Math.max(
+  getPositiveIntEnv("ORCHESTRATOR_AUCTION_DURATION_MS", winnerWaitMs),
+  minAuctionDurationMs
+);
+const bidFinalityGraceMs = getPositiveIntEnv("ORCHESTRATOR_BID_FINALITY_GRACE_MS", 10_000);
+const createRetryMaxAttempts = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_MAX_ATTEMPTS", 6);
+const createRetryBackoffMs = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_BACKOFF_MS", 500);
+const createRetryMaxBackoffMs = getPositiveIntEnv("ORCHESTRATOR_CREATE_RETRY_MAX_BACKOFF_MS", 10_000);
+
 export const CONFIG = {
   network: "testnet",
   strictLive: (process.env.STRICT_LIVE ?? String(strictLiveDefault)) === "true",
@@ -87,10 +109,18 @@ export const CONFIG = {
     premiumThreshold: 80,
   },
   timeouts: {
-    winnerWaitMs: 30_000,
+    winnerWaitMs,
+    auctionDurationMs,
+    bidFinalityGraceMs,
+    minAuctionDurationMs,
     findingsSlaMs: 90_000,
     pingIntervalMs: 45_000,
     livenessExpiryMs: 120_000,
+  },
+  createRetry: {
+    maxAttempts: createRetryMaxAttempts,
+    backoffMs: createRetryBackoffMs,
+    maxBackoffMs: createRetryMaxBackoffMs,
   },
   demoMode,
 };

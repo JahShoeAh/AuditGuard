@@ -1,0 +1,182 @@
+const path = require('path');
+const fs = require('fs');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+const {
+  Client,
+  AccountId,
+  PrivateKey,
+  TokenId,
+  TransferTransaction,
+  AccountBalanceQuery,
+  Hbar,
+} = require('@hashgraph/sdk');
+
+// Load config for GUARD token ID
+const configPath = path.join(__dirname, '..', 'packages', 'sdk', 'config.json');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+const GUARD_DECIMALS = 8;
+
+function toTokenUnits(guardAmount) {
+  return Math.floor(guardAmount * Math.pow(10, GUARD_DECIMALS));
+}
+
+function fromTokenUnits(units) {
+  return units / Math.pow(10, GUARD_DECIMALS);
+}
+
+function parsePrivateKey(rawKey, keyTypeHint = '') {
+  const key = String(rawKey || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!key) throw new Error('Private key is empty');
+  const normalizedHint = String(keyTypeHint || '').trim().toUpperCase();
+  const stripped = key.startsWith('0x') ? key.slice(2) : key;
+  const isHex32 = /^[0-9a-fA-F]{64}$/.test(stripped);
+  if (normalizedHint === 'ECDSA') return PrivateKey.fromStringECDSA(stripped);
+  if (normalizedHint === 'ED25519') return PrivateKey.fromStringED25519(stripped);
+  if (isHex32) return PrivateKey.fromStringECDSA(stripped);
+  return PrivateKey.fromString(key);
+}
+
+async function fundAgents() {
+  console.log('╔═══════════════════════════════════════════════════════════════╗');
+  console.log('║              Fund Unfunded Agents with GUARD                  ║');
+  console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+
+  const guardTokenId = TokenId.fromString(config.guardTokenId);
+  const FUND_AMOUNT = parseInt(process.env.FUND_GUARD_AMOUNT || '500', 10);
+  const MIN_SOURCE_GUARD = FUND_AMOUNT * 2;
+
+  const candidates = [];
+  if (process.env.OPERATOR_ACCOUNT_ID && process.env.OPERATOR_PRIVATE_KEY) {
+    candidates.push({
+      label: 'OPERATOR',
+      id: AccountId.fromString(process.env.OPERATOR_ACCOUNT_ID),
+      key: parsePrivateKey(process.env.OPERATOR_PRIVATE_KEY, process.env.OPERATOR_PRIVATE_KEY_TYPE || 'ECDSA'),
+    });
+  }
+  if (process.env.HEDERA_ACCOUNT_ID && process.env.HEDERA_PRIVATE_KEY) {
+    candidates.push({
+      label: 'HEDERA',
+      id: AccountId.fromString(process.env.HEDERA_ACCOUNT_ID),
+      key: parsePrivateKey(process.env.HEDERA_PRIVATE_KEY, process.env.HEDERA_PRIVATE_KEY_TYPE),
+    });
+  }
+  if (!candidates.length) {
+    console.error('No OPERATOR or HEDERA credentials found in .env');
+    process.exit(1);
+  }
+
+  let sourceId, sourceKey;
+  const probeClient = Client.forTestnet();
+
+  for (const c of candidates) {
+    probeClient.setOperator(c.id, c.key);
+    try {
+      const bal = await new AccountBalanceQuery().setAccountId(c.id).execute(probeClient);
+      const tokenBal = bal.tokens.get(guardTokenId);
+      const guard = tokenBal ? fromTokenUnits(tokenBal.toNumber()) : 0;
+      console.log(`${c.label} (${c.id}) balance: ${guard.toFixed(4)} GUARD`);
+      if (guard >= MIN_SOURCE_GUARD) {
+        sourceId = c.id;
+        sourceKey = c.key;
+        break;
+      }
+      console.log(`  -> insufficient (need ${MIN_SOURCE_GUARD}), trying next source...`);
+    } catch (err) {
+      console.log(`  -> error querying ${c.label}: ${err.message}`);
+    }
+  }
+  probeClient.close();
+
+  if (!sourceId) {
+    console.error(`\nNo source account has >= ${MIN_SOURCE_GUARD} GUARD. Fund one of them first.\n`);
+    process.exit(1);
+  }
+
+  const client = Client.forTestnet();
+  client.setOperator(sourceId, sourceKey);
+  client.setDefaultMaxTransactionFee(new Hbar(2));
+
+  console.log(`\nUsing source: ${sourceId.toString()}`);
+  console.log(`GUARD Token:  ${guardTokenId.toString()}\n`);
+
+  const agentsToFund = [
+    { name: 'operator',              envPrefix: 'OPERATOR' },
+    { name: 'scanner-001',           envPrefix: 'SCANNER' },
+    { name: 'static-analysis-047',   envPrefix: 'STATIC' },
+    { name: 'fuzzer-012',            envPrefix: 'FUZZER' },
+    { name: 'llm-contextual-003',    envPrefix: 'LLM' },
+    { name: 'dependency-analyzer-008', envPrefix: 'DEPENDENCY' },
+    { name: 'report-aggregator-001', envPrefix: 'REPORT' },
+    { name: 'alert-sentinel-001',    envPrefix: 'ALERT' },
+  ];
+
+  let funded = 0;
+  let skipped = 0;
+
+  for (const agent of agentsToFund) {
+    const accountIdStr = process.env[`${agent.envPrefix}_ACCOUNT_ID`];
+    if (!accountIdStr) {
+      console.log(`SKIP ${agent.name}: ${agent.envPrefix}_ACCOUNT_ID not set`);
+      skipped++;
+      continue;
+    }
+
+    if (accountIdStr === sourceId.toString()) {
+      console.log(`SKIP ${agent.name}: same as source account`);
+      skipped++;
+      continue;
+    }
+
+    const agentId = AccountId.fromString(accountIdStr);
+
+    let currentGuard = 0;
+    try {
+      const bal = await new AccountBalanceQuery().setAccountId(agentId).execute(client);
+      const tokenBal = bal.tokens.get(guardTokenId);
+      currentGuard = tokenBal ? fromTokenUnits(tokenBal.toNumber()) : 0;
+    } catch {
+      // Token not associated or query failed — will attempt transfer anyway.
+    }
+
+    if (currentGuard >= FUND_AMOUNT) {
+      console.log(`OK   ${agent.name} (${accountIdStr}): already has ${currentGuard.toFixed(2)} GUARD — skipping`);
+      skipped++;
+      continue;
+    }
+
+    const needed = FUND_AMOUNT - Math.floor(currentGuard);
+    console.log(`FUND ${agent.name} (${accountIdStr}): has ${currentGuard.toFixed(2)}, sending ${needed} GUARD...`);
+
+    try {
+      const transferTx = await new TransferTransaction()
+        .addTokenTransfer(guardTokenId, sourceId, -toTokenUnits(needed))
+        .addTokenTransfer(guardTokenId, agentId, toTokenUnits(needed))
+        .freezeWith(client);
+
+      const signed = await transferTx.sign(sourceKey);
+      const submitted = await signed.execute(client);
+      await submitted.getReceipt(client);
+
+      console.log(`  -> transferred ${needed} GUARD (tx: ${submitted.transactionId.toString()})`);
+      funded++;
+    } catch (err) {
+      console.error(`  -> FAILED: ${err.message}`);
+    }
+  }
+
+  console.log(`\nResult: ${funded} funded, ${skipped} skipped`);
+
+  console.log('\n╔═══════════════════════════════════════════════════════════════╗');
+  console.log('║                       ✅ Funding Complete                      ║');
+  console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+  console.log('Now run: npm run dev:all\n');
+
+  client.close();
+}
+
+fundAgents().catch(err => {
+  console.error('Fatal error:', err.message);
+  process.exit(1);
+});

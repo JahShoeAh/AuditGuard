@@ -84,7 +84,13 @@ export function loadConfig() {
 
 // ---------- c) createEthersProvider ----------
 export function createEthersProvider() {
-  const rpcUrl = import.meta.env.VITE_HEDERA_JSON_RPC || 'https://testnet.hashio.io/api';
+  // Use the Vite dev-server proxy (/hedera-rpc → https://testnet.hashio.io/api)
+  // to avoid the browser CORS restriction on direct hashio.io fetches.
+  // In production or when VITE_HEDERA_JSON_RPC is set explicitly, that value wins.
+  const defaultRpc = import.meta.env.DEV
+    ? `${window.location.origin}/hedera-rpc`
+    : 'https://testnet.hashio.io/api';
+  const rpcUrl = import.meta.env.VITE_HEDERA_JSON_RPC || defaultRpc;
   const provider = new JsonRpcProvider(rpcUrl);
   console.log(`[AuditGuard] Ethers provider connected to ${rpcUrl}`);
   return provider;

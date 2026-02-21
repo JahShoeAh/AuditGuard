@@ -72,6 +72,13 @@ describe("Cross-service event contract compatibility", () => {
           riskScore: 76,
           estimatedLOC: 1500,
           onChain: true,
+          classifier: {
+            riskSource: "0g",
+            riskModel: "qwen/qwen-2.5-7b-instruct",
+            topRiskFactors: ["reentrancy"],
+            evmType: "erc20",
+            isProxy: false,
+          },
         },
       },
       timestamp: "1700000000.100000000",
@@ -94,6 +101,13 @@ describe("Cross-service event contract compatibility", () => {
             "0x00000000000000000000000000000000000000aa",
             "0x00000000000000000000000000000000000000bb",
           ],
+          classifierHints: {
+            riskSource: "0g",
+            riskModel: "qwen/qwen-2.5-7b-instruct",
+            topRiskFactors: ["reentrancy"],
+            evmType: "erc20",
+            isProxy: false,
+          },
         },
       },
       timestamp: "1700000000.200000000",
@@ -138,6 +152,9 @@ describe("Cross-service event contract compatibility", () => {
       expect.objectContaining({
         jobId: "9001",
         contractAddress: "0x0000000000000000000000000000000000000a11",
+        classifier: expect.objectContaining({
+          riskSource: "0g",
+        }),
       })
     );
     expect(store.addJobBidStatus).toHaveBeenCalledWith(
@@ -230,7 +247,10 @@ describe("Cross-service event contract compatibility", () => {
         "34": [{ agentName: "static-analysis-047", bidAmount: 12.4 }],
       },
       winners: {
-        "34": { agents: ["0x00000000000000000000000000000000000000aa"] },
+        "34": {
+          agents: ["0x00000000000000000000000000000000000000aa"],
+          winnersAt: (nowSec * 1000) - 5_000,
+        },
       },
       activeJobIds: [33n, 34n],
       useMockEvents: false,

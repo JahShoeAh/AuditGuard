@@ -46,6 +46,8 @@ function formatEntry(entry) {
       detail = `LLM inference failed — Job #${entry.jobId || '?'} (${entry.reasonCode || '?'})`;
       break;
     case 'WinnersSelected':
+    case 'WINNERS_SELECTED':
+    case 'WINNER_SELECTED':
       detail = `Job #${entry.jobId} — ${entry.winnerCount || 0} winners`;
       break;
     case 'DATA_PURCHASED':
