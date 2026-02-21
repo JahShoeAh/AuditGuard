@@ -195,6 +195,50 @@ async function testDiscoveryDedupeSkipsDuplicate() {
   assert.ok(auditLogMessages.some((m) => m.type === "DISCOVERY_DEDUPED"), "dedupe telemetry should be emitted");
 }
 
+async function testDiscoveryNotBlockedByStaleRehydratedJob() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  roster.upsert({
+    agentId: "a1",
+    evmAddress: ADDR_AGENT_A,
+    stake: 50,
+    reputation: 80,
+    specializations: ["lending"],
+  });
+  const { hcs, contracts, agentCommsMessages } = makeMocks();
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+  // Simulate startup-rehydrated stale job (expired, no observed bids).
+  orch.setJobByKey("999", {
+    contractAddress: ADDR_JOB,
+    contractType: "lending",
+    bidders: [],
+    hcsBidCount: 0,
+    reportPublished: false,
+    settled: false,
+    cancelledOnChain: false,
+    terminalOnChain: false,
+    rehydratedForSelection: true,
+    auctionDeadlineSec: Math.floor(Date.now() / 1000) - 60,
+  });
+
+  await orch.handleDiscovery({
+    type: MessageType.CONTRACT_DISCOVERED,
+    agentId: "scanner",
+    timestamp: now(),
+    payload: {
+      contractAddress: ADDR_JOB,
+      contractType: "lending",
+      budget: 100,
+      riskScore: 65,
+      estimatedLOC: 1400,
+    },
+  });
+
+  const invites = agentCommsMessages.filter((m) => m.type === MessageType.AUCTION_INVITE);
+  assert.equal(invites.length, 1, "stale rehydrated jobs must not suppress fresh invites");
+}
+
 async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
   const previousRetries = process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
   process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = "1";
@@ -1181,6 +1225,7 @@ async function run() {
     ["discovery invites", testDiscoveryInvites],
     ["single invite batch per job", testSingleInviteBatchPerJob],
     ["discovery dedupe", testDiscoveryDedupeSkipsDuplicate],
+    ["discovery ignores stale rehydrated dedupe blockers", testDiscoveryNotBlockedByStaleRehydratedJob],
     ["invite filter fail-closed active check", testInviteFilterFailClosedOnUnavailableActiveCheck],
     ["invite summary telemetry", testInviteSummaryTelemetry],
     ["discovery invalid address rejected", testDiscoveryRejectsInvalidAddress],

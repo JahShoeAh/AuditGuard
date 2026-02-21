@@ -348,6 +348,7 @@ export class OrchestratorAgent {
         bidders: [],
         reportPublished: false,
         settled: false,
+        rehydratedForSelection: true,
         ...existingJob,
         contractAddress:
           existingJob.contractAddress ??
@@ -403,6 +404,7 @@ export class OrchestratorAgent {
       findings: [],
       reportPublished: false,
       settled: false,
+      rehydratedForSelection: true,
       auctionDeadlineSec: Number.isFinite(deadlineSec) && deadlineSec > 0
         ? Math.floor(deadlineSec)
         : null,
@@ -730,12 +732,29 @@ export class OrchestratorAgent {
   hasOpenJobForContract(contractAddress) {
     const normalized = this.normalizeAddress(contractAddress).toLowerCase();
     if (!normalized) return false;
+    const nowSec = Math.floor(Date.now() / 1000);
     for (const job of this.jobs.values()) {
       const jobAddress = this.normalizeAddress(job?.contractAddress).toLowerCase();
       if (!jobAddress || jobAddress !== normalized) continue;
       if (job?.reportPublished) continue;
       if (job?.cancelledOnChain) continue;
       if (job?.terminalOnChain) continue;
+      const isRehydratedForSelection = Boolean(job?.rehydratedForSelection);
+      const localBidCount = Array.isArray(job?.bidders) ? job.bidders.length : 0;
+      const observedHcsBids = Number(job?.hcsBidCount ?? 0);
+      const deadlineSec = Number(job?.auctionDeadlineSec ?? 0);
+      const deadlineKnownAndExpired = Number.isFinite(deadlineSec) && deadlineSec > 0
+        ? deadlineSec <= nowSec
+        : false;
+      // Startup-rehydrated stale/no-bid jobs should not suppress fresh discoveries.
+      if (
+        isRehydratedForSelection &&
+        deadlineKnownAndExpired &&
+        localBidCount <= 0 &&
+        observedHcsBids <= 0
+      ) {
+        continue;
+      }
       return true;
     }
     return false;
