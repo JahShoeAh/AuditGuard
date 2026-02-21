@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildAuctionRows } from "../hooks/useAuctionData";
 
 describe("buildAuctionRows", () => {
-  it("strict live mode keeps only active, non-expired jobs with valid deadlines", () => {
+  it("strict live mode keeps winner-selected jobs visible even after deadline", () => {
     const nowSec = 1_700_000_000;
     const rows = buildAuctionRows({
       activeJobs: {
@@ -20,7 +20,7 @@ describe("buildAuctionRows", () => {
       nowSec,
     });
 
-    expect(rows.map((r) => r.job.jobId)).toEqual(["4", "1"]);
+    expect(rows.map((r) => r.job.jobId)).toEqual(["2", "4", "1"]);
   });
 
   it("strict live mode excludes jobs missing from on-chain active ids", () => {
@@ -63,6 +63,29 @@ describe("buildAuctionRows", () => {
     });
 
     expect(rows).toEqual([]);
+  });
+
+  it("strict live mode keeps expired jobs if winners exist even when active-id poll is behind", () => {
+    const nowSec = 1_700_000_000;
+    const rows = buildAuctionRows({
+      activeJobs: {
+        "42": {
+          jobId: "42",
+          contractType: "bridge",
+          auctionDeadline: nowSec - 5,
+          postedAt: (nowSec * 1000) - 120_000,
+        },
+      },
+      bids: {},
+      winners: {
+        "42": { agents: ["0xabc"] },
+      },
+      activeJobIds: [],
+      useMockEvents: false,
+      nowSec,
+    });
+
+    expect(rows.map((r) => r.job.jobId)).toEqual(["42"]);
   });
 
   it("mock mode keeps permissive behavior for local/demo streams", () => {

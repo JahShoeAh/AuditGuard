@@ -85,6 +85,9 @@ export function buildAuctionRows({
       }
       return false;
     }
+    // Preserve winner visibility after deadline so users can see who won
+    // before terminal cleanup removes the card from the live list.
+    if (winners?.[jobId]) return true;
     if (!deadlineSec) return false;
     if (deadlineSec <= nowSec) return false;
     if (activeIds.has(jobId)) return true;
