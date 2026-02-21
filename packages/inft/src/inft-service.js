@@ -1339,12 +1339,13 @@ class INFTService {
   }
 
   /**
-   * Build canonical audit log message envelope for HCS and relay ingestion.
+   * Build a canonical audit-log envelope compatible with Events API relay
+   * while preserving legacy `source` and `data` keys for older consumers.
    *
    * @param {string} eventType
    * @param {object} payload
    * @param {number} [timestamp]
-   * @returns {{type: string, agentId: string, timestamp: number, payload: object, data: object}}
+   * @returns {{type: string, agentId: string, timestamp: number, payload: object, source: string, data: object}}
    */
   _buildAuditLogMessage(eventType, payload, timestamp = Date.now()) {
     const normalizedPayload =
@@ -1356,16 +1357,17 @@ class INFTService {
       agentId: "inft-service",
       timestamp,
       payload: normalizedPayload,
-      // Backward-compatibility for older consumers still reading `data`.
+      source: "inft-service",
+      // Backward compatibility for consumers reading `data`.
       data: normalizedPayload,
     };
   }
 
   /**
-   * Best-effort event relay publish. HCS remains authoritative.
+   * Best-effort publish to Events API relay. HCS remains authoritative.
    *
    * @param {string} topicId
-   * @param {object} message
+   * @param {{type?: string}} message
    * @returns {Promise<boolean>}
    */
   async _relayAuditLogEvent(topicId, message) {

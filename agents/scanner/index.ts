@@ -20,11 +20,7 @@ const AGENT_ID = "scanner-001";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const TEST_MODE = process.env.TEST_MODE === "true";
 const STRICT_LIVE = CONFIG.strictLive;
-const DEFAULT_SCAN_INTERVAL_MS = 15_000;
-const DEFAULT_SCAN_INTERVAL_DEMO_MS = 30_000;
-const SCAN_INTERVAL_MS = DEMO_MODE
-  ? parsePositiveIntEnv(process.env.SCANNER_SCAN_INTERVAL_DEMO_MS, DEFAULT_SCAN_INTERVAL_DEMO_MS)
-  : parsePositiveIntEnv(process.env.SCANNER_SCAN_INTERVAL_MS, DEFAULT_SCAN_INTERVAL_MS);
+const SCAN_INTERVAL_MS = DEMO_MODE ? 30 * 1000 : 300 * 1000; // 30s demo, 5m prod
 const HOT_LEAD_RISK_THRESHOLD = 80;
 const HOT_LEAD_PRICE = ethers.parseUnits("0.1", 8);   // 0.1 GUARD
 const HOT_LEAD_DELAY_MS = DEMO_MODE ? 10 * 1000 : 60 * 1000; // delay before public
@@ -146,12 +142,6 @@ function parseCsvList(raw: string | undefined, fallback: string[]): string[] {
     .map((value) => value.trim())
     .filter(Boolean);
   return values.length > 0 ? values : fallback;
-}
-
-function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
 }
 
 function resolveScannerClassifierPipelineEnabled(opts: {
