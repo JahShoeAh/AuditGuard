@@ -14,7 +14,6 @@ import {
 } from "../shared/index.js";
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
-import { inferBaselineContractType } from "./baseline-contract-type.js";
 
 // ---- Config ----
 const AGENT_ID = "scanner-001";
@@ -291,8 +290,9 @@ function estimateLoc(c: MirrorContract): number {
 }
 
 function inferContractType(c: MirrorContract): ContractType {
-  const inferred = inferBaselineContractType({ bytecode: c.bytecode });
-  return inferred === "unknown" ? "lending" : inferred;
+  // Baseline path remains intentionally conservative; downstream agents refine type.
+  void c;
+  return "unknown";
 }
 
 function deriveRiskScore(contractAddress: string): number {
