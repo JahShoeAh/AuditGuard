@@ -1,0 +1,48 @@
+name: Deploy Dashboard to Vercel
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/dashboard/**"
+      - "packages/sdk/**"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Build dashboard
+        run: npm --prefix packages/dashboard run build
+        env:
+          VITE_EVENTS_API_BASE_URL: ${{ secrets.VITE_EVENTS_API_BASE_URL }}
+          VITE_HEDERA_NETWORK: testnet
+          VITE_HEDERA_JSON_RPC: https://testnet.hashio.io/api
+          VITE_HEDERA_MIRROR_NODE: https://testnet.mirrornode.hedera.com
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: packages/dashboard
+          vercel-args: "--prod"
