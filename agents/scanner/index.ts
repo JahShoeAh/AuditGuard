@@ -3,8 +3,6 @@ import {
   ContractClient,
   ListingCategory,
   normalizeBidFailureReasonCode,
-  ensureOperationalHbar,
-  getHbarTopUpConfig,
   createAgentLogger,
   createAgentWallet,
   CONFIG,
@@ -17,7 +15,6 @@ import {
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
 import { inferBaselineContractType } from "./baseline-contract-type.js";
-import { fetchRuntimeBytecode } from "./source-retriever.js";
 
 // ---- Config ----
 const AGENT_ID = "scanner-001";
@@ -64,19 +61,14 @@ const SCANNER_CLASSIFIER_PIPELINE = resolveScannerClassifierPipelineEnabled({
   demoMode: DEMO_MODE,
   testMode: TEST_MODE,
 });
-const RUNTIME_BYTECODE_CACHE_MAX = parsePositiveIntEnv(
-  process.env.SCANNER_RUNTIME_BYTECODE_CACHE_MAX,
-  1024
-);
 
 const log = createAgentLogger(AGENT_ID, "scanner");
 
 type DefiCategory = Exclude<ContractType, "unknown">;
-type RawDefiCategory = DefiCategory | "nft" | "unknown";
 
 type ClassificationResult = {
   evmType: string;
-  defiCategory: RawDefiCategory;
+  defiCategory: DefiCategory;
   standards: string[];
   isContract: boolean;
   contractName: string | null;
@@ -113,8 +105,7 @@ type ClassifierModules = {
   classifyContract: (contractAddress: string) => Promise<ClassificationResult>;
   retrieveContractSource: (
     contractAddress: string,
-    rpcUrl: string,
-    knownBytecode?: string
+    rpcUrl: string
   ) => Promise<SourceRetrievalResult>;
   assessRisk: (
     ctx: RiskPromptContext,
@@ -189,7 +180,6 @@ type MirrorContract = {
 
 const seenContracts = new Set<string>();
 let lastSeenTimestamp: string | null = makeInitialTimestamp();
-const runtimeBytecodeCache = new Map<string, string>();
 
 // Round-robin index for test contract selection.
 let _testContractIndex = 0;
@@ -290,45 +280,6 @@ function extractCreatedTimestamp(c: MirrorContract): string | null {
   return c.created_timestamp ?? c.timestamp?.from ?? null;
 }
 
-function rememberRuntimeBytecode(contractAddress: string, bytecode: string): void {
-  if (!contractAddress || !bytecode || bytecode === "0x") return;
-  runtimeBytecodeCache.set(contractAddress.toLowerCase(), bytecode);
-  if (runtimeBytecodeCache.size <= RUNTIME_BYTECODE_CACHE_MAX) return;
-
-  const oldest = runtimeBytecodeCache.keys().next().value;
-  if (oldest) runtimeBytecodeCache.delete(oldest);
-}
-
-async function hydrateRuntimeBytecode(
-  contractAddress: string,
-  contract: MirrorContract
-): Promise<MirrorContract> {
-  const existingBytecode = typeof contract.bytecode === "string" ? contract.bytecode : "";
-  if (existingBytecode.startsWith("0x") && existingBytecode.length > 2) {
-    rememberRuntimeBytecode(contractAddress, existingBytecode.toLowerCase());
-    return contract;
-  }
-
-  const cached = runtimeBytecodeCache.get(contractAddress.toLowerCase());
-  if (cached && cached !== "0x") {
-    return { ...contract, bytecode: cached };
-  }
-
-  const rpcUrl =
-    process.env.SCANNER_EVM_RPC_URL ||
-    process.env.HEDERA_JSON_RPC_URL ||
-    "https://testnet.hashio.io/api";
-
-  const bytecode = await fetchRuntimeBytecode(contractAddress, {
-    mirrorNodeBaseUrl: MIRROR_NODE,
-    rpcUrl,
-  });
-
-  if (!bytecode || bytecode === "0x") return contract;
-  rememberRuntimeBytecode(contractAddress, bytecode);
-  return { ...contract, bytecode };
-}
-
 
 function estimateLoc(c: MirrorContract): number {
   const bytecode = typeof c.bytecode === "string" ? c.bytecode : "";
@@ -341,22 +292,7 @@ function estimateLoc(c: MirrorContract): number {
 
 function inferContractType(c: MirrorContract): ContractType {
   const inferred = inferBaselineContractType({ bytecode: c.bytecode });
-  return inferred === "unknown" ? "vault" : inferred;
-}
-
-function normalizeDefiCategory(category: RawDefiCategory): DefiCategory {
-  switch (category) {
-    case "lending":
-    case "dex":
-    case "staking":
-    case "bridge":
-    case "vault":
-      return category;
-    case "nft":
-    case "unknown":
-    default:
-      return "vault";
-  }
+  return inferred === "unknown" ? "lending" : inferred;
 }
 
 function deriveRiskScore(contractAddress: string): number {
@@ -410,8 +346,7 @@ async function loadClassifierModules(): Promise<ClassifierModules> {
 }
 
 async function classifyAndAssessRisk(
-  contractAddress: string,
-  contract: MirrorContract
+  contractAddress: string
 ): Promise<{
   contractType: ContractType;
   riskScore: number;
@@ -426,14 +361,13 @@ async function classifyAndAssessRisk(
     log.warn(`classifier_pipeline_unavailable: evmdecoder classification failed for ${contractAddress}: ${err}`);
     classification = {
       evmType: "unknown",
-      defiCategory: "vault",
+      defiCategory: "lending",
       standards: [],
       isContract: true,
       contractName: null,
       proxyTarget: null,
     };
   }
-  const normalizedCategory = normalizeDefiCategory(classification.defiCategory);
 
   const rpcUrl =
     process.env.SCANNER_EVM_RPC_URL ||
@@ -447,12 +381,7 @@ async function classifyAndAssessRisk(
     bytecode: "0x",
   };
   try {
-    sourceResult = await modules.retrieveContractSource(
-      contractAddress,
-      rpcUrl,
-      typeof contract.bytecode === "string" ? contract.bytecode : undefined
-    );
-    rememberRuntimeBytecode(contractAddress, sourceResult.bytecode);
+    sourceResult = await modules.retrieveContractSource(contractAddress, rpcUrl);
   } catch (err) {
     log.warn(`classifier_pipeline_unavailable: source retrieval failed for ${contractAddress}: ${err}`);
   }
@@ -460,7 +389,7 @@ async function classifyAndAssessRisk(
   const estimatedLOC = estimateLoc({ bytecode: sourceResult.bytecode } as MirrorContract);
   const riskCtx: RiskPromptContext = {
     contractAddress,
-    defiCategory: normalizedCategory,
+    defiCategory: classification.defiCategory,
     evmType: classification.evmType,
     standards: classification.standards,
     estimatedLOC,
@@ -486,7 +415,7 @@ async function classifyAndAssessRisk(
 
   const blended = modules.blendRiskScore({
     llmRisk,
-    defiCategory: normalizedCategory,
+    defiCategory: classification.defiCategory,
     bytecodeHex: sourceResult.bytecode,
     estimatedLOC,
     isProxy: classification.proxyTarget !== null,
@@ -494,7 +423,7 @@ async function classifyAndAssessRisk(
   });
 
   return {
-    contractType: normalizedCategory,
+    contractType: classification.defiCategory,
     riskScore: blended.finalScore,
     enrichedPayload: {
       evmType: classification.evmType,
@@ -519,7 +448,7 @@ async function resolveDiscoveryClassification(contractAddress: string, contract:
     return baselineClassification(contractAddress, contract);
   }
   try {
-    return await classifyAndAssessRisk(contractAddress, contract);
+    return await classifyAndAssessRisk(contractAddress);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (classifierModulesLoadError !== message) {
@@ -539,8 +468,7 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
     source: 'hedera-mirror',
   });
 
-  const hydratedContract = await hydrateRuntimeBytecode(contractAddress, contract);
-  const classification = await resolveDiscoveryClassification(contractAddress, hydratedContract);
+  const classification = await resolveDiscoveryClassification(contractAddress, contract);
   log.info(
     `Classified ${contractAddress.slice(0, 12)}.. type=${classification.contractType} ` +
     `risk=${classification.riskScore}` +
@@ -555,7 +483,7 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
       contractAddress,
       chain: 'hedera-testnet',
       deployerAddress: ZERO_ADDRESS,
-      estimatedLOC: estimateLoc(hydratedContract),
+      estimatedLOC: estimateLoc(contract),
       contractType: classification.contractType,
       riskScore: classification.riskScore,
       budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
@@ -663,42 +591,6 @@ async function main() {
   let hotLeadListingEnabled = true;
   let payerBalanceExhausted = false;
 
-  async function ensureScannerPayerOperational(requiredWei: bigint, phase: string): Promise<boolean> {
-    try {
-      const payerReady = await ensureOperationalHbar({
-        contracts,
-        recipientAddress: wallet.evmAddress,
-        requiredWei,
-        logger: log,
-      });
-      if (!payerReady.ok) {
-        log.warn(
-          `${phase}: ${payerReady.reason ?? "Insufficient payer HBAR for transaction fees"} ` +
-          `(reasonCode=${payerReady.reasonCode ?? "insufficient_payer_hbar"})`
-        );
-        return false;
-      }
-      if (payerReady.toppedUpWei > 0n) {
-        log.info(`Auto top-up applied for scanner payer: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`);
-      }
-      return true;
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      log.warn(`${phase}: scanner payer preflight failed: ${error}`);
-      return false;
-    }
-  }
-
-  async function attemptScannerPayerRecovery(phase: string): Promise<boolean> {
-    const topUpConfig = getHbarTopUpConfig();
-    const recovered = await ensureScannerPayerOperational(topUpConfig.targetWei, phase);
-    if (recovered) {
-      payerBalanceExhausted = false;
-      log.info(`Recovered scanner payer HBAR for ${phase}; resuming scan flow`);
-    }
-    return recovered;
-  }
-
   async function publishAuditLogSafe(message: any): Promise<boolean> {
     try {
       await hcs.publishAuditLog(message);
@@ -723,22 +615,6 @@ async function main() {
       log.error(`Discovery publish failed: ${err}`);
       return false;
     }
-  }
-
-  if (!DEMO_MODE && !TEST_MODE) {
-    const topUpConfig = getHbarTopUpConfig();
-    log.info(
-      `Payer HBAR auto-top-up: ${topUpConfig.enabled ? "enabled" : "disabled"} ` +
-      `(donors=${topUpConfig.donorsConfigured}, min=${ethers.formatEther(topUpConfig.minRequiredWei)} HBAR, ` +
-      `target=${ethers.formatEther(topUpConfig.targetWei)} HBAR)`
-    );
-    if (topUpConfig.donorAddressesMasked.length > 0) {
-      log.info(`HBAR donors: ${topUpConfig.donorAddressesMasked.join(", ")}`);
-    }
-    if (topUpConfig.donorWarning) {
-      log.warn(`HBAR auto-top-up config: ${topUpConfig.donorWarning}`);
-    }
-    await ensureScannerPayerOperational(topUpConfig.targetWei, "Startup preflight");
   }
 
   log.info(`Wallet: ${wallet.evmAddress}`);
@@ -954,7 +830,6 @@ async function main() {
       const publishedDiscovery = await publishDiscoverySafe(discovery);
       if (!publishedDiscovery) {
         if (payerBalanceExhausted) {
-          await attemptScannerPayerRecovery("mock discovery publish");
           log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for HCS publishes");
         }
         return;
@@ -971,7 +846,6 @@ async function main() {
         },
       });
       if (!auctionLogPublished && payerBalanceExhausted) {
-        await attemptScannerPayerRecovery("mock audit log publish");
         log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for auditLog publishes");
         return;
       }
@@ -981,15 +855,6 @@ async function main() {
       );
       log.info(`Next scan in ${SCAN_INTERVAL_MS / 1000}s...`);
       return;
-    }
-
-    if (!DEMO_MODE && !TEST_MODE) {
-      const topUpConfig = getHbarTopUpConfig();
-      const payerReady = await ensureScannerPayerOperational(
-        topUpConfig.minRequiredWei,
-        "Scan cycle preflight"
-      );
-      if (!payerReady) return;
     }
 
     let discoveredContracts: MirrorContract[] = [];
@@ -1106,8 +971,6 @@ async function main() {
       const publishedDiscovery = await publishDiscoverySafe(discovery);
       if (!publishedDiscovery) {
         if (payerBalanceExhausted) {
-          const recovered = await attemptScannerPayerRecovery("discovery publish");
-          if (recovered) continue;
           log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for HCS publishes");
           break;
         }

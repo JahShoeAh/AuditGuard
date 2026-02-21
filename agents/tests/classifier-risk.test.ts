@@ -274,13 +274,13 @@ describe("contract-classifier.ts", () => {
     expect(mockInitializeFn).toHaveBeenCalledOnce();
   });
 
-  it("returns EOA result with defiCategory=vault when isContract=false", async () => {
+  it("returns EOA result with defiCategory=lending when isContract=false", async () => {
     mockContractInfoFn.mockResolvedValue({ isContract: false });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "1".repeat(40));
     expect(result.isContract).toBe(false);
     expect(result.evmType).toBe("EOA");
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("lending");
     expect(result.standards).toEqual([]);
   });
 
@@ -314,27 +314,27 @@ describe("contract-classifier.ts", () => {
     expect(result.defiCategory).toBe("vault");
   });
 
-  it("maps ERC721 standard → nft", async () => {
+  it("maps ERC721 standard → vault", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "NFT", standards: ["ERC721"] },
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "5".repeat(40));
-    expect(result.defiCategory).toBe("nft");
+    expect(result.defiCategory).toBe("vault");
   });
 
-  it("maps ERC1155 standard → nft", async () => {
+  it("maps ERC1155 standard → vault", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "NFT", standards: ["ERC1155"] },
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "6".repeat(40));
-    expect(result.defiCategory).toBe("nft");
+    expect(result.defiCategory).toBe("vault");
   });
 
-  it("ignores bytecode selector hints in contractInfo path → vault", async () => {
+  it("uses DEX function selector in bytecode → dex", async () => {
     // 0x38ed1739 = swapExactTokensForTokens
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -343,10 +343,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "7".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("dex");
   });
 
-  it("ignores staking selector hints in contractInfo path → vault", async () => {
+  it("uses staking function selector in bytecode → staking", async () => {
     // 0xa694fc3a = stake
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -355,10 +355,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "8".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("staking");
   });
 
-  it("ignores bridge selector hints in contractInfo path → vault", async () => {
+  it("uses bridge function selector in bytecode → bridge", async () => {
     // 0x0f5287b0 = bridgeOut
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -367,10 +367,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "9".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("bridge");
   });
 
-  it("defaults to vault when no standards, no selectors, unknown evmType", async () => {
+  it("defaults to lending when no standards, no selectors, unknown evmType", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "unknown", standards: [] },
@@ -378,7 +378,7 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "f".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("lending");
   });
 
   it("extracts proxyTarget from last proxy entry", async () => {
