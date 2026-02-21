@@ -68,13 +68,28 @@ function getZgTimeoutMs(): number {
 }
 
 function resolveClaudeHaikuModel(log?: { warn: (msg: string) => void }): string {
-  const fallback = "claude-3-5-haiku-latest";
+  const fallback = "claude-haiku-4-5-20251001";
   const configured = String(
     process.env.CLAUDE_HAIKU_MODEL ??
     process.env.CLAUDE_RISK_MODEL ??
     fallback
   ).trim();
   const normalized = configured.toLowerCase();
+  const retiredHaikuModels = new Set([
+    "claude-3-5-haiku-latest",
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+  ]);
+  if (retiredHaikuModels.has(normalized)) {
+    if (!loggedClaudeHaikuOverride && log) {
+      log.warn(
+        `Claude model override: configured '${configured}' is retired. ` +
+        `Forcing '${fallback}'.`
+      );
+      loggedClaudeHaikuOverride = true;
+    }
+    return fallback;
+  }
   if (normalized.includes("haiku")) return configured;
 
   if (!loggedClaudeHaikuOverride && log) {

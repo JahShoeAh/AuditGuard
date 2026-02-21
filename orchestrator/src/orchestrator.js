@@ -412,6 +412,366 @@ export class OrchestratorAgent {
     return true;
   }
 
+  async publishWinnerSelectionTiming(jobId, details = {}) {
+    const key = this.normalizeJobId(jobId);
+    await this.hcs.publishAuditLog({
+      type: "WINNER_SELECTION_TIMING",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId: key,
+        deadlineSec: details.deadlineSec ?? null,
+        graceMs: details.graceMs ?? null,
+        scheduledAt: details.scheduledAt ?? null,
+        selectStartedAt: details.selectStartedAt ?? null,
+        txSentAt: details.txSentAt ?? null,
+        receiptAt: details.receiptAt ?? null,
+        closeToReceiptMs: details.closeToReceiptMs ?? null,
+        path: details.path ?? "unknown",
+        attempts: details.attempts ?? 0,
+        result: details.result ?? "unknown",
+        error: details.error ?? null,
+        priorityUsed: details.priorityUsed ?? "normal",
+        deadlineReached: details.deadlineReached ?? null,
+        onChainBidCount: details.onChainBidCount ?? null,
+        suppressedReason: details.suppressedReason ?? null,
+      },
+    }).catch(() => {});
+  }
+
+  clearWinnerSelectionTimer(jobId) {
+    const key = this.normalizeJobId(jobId);
+    const timer = this.winnerSelectionTimers.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.winnerSelectionTimers.delete(key);
+  }
+
+  scheduleWinnerSelection(jobId, auctionDeadlineSec, triggerPath = "timer") {
+    const key = this.normalizeJobId(jobId);
+    const graceMs = Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0);
+    const hasDeadline = Number.isFinite(Number(auctionDeadlineSec)) && Number(auctionDeadlineSec) > 0;
+    const fallbackDelayMs = Math.max(1, Number(CONFIG.timeouts.winnerWaitMs ?? 120_000) + graceMs);
+    const delayMs = hasDeadline
+      ? Math.max(0, (Number(auctionDeadlineSec) * 1000) - Date.now() + graceMs)
+      : fallbackDelayMs;
+
+    const trackedJob = this.getJobByKey(key);
+    if (trackedJob) {
+      trackedJob.winnerSelectionScheduledAt = Date.now() + delayMs;
+      trackedJob.bidFinalityGraceMs = graceMs;
+      if (hasDeadline) trackedJob.auctionDeadlineSec = Math.floor(Number(auctionDeadlineSec));
+      this.setJobByKey(key, trackedJob);
+    }
+
+    this.clearWinnerSelectionTimer(key);
+    const winnerTimer = setTimeout(() => {
+      this.winnerSelectionTimers.delete(key);
+      this.requestWinnerSelection(key, { sourcePath: triggerPath }).catch((err) => {
+        this.log.warn(
+          `[Orchestrator] Scheduled winner selection dispatch failed for job ${key}: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }, delayMs);
+    winnerTimer.unref?.();
+    this.winnerSelectionTimers.set(key, winnerTimer);
+  }
+
+  resolveWinnerSelectionPriority(readiness = null) {
+    if (!this.fastWinnerPathEnabled) return "normal";
+    if (!readiness?.canSelect) return "normal";
+    if (!readiness?.deadlineReached) return "normal";
+    if (Number(readiness?.onChainBidCount ?? 0) <= 0) return "normal";
+    return "high";
+  }
+
+  async publishWinnerSelectionDeferred(jobId, details = {}) {
+    const key = this.normalizeJobId(jobId);
+    await this.hcs.publishAuditLog({
+      type: "WINNER_SELECTION_DEFERRED",
+      agentId: "orchestrator",
+      timestamp: now(),
+      payload: {
+        jobId: key,
+        reasonCode: details.reasonCode ?? "unknown",
+        sourcePath: details.sourcePath ?? "unknown",
+        deadlineSec: details.deadlineSec ?? null,
+        onChainBidCount: details.onChainBidCount ?? null,
+      },
+    }).catch(() => {});
+  }
+
+  async evaluateWinnerSelectionReadiness(jobId, sourcePath = "unknown", options = {}) {
+    const key = this.normalizeJobId(jobId);
+    const localJob = this.getJobByKey(key);
+    const getJob =
+      this.contracts.getJob?.bind(this.contracts) ??
+      this.contracts.auction?.getJob?.bind(this.contracts.auction);
+
+    let chainJob = options.chainJob ?? null;
+    if (!chainJob && typeof getJob === "function") {
+      try {
+        chainJob = await getJob(this.toChainJobId(key));
+      } catch {
+        chainJob = null;
+      }
+    }
+
+    const chainStatusRaw =
+      options.chainStatus ?? (chainJob?.status != null ? Number(chainJob.status) : null);
+    const chainStatus = Number.isFinite(Number(chainStatusRaw)) ? Number(chainStatusRaw) : null;
+    const terminalStatus = chainStatus != null && chainStatus !== 0 && chainStatus !== 1;
+
+    const deadlineCandidates = [
+      options.deadlineSec,
+      chainJob?.auctionDeadline,
+      localJob?.auctionDeadlineSec,
+    ];
+    let deadlineSec = null;
+    for (const candidate of deadlineCandidates) {
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        deadlineSec = Math.floor(numeric);
+        break;
+      }
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const deadlineReached = deadlineSec != null ? nowSec >= deadlineSec : false;
+    let onChainBidCount = null;
+    if (Number.isFinite(Number(options.onChainBidCount))) {
+      onChainBidCount = Math.max(0, Math.floor(Number(options.onChainBidCount)));
+    } else {
+      try {
+        onChainBidCount = await this.getOnChainBidCount(key);
+      } catch {
+        onChainBidCount = null;
+      }
+    }
+
+    const hasBids = Number(onChainBidCount ?? 0) > 0;
+    const jobExists = Boolean(localJob || chainJob);
+    let reasonCode = "ready";
+    if (!jobExists) reasonCode = "not_found";
+    else if (terminalStatus) reasonCode = "terminal_status";
+    else if (!deadlineReached) reasonCode = "deadline_not_reached";
+    else if (!hasBids) reasonCode = "no_onchain_bids";
+
+    const readiness = {
+      jobId: key,
+      sourcePath,
+      jobExists,
+      chainStatus,
+      deadlineSec,
+      deadlineReached,
+      onChainBidCount,
+      hasBids,
+      canSelect: reasonCode === "ready",
+      shouldCancelNoBids: reasonCode === "no_onchain_bids",
+      reasonCode,
+    };
+    return readiness;
+  }
+
+  async requestWinnerSelection(jobId, options = {}) {
+    const key = this.normalizeJobId(jobId);
+    const sourcePath =
+      typeof options?.sourcePath === "string" && options.sourcePath
+        ? options.sourcePath
+        : "manual";
+    const readiness = await this.evaluateWinnerSelectionReadiness(key, sourcePath, options.readinessHint ?? {});
+    const graceMs = Number(CONFIG.timeouts?.bidFinalityGraceMs ?? 0);
+    const scheduledAtRaw = Number(this.getJobByKey(key)?.winnerSelectionScheduledAt ?? 0);
+    const scheduledAt = Number.isFinite(scheduledAtRaw) && scheduledAtRaw > 0 ? scheduledAtRaw : null;
+
+    if (readiness.canSelect) {
+      const priorityUsed = this.resolveWinnerSelectionPriority(readiness);
+      return this.selectWinnersOnChain(key, {
+        path: sourcePath,
+        readiness,
+        priorityUsed,
+      });
+    }
+
+    await this.publishWinnerSelectionDeferred(key, {
+      reasonCode: readiness.reasonCode,
+      sourcePath,
+      deadlineSec: readiness.deadlineSec,
+      onChainBidCount: readiness.onChainBidCount,
+    });
+
+    if (readiness.reasonCode === "deadline_not_reached" && readiness.deadlineSec != null) {
+      this.scheduleWinnerSelection(key, readiness.deadlineSec, "timer");
+      await this.publishWinnerSelectionTiming(key, {
+        deadlineSec: readiness.deadlineSec,
+        graceMs,
+        scheduledAt,
+        selectStartedAt: Date.now(),
+        txSentAt: null,
+        receiptAt: null,
+        closeToReceiptMs: null,
+        path: sourcePath,
+        attempts: 0,
+        result: "deferred",
+        error: null,
+        priorityUsed: "normal",
+        deadlineReached: false,
+        onChainBidCount: readiness.onChainBidCount,
+        suppressedReason: readiness.reasonCode,
+      });
+      return;
+    }
+
+    if (readiness.shouldCancelNoBids) {
+      await this.closeExpiredAuction(key, `${sourcePath}_no_bids_before_deadline`);
+      await this.publishWinnerSelectionTiming(key, {
+        deadlineSec: readiness.deadlineSec,
+        graceMs,
+        scheduledAt,
+        selectStartedAt: Date.now(),
+        txSentAt: null,
+        receiptAt: null,
+        closeToReceiptMs: null,
+        path: sourcePath,
+        attempts: 0,
+        result: "skipped",
+        error: null,
+        priorityUsed: "normal",
+        deadlineReached: readiness.deadlineReached,
+        onChainBidCount: readiness.onChainBidCount,
+        suppressedReason: readiness.reasonCode,
+      });
+      return;
+    }
+
+    await this.publishWinnerSelectionTiming(key, {
+      deadlineSec: readiness.deadlineSec,
+      graceMs,
+      scheduledAt,
+      selectStartedAt: Date.now(),
+      txSentAt: null,
+      receiptAt: null,
+      closeToReceiptMs: null,
+      path: sourcePath,
+      attempts: 0,
+      result: "skipped",
+      error: null,
+      priorityUsed: "normal",
+      deadlineReached: readiness.deadlineReached,
+      onChainBidCount: readiness.onChainBidCount,
+      suppressedReason: readiness.reasonCode,
+    });
+  }
+
+  async bootstrapWinnerSelectionFromActiveJobs() {
+    if (!this.winnerSelectionStartupBackfillEnabled) return;
+    const getActiveJobs =
+      this.contracts.getActiveJobs?.bind(this.contracts) ??
+      this.contracts.auction?.getActiveJobs?.bind(this.contracts.auction);
+    const getJob =
+      this.contracts.getJob?.bind(this.contracts) ??
+      this.contracts.auction?.getJob?.bind(this.contracts.auction);
+    if (typeof getActiveJobs !== "function" || typeof getJob !== "function") return;
+
+    const activeJobIds = await getActiveJobs();
+    if (!Array.isArray(activeJobIds) || activeJobIds.length === 0) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let scheduled = 0;
+    let skippedExpired = 0;
+    for (const rawJobId of activeJobIds) {
+      if (scheduled >= this.winnerSelectionStartupBackfillMaxJobs) break;
+      const key = this.normalizeJobId(rawJobId);
+      let chainJob = null;
+      try {
+        chainJob = await getJob(this.toChainJobId(key));
+      } catch {
+        continue;
+      }
+
+      const status = Number(chainJob?.status ?? -1);
+      if (status !== 0) continue; // JobStatus.AUCTION_OPEN
+      const deadlineSec = Number(chainJob?.auctionDeadline ?? 0);
+      if (!Number.isFinite(deadlineSec) || deadlineSec <= 0) continue;
+      if (deadlineSec <= nowSec) {
+        skippedExpired += 1;
+        continue;
+      }
+
+      const existingJob = this.getJobByKey(key) ?? {};
+      this.setJobByKey(key, {
+        winners: [],
+        findings: [],
+        bidders: [],
+        reportPublished: false,
+        settled: false,
+        rehydratedForSelection: true,
+        ...existingJob,
+        contractAddress:
+          existingJob.contractAddress ??
+          (this.normalizeAddress(chainJob?.contractAddress) || null),
+        contractType:
+          existingJob.contractType ??
+          (typeof chainJob?.contractType === "string" && chainJob.contractType.trim()
+            ? chainJob.contractType
+            : "unknown"),
+        auctionDeadlineSec: deadlineSec,
+      });
+      this.scheduleWinnerSelection(key, deadlineSec, "startup_rearm");
+      scheduled += 1;
+    }
+    if (scheduled > 0 || skippedExpired > 0) {
+      this.log.info(
+        `[Orchestrator] startup winner re-arm: scheduled=${scheduled} skipped_expired=${skippedExpired}`
+      );
+    }
+  }
+
+  async hydrateJobForSelection(jobId) {
+    if (!this.rehydrateMissingJobForSelection) return null;
+    const key = this.normalizeJobId(jobId);
+    const getJob =
+      this.contracts.getJob?.bind(this.contracts) ??
+      this.contracts.auction?.getJob?.bind(this.contracts.auction);
+    if (typeof getJob !== "function") return null;
+
+    let chainJob = null;
+    try {
+      chainJob = await getJob(this.toChainJobId(key));
+    } catch {
+      return null;
+    }
+    if (!chainJob) return null;
+    const status = Number(chainJob?.status ?? -1);
+    if (status !== 0 && status !== 1) return null; // AUCTION_OPEN or BIDDING_CLOSED
+
+    let hydratedBidders = [];
+    try {
+      hydratedBidders = this.mapOnChainBidsToLocal(await this.getOnChainBids(key));
+    } catch {
+      hydratedBidders = [];
+    }
+    const deadlineSec = Number(chainJob?.auctionDeadline ?? 0);
+    const job = {
+      contractAddress: this.normalizeAddress(chainJob?.contractAddress) || null,
+      contractType:
+        typeof chainJob?.contractType === "string" && chainJob.contractType.trim()
+          ? chainJob.contractType
+          : "unknown",
+      bidders: hydratedBidders,
+      winners: [],
+      findings: [],
+      reportPublished: false,
+      settled: false,
+      rehydratedForSelection: true,
+      auctionDeadlineSec: Number.isFinite(deadlineSec) && deadlineSec > 0
+        ? Math.floor(deadlineSec)
+        : null,
+    };
+    this.setJobByKey(key, job);
+    return job;
+  }
+
   async withCreateAuditJobLock(task) {
     const previous = this.createAuditJobLock;
     let releaseLock = () => { };
@@ -725,12 +1085,29 @@ export class OrchestratorAgent {
   hasOpenJobForContract(contractAddress) {
     const normalized = this.normalizeAddress(contractAddress).toLowerCase();
     if (!normalized) return false;
+    const nowSec = Math.floor(Date.now() / 1000);
     for (const job of this.jobs.values()) {
       const jobAddress = this.normalizeAddress(job?.contractAddress).toLowerCase();
       if (!jobAddress || jobAddress !== normalized) continue;
       if (job?.reportPublished) continue;
       if (job?.cancelledOnChain) continue;
       if (job?.terminalOnChain) continue;
+      const isRehydratedForSelection = Boolean(job?.rehydratedForSelection);
+      const localBidCount = Array.isArray(job?.bidders) ? job.bidders.length : 0;
+      const observedHcsBids = Number(job?.hcsBidCount ?? 0);
+      const deadlineSec = Number(job?.auctionDeadlineSec ?? 0);
+      const deadlineKnownAndExpired = Number.isFinite(deadlineSec) && deadlineSec > 0
+        ? deadlineSec <= nowSec
+        : false;
+      // Startup-rehydrated stale/no-bid jobs should not suppress fresh discoveries.
+      if (
+        isRehydratedForSelection &&
+        deadlineKnownAndExpired &&
+        localBidCount <= 0 &&
+        observedHcsBids <= 0
+      ) {
+        continue;
+      }
       return true;
     }
     return false;

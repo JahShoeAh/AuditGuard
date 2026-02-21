@@ -51,12 +51,24 @@ class INFTService {
    * @param {string} [options.operatorId] - Hedera account ID (e.g., "0.0.12345")
    * @param {string} [options.operatorKey]- Private key (hex or DER)
    * @param {string} [options.keyType]    - "ECDSA" | "ED25519" | auto
+   * @param {string} [options.supplyKey]  - NFT supply key (defaults to operator key)
+   * @param {string} [options.supplyKeyType] - "ECDSA" | "ED25519" | auto
    * @param {string} [options.payerId]    - Backward-compatible alias for operatorId
    * @param {string} [options.payerKey]   - Backward-compatible alias for operatorKey
    * @param {string} [options.payerKeyType]- Backward-compatible alias for keyType
    * @param {StorageAdapter} [options.storage] - Storage adapter (created if not provided)
    */
-  constructor({ operatorId, operatorKey, keyType, payerId, payerKey, payerKeyType, storage }) {
+  constructor({
+    operatorId,
+    operatorKey,
+    keyType,
+    supplyKey,
+    supplyKeyType,
+    payerId,
+    payerKey,
+    payerKeyType,
+    storage,
+  }) {
     const resolvedOperatorId = operatorId || payerId;
     const resolvedOperatorKey = operatorKey || payerKey;
     const resolvedKeyType = keyType || payerKeyType;
@@ -70,6 +82,10 @@ class INFTService {
 
     this.operatorId = AccountId.fromString(resolvedOperatorId);
     this.operatorKey = parsePrivateKey(resolvedOperatorKey, resolvedKeyType);
+    this.supplyKey = parsePrivateKey(
+      supplyKey || resolvedOperatorKey,
+      supplyKeyType || resolvedKeyType
+    );
     this.client = Client.forTestnet().setOperator(this.operatorId, this.operatorKey);
     this.client.setDefaultMaxTransactionFee(new Hbar(5));
     this.config = readConfig();
@@ -1417,7 +1433,8 @@ class INFTService {
       .setMaxTransactionFee(new Hbar(5))
       .freezeWith(this.client);
 
-    const signed = await tx.sign(this.operatorKey);
+    // TokenMint requires the token supply key signature.
+    const signed = await tx.sign(this.supplyKey);
     const response = await signed.execute(this.client);
     const receipt = await response.getReceipt(this.client);
 
