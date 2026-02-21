@@ -746,6 +746,11 @@ function toSafeTokenTransferAmount(amountWei) {
   return Number(amountWei);
 }
 
+function formatStageError(stage, err) {
+  const reason = err instanceof Error ? err.message : String(err);
+  return `stage=${stage}:${reason}`;
+}
+
 async function transferGuardResilient({
   guardTokenContract,
   targetEvmAddress,
@@ -819,13 +824,37 @@ async function transferGuardResilient({
     }
 
     const transferAmount = toSafeTokenTransferAmount(amountWei);
-    const tx = await new TransferTransaction()
-      .addTokenTransfer(tokenId, operatorId, -transferAmount)
-      .addTokenTransfer(targetAccountId, transferAmount)
-      .freezeWith(hederaClient);
-    const signed = await tx.sign(operatorKey);
-    const submit = await signed.execute(hederaClient);
-    const receipt = await submit.getReceipt(hederaClient);
+    let tx;
+    try {
+      tx = await new TransferTransaction()
+        .addTokenTransfer(tokenId, operatorId, -transferAmount)
+        .addTokenTransfer(tokenId, targetAccountId, transferAmount)
+        .freezeWith(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("construct_hapi_transfer", err));
+    }
+
+    let signed;
+    try {
+      signed = await tx.sign(operatorKey);
+    } catch (err) {
+      throw new Error(formatStageError("sign_hapi_transfer", err));
+    }
+
+    let submit;
+    try {
+      submit = await signed.execute(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("execute_hapi_transfer", err));
+    }
+
+    let receipt;
+    try {
+      receipt = await submit.getReceipt(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("receipt_hapi_transfer", err));
+    }
+
     const statusText = String(receipt.status);
     if (statusText !== "SUCCESS") {
       throw new Error(`HAPI transfer failed with status ${statusText}`);

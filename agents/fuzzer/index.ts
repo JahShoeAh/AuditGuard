@@ -318,7 +318,7 @@ async function main() {
     const hbarTopUpConfig = getHbarTopUpConfig();
     log.info(
       `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
-      `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR)`
+      `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR, target=${ethers.formatEther(hbarTopUpConfig.targetWei)} HBAR)`
     );
     if (hbarTopUpConfig.donorAddressesMasked.length > 0) {
       log.info(`HBAR donors: ${hbarTopUpConfig.donorAddressesMasked.join(", ")}`);
@@ -378,7 +378,7 @@ async function main() {
     const startupHbar = await ensureOperationalHbar({
       contracts,
       recipientAddress: wallet.evmAddress,
-      requiredWei: hbarTopUpConfig.minRequiredWei,
+      requiredWei: hbarTopUpConfig.targetWei,
       logger: log,
     });
     if (!startupHbar.ok) {
@@ -604,7 +604,7 @@ async function main() {
           const payerReady = await ensureOperationalHbar({
             contracts,
             recipientAddress: wallet.evmAddress,
-            requiredWei: hbarTopUpConfig.minRequiredWei,
+            requiredWei: hbarTopUpConfig.targetWei,
             logger: log,
           });
           if (!payerReady.ok) {
@@ -778,7 +778,7 @@ async function main() {
                     const recoveredPayer = await ensureOperationalHbar({
                       contracts,
                       recipientAddress: wallet.evmAddress,
-                      requiredWei: getHbarTopUpConfig().minRequiredWei,
+                      requiredWei: getHbarTopUpConfig().targetWei,
                       logger: log,
                     });
                     if (recoveredPayer.ok) {
