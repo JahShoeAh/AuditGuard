@@ -1,15 +1,13 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20.19.0-bookworm-slim
+# ── Stage 1: install deps + compile native addons ──
+FROM node:20.19.0-bookworm-slim AS deps
 
 WORKDIR /app
 
-LABEL org.opencontainers.image.source="https://github.com/JahShoeAh/AuditGuard"
-LABEL org.opencontainers.image.description="AuditGuard backend runtime (orchestrator + agents + iNFT listeners + events API)"
-
-# Use dumb-init for proper signal forwarding/shutdown of all child processes.
+# Build tools needed for better-sqlite3 and other native addons.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init python3 make g++ \
+  && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for better layer caching.
@@ -23,7 +21,22 @@ COPY packages/events-api/package.json packages/events-api/package.json
 # Install only backend workspace dependencies (skip dashboard).
 RUN npm ci -w agents -w orchestrator -w packages/inft -w packages/events-api --include-workspace-root
 
-# Copy full source after dependency install.
+# ── Stage 2: slim runtime (no python3/make/g++) ──
+FROM node:20.19.0-bookworm-slim
+
+WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/JahShoeAh/AuditGuard"
+LABEL org.opencontainers.image.description="AuditGuard backend runtime (orchestrator + agents + iNFT listeners + events API)"
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dumb-init \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy installed node_modules (with compiled native addons) from deps stage.
+COPY --from=deps /app .
+
+# Copy application source.
 COPY . .
 
 ENV NODE_ENV=development
