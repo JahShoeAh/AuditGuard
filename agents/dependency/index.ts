@@ -2,6 +2,8 @@ import {
   HCSClient,
   ContractClient,
   CONFIG,
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
   createAgentLogger,
   createAgentWallet,
   randomInt,
@@ -77,6 +79,29 @@ async function main() {
 
   log.info(`Wallet: ${wallet.evmAddress}`);
 
+  if (!DEMO_MODE) {
+    try {
+      const hbarTopUpConfig = getHbarTopUpConfig();
+      log.info(
+        `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
+        `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR, ` +
+        `target=${ethers.formatEther(hbarTopUpConfig.targetWei)} HBAR)`
+      );
+      const startupPayer = await ensureOperationalHbar({
+        contracts,
+        recipientAddress: wallet.evmAddress,
+        requiredWei: hbarTopUpConfig.targetWei,
+        logger: log,
+      });
+      if (!startupPayer.ok) {
+        log.warn(`Startup preflight: ${startupPayer.reason ?? "Insufficient payer HBAR for transaction fees"}`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup HBAR preflight failed: ${error}`);
+    }
+  }
+
   // Listen for sub-auction postings
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
@@ -137,6 +162,48 @@ async function main() {
 
     log.info(`Sub-bidding: ${bid.amount} GUARD (est. ${bid.estimatedTimeSec}s)`);
 
+    if (!DEMO_MODE) {
+      try {
+        const hbarTopUpConfig = getHbarTopUpConfig();
+        const payerReady = await ensureOperationalHbar({
+          contracts,
+          recipientAddress: wallet.evmAddress,
+          requiredWei: hbarTopUpConfig.minRequiredWei,
+          logger: log,
+        });
+        if (!payerReady.ok) {
+          await hcs.publishAuditLog({
+            type: "SUB_BID_FAILED",
+            agentId: AGENT_ID,
+            timestamp: Date.now(),
+            payload: {
+              subAuctionId,
+              parentJobId,
+              reason: payerReady.reason ?? "Insufficient payer HBAR for transaction fees",
+              reasonCode: payerReady.reasonCode ?? "insufficient_payer_hbar",
+              hbarBalance: ethers.formatEther(payerReady.balanceWei),
+              autoTopUpAttempted: payerReady.attemptedTopUp,
+              topUpSources: payerReady.donorAddressesUsed ?? [],
+            },
+          });
+          return;
+        }
+        if (payerReady.toppedUpWei > 0n) {
+          log.info(`Auto top-up applied before sub-bid: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`);
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn(`Pre-bid HBAR preflight failed: ${error}`);
+        await hcs.publishAuditLog({
+          type: "SUB_BID_FAILED",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: { subAuctionId, parentJobId, reason: `payer_preflight_failed: ${error}` },
+        });
+        return;
+      }
+    }
+
     // Submit sub-bid on-chain
     try {
       // Add jitter to avoid race conditions
@@ -195,6 +262,31 @@ async function main() {
         );
 
         // Deliver result on-chain
+        if (!DEMO_MODE) {
+          try {
+            const hbarTopUpConfig = getHbarTopUpConfig();
+            const payerReady = await ensureOperationalHbar({
+              contracts,
+              recipientAddress: wallet.evmAddress,
+              requiredWei: hbarTopUpConfig.minRequiredWei,
+              logger: log,
+            });
+            if (!payerReady.ok) {
+              log.warn(
+                `Pre-delivery payer preflight failed: ` +
+                `${payerReady.reason ?? "Insufficient payer HBAR for transaction fees"} (continuing)`
+              );
+            } else if (payerReady.toppedUpWei > 0n) {
+              log.info(
+                `Auto top-up applied before result delivery: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`
+              );
+            }
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            log.warn(`Pre-delivery HBAR preflight failed: ${error} (continuing)`);
+          }
+        }
+
         try {
           await contracts.deliverResult(onChainSubAuctionId, result.analysisHash);
           log.info("Result delivered on-chain");

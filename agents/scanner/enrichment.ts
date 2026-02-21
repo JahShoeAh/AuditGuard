@@ -3,10 +3,11 @@ import type { ContractType } from "../shared/types.js";
 import { inferBaselineContractType } from "./baseline-contract-type.js";
 
 type DefiCategory = ContractType;
+type RawDefiCategory = DefiCategory | "nft" | "unknown";
 
 type ClassificationResult = {
   evmType: string;
-  defiCategory: DefiCategory;
+  defiCategory: RawDefiCategory;
   standards: string[];
   isContract: boolean;
   contractName: string | null;
@@ -43,7 +44,8 @@ type ClassifierModules = {
   classifyContract: (contractAddress: string) => Promise<ClassificationResult>;
   retrieveContractSource: (
     contractAddress: string,
-    rpcUrl: string
+    rpcUrl: string,
+    knownBytecode?: string
   ) => Promise<SourceRetrievalResult>;
   assessRisk: (
     ctx: RiskPromptContext,
@@ -94,8 +96,24 @@ export type DiscoveryEnrichment = {
 let classifierModulesLoadError: string | null = null;
 let classifierModulesPromise: Promise<ClassifierModules> | null = null;
 
-function inferContractType(contract: MirrorContractLike): ContractType | "unknown" {
-  return inferBaselineContractType(contract);
+function inferContractType(contract: MirrorContractLike): ContractType {
+  const inferred = inferBaselineContractType(contract);
+  return inferred === "unknown" ? "vault" : inferred;
+}
+
+function normalizeDefiCategory(category: RawDefiCategory): DefiCategory {
+  switch (category) {
+    case "lending":
+    case "dex":
+    case "staking":
+    case "bridge":
+    case "vault":
+      return category;
+    case "nft":
+    case "unknown":
+    default:
+      return "vault";
+  }
 }
 
 function deriveRiskScore(contractAddress: string): number {
@@ -161,6 +179,7 @@ async function loadClassifierModules(): Promise<ClassifierModules> {
 
 async function classifyAndAssessRisk(
   contractAddress: string,
+  contract: MirrorContractLike,
   logger: ScannerLogger
 ): Promise<DiscoveryEnrichment> {
   const modules = await loadClassifierModules();
@@ -172,13 +191,14 @@ async function classifyAndAssessRisk(
     logger.warn(`classifier_pipeline_unavailable: evmdecoder classification failed for ${contractAddress}: ${err}`);
     classification = {
       evmType: "unknown",
-      defiCategory: "lending",
+      defiCategory: "vault",
       standards: [],
       isContract: true,
       contractName: null,
       proxyTarget: null,
     };
   }
+  const normalizedCategory = normalizeDefiCategory(classification.defiCategory);
 
   const rpcUrl =
     process.env.SCANNER_EVM_RPC_URL ||
@@ -192,7 +212,11 @@ async function classifyAndAssessRisk(
     bytecode: "0x",
   };
   try {
-    sourceResult = await modules.retrieveContractSource(contractAddress, rpcUrl);
+    sourceResult = await modules.retrieveContractSource(
+      contractAddress,
+      rpcUrl,
+      typeof contract.bytecode === "string" ? contract.bytecode : undefined
+    );
   } catch (err) {
     logger.warn(`classifier_pipeline_unavailable: source retrieval failed for ${contractAddress}: ${err}`);
   }
@@ -200,7 +224,7 @@ async function classifyAndAssessRisk(
   const estimatedLOC = estimateLoc({ bytecode: sourceResult.bytecode });
   const riskCtx: RiskPromptContext = {
     contractAddress,
-    defiCategory: classification.defiCategory,
+    defiCategory: normalizedCategory,
     evmType: classification.evmType,
     standards: classification.standards,
     estimatedLOC,
@@ -226,7 +250,7 @@ async function classifyAndAssessRisk(
 
   const blended = modules.blendRiskScore({
     llmRisk,
-    defiCategory: classification.defiCategory,
+    defiCategory: normalizedCategory,
     bytecodeHex: sourceResult.bytecode,
     estimatedLOC,
     isProxy: classification.proxyTarget !== null,
@@ -234,7 +258,7 @@ async function classifyAndAssessRisk(
   });
 
   return {
-    contractType: classification.defiCategory,
+    contractType: normalizedCategory,
     riskScore: blended.finalScore,
     estimatedLOC,
     enrichedPayload: {
@@ -266,7 +290,7 @@ export async function enrichContractDiscovery(
     return baselineClassification(contractAddress, contract);
   }
   try {
-    return await classifyAndAssessRisk(contractAddress, logger);
+    return await classifyAndAssessRisk(contractAddress, contract, logger);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (classifierModulesLoadError !== message) {
