@@ -407,6 +407,7 @@ export class EventListenerService {
     this._intervals.push(setInterval(() => {
       this._pollHCSTopic(topics.agentComms, 'agentComms');
     }, this.hcsPollMs));
+  }
 
   async _pollCloudflareEvents() {
     try {
