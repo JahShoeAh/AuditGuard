@@ -6,17 +6,20 @@
 
 ## ✅ What Was Created
 
-Four comprehensive implementation documents in `/final_bs/`:
+Implementation documents in `/final_bs/`:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `DATABASE_SCHEMA.md` | ~280 | Database architecture, API specs, storage options |
-| `REPORT_GEN_FLOW.md` | ~400 | Complete workflow from winner selection to storage |
-| `WALLET_REPORT_ACCESS.md` | ~600 | Frontend implementation with React hooks & components |
-| `IMPLEMENTATION_PLAN.md` | ~500 | Task breakdown with deadlines |
+| File | Purpose |
+|------|---------|
+| `tasks.md` | **Start here** — 3-task breakdown with full code, stubs, and merge order |
+| `DATABASE_SCHEMA.md` | PostgreSQL schema, S3 storage, API envelope, env vars |
+| `REPORT_GEN_FLOW.md` | Orchestrator → S3 → PostgreSQL workflow and event timeline |
+| `WALLET_REPORT_ACCESS.md` | Frontend hook, Express API, access control |
+| `IMPLEMENTATION_PLAN.md` | Original planning doc (historical reference) |
+| `README.md` | Quick start guide |
 
-Also includes:
-- `README.md` - Quick start guide
+Pre-branch artifacts committed to `main`:
+- `packages/sdk/db/report-types.js` — frozen schema + helpers
+- `orchestrator/src/schema.sql` — PostgreSQL DDL
 
 ---
 
@@ -28,8 +31,8 @@ All requirements split into actionable documentation:
 **Read:** `DATABASE_SCHEMA.md`
 
 **Includes:**
-- AuditReport TypeScript interface
-- 4 storage options (JSON, LevelDB, PostgreSQL, 0g DA)
+- StoredAuditReport TypeScript interface (frozen schema)
+- PostgreSQL as primary storage + AWS S3 for markdown content
 - CRUD API endpoints (GET, POST, DELETE)
 - Access control rules (deployer-only)
 - Report file structure (.md files)
@@ -84,38 +87,28 @@ Required files to create (see IMPLEMENTATION_PLAN.md):
 
 ## 🚀 Implementation Order
 
-**Recommended:** Follow the task breakdown in `IMPLEMENTATION_PLAN.md`
+**Recommended:** Read `tasks.md` for the full breakdown. Summary:
 
-### Week 1: Core Infrastructure (5 hours)
-1. **Database Setup** (2 hours)
-   - Create `packages/sdk/db/report-db.ts`
-   - Implement CRUD functions
-   - Test with sample data
+### Task A — DB Module + Report Writer (`task/report-backend`)
+- Create `packages/sdk/db/report-db.js` (PostgreSQL + S3)
+- Create `orchestrator/src/report-writer.js` (markdown generation + upload + DB save)
+- Fix `deployerAddress` gap in `orchestrator/src/orchestrator.js` (2 small edits)
+- Run `psql "$DATABASE_URL" -f orchestrator/src/schema.sql` before testing
 
-2. **Report Generation** (2 hours)
-   - Create `orchestrator/src/report-writer.ts`
-   - Implement `generateAndStoreReport()`
-   - Test after winner selection
+### Task B — Express API Server (`task/report-api`)
+- Create `packages/dashboard/server/index.js` + `server/api/reports.js`
+- Create `packages/dashboard/server/Dockerfile`
+- Add `/api` proxy to `packages/dashboard/vite.config.js` (local dev only)
+- Use report-db.js stub until Task A merges
 
-3. **Database Integration** (1 hour)
-   - Update `agents/report/index.ts` to save to DB
-   - Verify CID and hash persistence
+### Task C — Frontend Hook + UI (`task/report-ui`)
+- Create `packages/dashboard/src/hooks/useUserReports.js`
+- Create `packages/dashboard/src/components/reports/UserReportList.jsx`
+- Add "My Reports" section to `ReportMarketplace.jsx`
+- Use mock API server until Task B merges
 
-### Week 2: Frontend (4 hours)
-4. **React Hooks & Components** (3 hours)
-   - Create `useUserReports` hook
-   - Build `UserReportList` component
-   - Create `/api/reports` endpoints
-
-5. **Wallet Integration** (1 hour)
-   - Connect wallet → see reports
-   - Implement access control
-   - Test deployer-only viewing
-
-### Week 3: Polish & Testing (3 hours)
-6. **Hedera Addresses** (1 hour)
-7. **Claude Agent** (1 hour)  
-8. **End-to-End Tests** (1 hour)
+### Merge order
+Task A → Task B → Task C (B and C may merge in either order)
 
 ---
 
@@ -140,12 +133,10 @@ Database must support BOTH formats:
 
 ## 📞 Next Steps
 
-1. Read `IMPLEMENTATION_PLAN.md` for detailed task list
-2. Start with `DATABASE_SCHEMA.md` (Section 1-3)
-3. Implement CRUD functions
-4. Test with sample data
-5. Move to `REPORT_GEN_FLOW.md` (orchestrator integration)
-6. Finally `WALLET_REPORT_ACCESS.md` (frontend)
+1. Read `tasks.md` — the canonical 3-task breakdown with full code samples
+2. Read `DATABASE_SCHEMA.md` — schema, API envelope, env vars
+3. Read `REPORT_GEN_FLOW.md` — orchestrator → S3 → PostgreSQL pipeline
+4. Read `WALLET_REPORT_ACCESS.md` — frontend hook, Express API, access control
 
 ---
 

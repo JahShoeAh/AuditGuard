@@ -6,6 +6,26 @@
 
 ---
 
+packages/sdk/db/report-types.js                                                                                                                        
+                                                                                                                        
+  The shared contract file. Contains:                                                                                                                    
+  - Path constants — REPORTS_DB_FILE, REPORTS_DIR, REPO_ROOT — every task imports these instead of hardcoding paths                                    
+  - Pure helpers — reportId(), normalizeDeployer(), deployerMatches() — no side effects, safe to import in any context                                   
+  - StoredAuditReport JSDoc typedef — the frozen schema all tasks depend on                                                                              
+  - EMPTY_FINDINGS constant — default FindingsBySeverity object                                                                                          
+  - API envelope spec — the exact { success, data, count } shape Task 3 must produce and Task 4 must consume                                             
+  - Gap comments — precise line numbers in the codebase where each task owner needs to make changes (including the critical deployerAddress fix in       
+  orchestrator.js)                                                                                                                                       
+                                                                                                                                                         
+  data/reports.json + data/reports/.gitkeep
+
+  Empty database file and directory scaffold so the repo has the structure before any branch needs it.
+
+  ---
+  All four branches can now open. Each branch imports from @sdk/db/report-types.js (or ../../packages/sdk/db/report-types.js) and the schema is locked.
+  The gap comments tell each owner exactly where to look in the existing code.
+
+
 ## 📂 Directory Structure
 
 ```
@@ -20,37 +40,36 @@ final_bs/
 
 ## 🎯 What This Guide Covers
 
-1. **Persistent report database** (JSON file MVP, LevelDB/PostgreSQL production)
+1. **Persistent report database** (PostgreSQL via `DATABASE_URL`, markdown in AWS S3)
 2. **Report generation workflow** (Orchestrator triggers → markdown files → database)
 3. **Wallet address filtering** (Users see only reports for their deployed contracts)
 
 ---
 
-## ✅ Quick Start Checklist
+## ✅ Quick Start
 
-### Priority 1: Database Setup (2 hours)
-- [ ] Run: `mkdir -p /Users/ssongirk/Projects/AuditGuard/final_bs/data/reports`
-- [ ] Read: `DATABASE_SCHEMA.md` (Sections 1-3)
-- [ ] Implement `packages/sdk/db/report-db.ts` (choose JSON or LevelDB)
-- [ ] Test: `saveReport()` and `getReportsByDeployer()` functions
+> **Read `tasks.md` first** — it has the canonical breakdown, full code samples, stubs, and merge order.
 
-### Priority 2: Report Writing (2 hours)
-- [ ] Read: `REPORT_GEN_FLOW.md` (Sections 1-2)
-- [ ] Create: `orchestrator/src/report-writer.ts`
-- [ ] Implement: `generateAndStoreReport()` function
-- [ ] Test: Trigger winner selection → generate report
+### Task A — DB Module + Report Writer (`task/report-backend`)
+- [ ] `psql "$DATABASE_URL" -f orchestrator/src/schema.sql` — run migration
+- [ ] Create `packages/sdk/db/report-db.js` (PostgreSQL + S3 — full code in `tasks.md`)
+- [ ] Create `orchestrator/src/report-writer.js` (markdown + upload + save)
+- [ ] Fix `deployerAddress` gap in `orchestrator.js` (2 edits — see `tasks.md`)
+- [ ] Test: `saveReport()`, `getReportsByDeployer()`, `WinnersSelected` trigger
 
-### Priority 3: Frontend Integration (2 hours)
-- [ ] Read: `WALLET_REPORT_ACCESS.md` (Sections 1-3)
-- [ ] Create: `packages/dashboard/src/hooks/useUserReports.js`
-- [ ] Create: `packages/dashboard/src/components/reports/UserReportList.jsx`
-- [ ] Create: `packages/dashboard/server/api/reports.js`
-- [ ] Test: Connect wallet → see reports list
+### Task B — Express API Server (`task/report-api`)
+- [ ] Create `packages/dashboard/server/index.js` + `server/api/reports.js`
+- [ ] Create `packages/dashboard/server/Dockerfile`
+- [ ] Add `/api` Vite proxy in `vite.config.js` (local dev only)
+- [ ] Test: `curl localhost:3002/api/reports?deployer=0x...`
 
-### Priority 4: Testing (1 hour)
-- [ ] End-to-end test: Deploy contract → Audit → Report visible
-- [ ] Access control test: Wrong wallet cannot view报告
-- [ ] Hedera address test: Both EVM and Hedera supported
+### Task C — Frontend Hook + UI (`task/report-ui`)
+- [ ] Create `packages/dashboard/src/hooks/useUserReports.js`
+- [ ] Create `packages/dashboard/src/components/reports/UserReportList.jsx`
+- [ ] Add "My Reports" section to `ReportMarketplace.jsx`
+- [ ] Test: Wallet connect → reports list renders
+
+### Merge order: A → B → C (B and C may merge in either order)
 
 ---
 
@@ -68,22 +87,24 @@ final_bs/
 
 **Key Interfaces:**
 ```typescript
-interface AuditReport {
+interface StoredAuditReport {
   id: string;
   jobId: string;
   contractAddress: string;
-  deployerAddress: string;  // ← CRITICAL
-  hederaAccountId?: string;
-  mdFilePath: string;
+  deployerAddress: string;  // ← CRITICAL: who deployed, stored lowercase
+  hederaAccountId: string | null;
+  chain: string;
+  contractType: string;
+  s3Key: string;            // "reports/{jobId}.md" — mdContent lives in S3
   contentHash: string;
   cid: string;
-  findingsBySeverity: {
-    critical: number;
-    high: number;
-    medium: number;
-    low: number;
-    info: number;
-  };
+  agentAddresses: string[];
+  agentCount: number;
+  findingCount: number;
+  findingsBySeverity: { critical: number; high: number; medium: number; low: number; info: number; };
+  timestamp: number;
+  tags: string[];
+  source: 'orchestrator' | 'agent' | 'manual';
 }
 ```
 
@@ -100,16 +121,13 @@ interface AuditReport {
 
 **Critical Files to Create:**
 
-```typescript
-// orchestrator/src/report-writer.ts
-export async function generateAndStoreReport(
-  jobId: string,
-  contractAddress: string,
-  deployerAddress: string,
-  hederaAccountId: string | null,
-  chain: string,
-  contractType: string
-): Promise<{ mdFilePath: string; dbId: string }>
+```javascript
+// orchestrator/src/report-writer.js
+export async function generateAndStoreReport({
+  jobId, contractAddress, deployerAddress,
+  hederaAccountId, chain, contractType,
+  reportMeta, findings,
+}): Promise<{ s3Key: string; dbId: string }>
 ```
 
 **Event Timeline:**
@@ -137,12 +155,26 @@ WinnersSelected event (orchestrator)
 **Key Hook:**
 ```javascript
 // packages/dashboard/src/hooks/useUserReports.js
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+
 export function useUserReports() {
-  const { address, hederaAccountId, isConnected } = useWalletStore();
-  
-  const { value: reports, loading, error } = useAsyncMemo(async () => {
-    if (!isConnected) return [];
-    return fetch(`/api/reports?deployer=${address}`).then(r => r.json());
+  const { address, isConnected } = useWalletStore(s => ({
+    address: s.address, isConnected: s.connectionStatus === 'connected',
+  }));
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!isConnected || !address) { setReports([]); return; }
+    let cancelled = false;
+    setLoading(true);
+    fetch(`${API_BASE}/api/reports?deployer=${encodeURIComponent(address)}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setReports(d.success ? d.data : []); })
+      .catch(e => { if (!cancelled) setError(e); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [address, isConnected]);
 
   return { reports, loading, error };

@@ -142,95 +142,99 @@ export function useWalletAddress() {
 **File:** `packages/dashboard/src/hooks/useUserReports.js` (**NEW FILE**)
 
 ```javascript
-import { useAsyncMemo } from 'use-async-memo';
+import { useState, useEffect } from 'react';
 import useWalletStore from '../store/wallet';
 
+// Use VITE_API_BASE_URL so Vercel-deployed builds hit the AWS API server.
+// Leave it empty (or unset) for local dev — the Vite proxy handles /api routing.
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+
 /**
- * Fetches all audit reports for the connected wallet's deployer address
+ * Fetches all audit reports for the connected wallet's deployer address.
  * Queries database via /api/reports?deployer={address}
  */
 export function useUserReports() {
   const { address, hederaAccountId, isConnected } = useWalletStore(s => ({
     address: s.address,
     hederaAccountId: s.hederaAccountId,
-    isConnected: s.connectionStatus === 'connected'
+    isConnected: s.connectionStatus === 'connected',
   }));
 
-  const { value: reports, error, loading } = useAsyncMemo(async () => {
-    if (!isConnected || (!address && !hederaAccountId)) {
-      return [];
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const deployer = address || hederaAccountId;
+    if (!isConnected || !deployer) {
+      setReports([]);
+      return;
     }
 
-    try {
-      // Query with EVM address first
-      const endpoint = address 
-        ? `/api/reports?deployer=${encodeURIComponent(address)}`
-        : `/api/reports?deployer=${encodeURIComponent(hederaAccountId)}`;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
 
-      const res = await fetch(endpoint);
-      
-      if (!res.ok) {
-        // 404 = no reports, which is fine
-        if (res.status === 404) return [];
-        throw new Error(`API error ${res.status}: ${res.statusText}`);
-      }
+    fetch(`${API_BASE}/api/reports?deployer=${encodeURIComponent(deployer)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled) {
+          if (!data.success) throw new Error(data.error || 'Failed to fetch reports');
+          console.log(`[useUserReports] Loaded ${data.data.length} reports`);
+          setReports(data.data);
+        }
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error('[useUserReports] Fetch failed:', err);
+          setError(err);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-      const data = await res.json();
-      
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to fetch reports');
-      }
-
-      console.log(`[useUserReports] Loaded ${data.data.length} reports`);
-      return data.data;
-    } catch (err) {
-      console.error('[useUserReports] Fetch failed:', err);
-      // Don't throw - return empty array for graceful degradation
-      return [];
-    }
+    return () => { cancelled = true; };
   }, [address, hederaAccountId, isConnected]);
 
-  return {
-    reports: reports || [],
-    loading,
-    error
-  };
+  return { reports, loading, error };
 }
 
 /**
- * Fetch a single report by job ID
+ * Fetch a single report by job ID (includes mdContent fetched from S3).
  */
 export function useReportByJob(jobId) {
-  const { address, hederaAccountId, isConnected } = useWalletStore(s => ({
-    address: s.address,
-    hederaAccountId: s.hederaAccountId,
-    isConnected: s.connectionStatus === 'connected'
-  }));
+  const isConnected = useWalletStore(s => s.connectionStatus === 'connected');
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  const { value: report, error, loading } = useAsyncMemo(async () => {
-    if (!jobId || !.isConnected) return null;
+  useEffect(() => {
+    if (!jobId || !isConnected) { setReport(null); return; }
 
-    try {
-      const res = await fetch(`/api/reports/${jobId}`);
-      
-      if (!res.ok) {
-        if (res.status === 404) return null;
-        throw new Error(`API error ${res.status}`);
-      }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
 
-      const data = await res.json();
-      return data.success ? data.data : null;
-    } catch (err) {
-      console.error(`[useReportByJob] ${jobId}:`, err);
-      return null;
-    }
-  }, [jobId, address, hederaAccountId, isConnected]);
+    fetch(`${API_BASE}/api/reports/${jobId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled) setReport(data.success ? data.data : null);
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error(`[useReportByJob] ${jobId}:`, err);
+          setError(err);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-  return {
-    report,
-    loading,
-    error
-  };
+    return () => { cancelled = true; };
+  }, [jobId, isConnected]);
+
+  return { report, loading, error };
 }
 ```
 
@@ -243,283 +247,90 @@ export function useReportByJob(jobId) {
 ```javascript
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
 
-// Database import (will be moved to packages/sdk later)
-const REPORTS_FILE = path.join(process.cwd(), 'data', 'reports.json');
-
-// Middleware to verify user is logged in (optional - for future auth)
-function requireAuth(req, res, next) {
-  // For now, allow public read-only access to reports
-  // But validate that the requesting address actually owns the report
-  next();
-}
+// Import PostgreSQL + S3 abstraction (Task 1 output)
+const { getReportsByDeployer, getReportById, saveReport } = require('../../../../packages/sdk/db/report-db.js');
+const { normalizeDeployer, reportId } = require('../../../../packages/sdk/db/report-types.js');
 
 /**
  * GET /api/reports?deployer={address}
- * Fetch all reports for a specific deployer address
+ * Returns all reports for a specific deployer. Does NOT include mdContent.
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const { deployer } = req.query;
-  
+
   if (!deployer) {
-    return res.status(400).json({
-      success: false,
-      error: 'Missing required parameter: deployer'
-    });
+    return res.status(400).json({ success: false, error: 'Missing required parameter: deployer' });
   }
 
   try {
-    // Normalize address (lowercase for comparison)
-    const normalizedDeployer = String(deployer).toLowerCase();
-    
-    // Read database
-    let reports = [];
-    if (fs.existsSync(REPORTS_FILE)) {
-      const fileContent = fs.readFileSync(REPORTS_FILE, 'utf8');
-      reports = JSON.parse(fileContent) || [];
-    }
-    
-    // Filter by deployer (check both EVM and Hedera formats)
-    const filtered = reports.filter(report => {
-      const reportDeployer = String(report.deployerAddress || '').toLowerCase();
-      const reportHedera = String(report.hederaAccountId || '').toLowerCase();
-      
-      // Match on either EVM or Hedera address
-      return reportDeployer === normalizedDeployer || 
-             reportHedera === normalizedDeployer ||
-             reportDeployer === normalizeHederaToEvm(normalizedDeployer);
-    });
-    
-    // Return lightweight version (exclude large mdContent)
-    const result = filtered.map(r => ({
-      id: r.id,
-      jobId: r.jobId,
-      contractAddress: r.contractAddress,
-      deployerAddress: r.deployerAddress,
-      hederaAccountId: r.hederaAccountId,
-      chain: r.chain,
-      contractType: r.contractType,
-      contentHash: r.contentHash,
-      cid: r.cid,
-      findingCount: r.findingCount,
-      agentCount: r.agentCount,
-      findingsBySeverity: r.findingsBySeverity,
-      timestamp: r.timestamp,
-      created_at: r.created_at || r.timestamp
-    }));
-
-    res.json({
-      success: true,
-      data: result,
-      count: result.length
-    });
+    const normalized = normalizeDeployer(deployer);
+    const reports = await getReportsByDeployer(normalized);
+    res.json({ success: true, data: reports, count: reports.length });
   } catch (err) {
-    console.error('[API] /reports error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
+    console.error('[API] GET /reports error:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
 /**
  * GET /api/reports/:jobId
- * Fetch specific report by job ID (includes full markdown content)
+ * Returns the report + mdContent fetched from S3.
  */
-router.get('/:jobId', (req, res) => {
+router.get('/:jobId', async (req, res) => {
   const { jobId } = req.params;
-  
+
+  // Prevent path traversal
+  if (!/^[a-zA-Z0-9-]+$/.test(jobId)) {
+    return res.status(400).json({ success: false, error: 'Invalid job ID format' });
+  }
+
   try {
-    // Read database
-    let reports = [];
-    if (fs.existsSync(REPORTS_FILE)) {
-      const fileContent = fs.readFileSync(REPORTS_FILE, 'utf8');
-      reports = JSON.parse(fileContent) || [];
-    }
-    
-    // Find exact match
-    const report = reports.find(r => r.jobId === jobId || r.id === `report:${jobId}`);
-    
+    // getReportById fetches mdContent from S3 and returns it alongside the record
+    const report = await getReportById(jobId);
+
     if (!report) {
-      return res.status(404).json({
-        success: false,
-        error: 'Report not found'
-      });
-    }
-    
-    // Verify user ownership (optional - for production)
-    // const userAddress = req.headers['x-user-address'];
-    // if (report.deployerAddress.toLowerCase() !== userAddress.toLowerCase()) {
-    //   return res.status(403).json({
-    //     success: false,
-    //     error: 'Unauthorized: Report is not accessible'
-    //   });
-    // }
-
-    // Read markdown content from file
-    let mdContent = '';
-    if (report.mdFilePath && fs.existsSync(report.mdFilePath)) {
-      mdContent = fs.readFileSync(report.mdFilePath, 'utf8');
+      return res.status(404).json({ success: false, error: 'Report not found' });
     }
 
-    res.json({
-      success: true,
-      data: {
-        ...report,
-        mdContent
-      }
-    });
+    res.json({ success: true, data: report });
   } catch (err) {
-    console.error('[API] /reports/:jobId error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
+    console.error('[API] GET /reports/:jobId error:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
 /**
  * POST /api/reports
- * Submit new report (called from agents after audit)
+ * Creates a new report record (called from orchestrator report-writer.js).
+ * Body: Partial<StoredAuditReport> — no mdContent (markdown lives in S3).
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const reportData = req.body;
-  
-  // Validate required fields
-  const required = ['jobId', 'contractAddress', 'deployerAddress', 'contentHash'];
-  const missing = required.filter(field => !reportData[field]);
-  
+
+  const required = ['jobId', 'contractAddress', 'deployerAddress', 'contentHash', 's3Key'];
+  const missing = required.filter(f => !reportData[f]);
   if (missing.length > 0) {
-    return res.status(400).json({
-      success: false,
-      error: `Missing required fields: ${missing.join(', ')}`
-    });
+    return res.status(400).json({ success: false, error: `Missing required fields: ${missing.join(', ')}` });
   }
 
   try {
-    // Read existing reports
-    let reports = [];
-    if (fs.existsSync(REPORTS_FILE)) {
-      const fileContent = fs.readFileSync(REPORTS_FILE, 'utf8');
-      reports = JSON.parse(fileContent) || [];
-    }
-    
-    // Check for duplicate
-    const exists = reports.find(r => r.jobId === reportData.jobId);
-    if (exists) {
-      // Check if content changed
-      if (exists.contentHash === reportData.contentHash) {
-        return res.status(200).json({
-          success: true,
-          message: 'Report already exists with same content',
-          id: exists.id
-        });
-      }
-      
-      // Update existing
-      const idx = reports.findIndex(r => r.jobId === reportData.jobId);
-      reports[idx] = {
-        ...reports[idx],
-        ...reportData,
-        updated_at: Date.now()
-      };
-    } else {
-      // Create new
-      reports.push({
-        ...reportData,
-        id: `report:${reportData.jobId}`,
-        timestamp: Date.now(),
-        source: 'api',
-        created_at: Date.now()
-      });
-    }
-    
-    // Write back to file
-    fs.writeFileSync(REPORTS_FILE, JSON.stringify(reports, null, 2));
-    
-    res.status(201).json({
-      success: true,
-      id: `report:${reportData.jobId}`
+    const id = await saveReport({
+      ...reportData,
+      id: reportId(reportData.jobId),
+      deployerAddress: normalizeDeployer(reportData.deployerAddress),
+      contractAddress: normalizeDeployer(reportData.contractAddress),
+      timestamp: reportData.timestamp ?? Date.now(),
+      source: reportData.source ?? 'orchestrator',
     });
+    res.status(201).json({ success: true, id });
   } catch (err) {
     console.error('[API] POST /reports error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to save report'
-    });
-  }
-});
-
-/**
- * DELETE /api/reports/:jobId
- * Admin-only: Delete report
- */
-router.delete('/:jobId', (req, res) => {
-  const { jobId } = req.params;
-  
-  //TODO: Add admin authentication check
-  
-  try {
-    let reports = [];
-    if (fs.existsSync(REPORTS_FILE)) {
-      const fileContent = fs.readFileSync(REPORTS_FILE, 'utf8');
-      reports = JSON.parse(fileContent) || [];
-    }
-    
-    const idx = reports.findIndex(r => r.jobId === jobId || r.id === `report:${jobId}`);
-    
-    if (idx === -1) {
-      return res.status(404).json({
-        success: false,
-        error: 'Report not found'
-      });
-    }
-    
-    // Delete file
-    const report = reports[idx];
-    if (report.mdFilePath && fs.existsSync(report.mdFilePath)) {
-      fs.unlinkSync(report.mdFilePath);
-    }
-    
-    // Remove from array
-    reports.splice(idx, 1);
-    
-    // Write back
-    fs.writeFileSync(REPORTS_FILE, JSON.stringify(reports, null, 2));
-    
-    res.json({
-      success: true,
-      message: 'Report deleted'
-    });
-  } catch (err) {
-    console.error('[API] DELETE /reports/:jobId error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to delete report'
-    });
+    res.status(500).json({ success: false, error: 'Failed to save report' });
   }
 });
 
 module.exports = router;
-
-
-// ─── Helpers ──────────────────────────────────────────────────────
-
-function normalizeHederaToEvm(address) {
-  // Simple conversion: 0.0.NNNN → 0x...NNNN
-  // This is a placeholder - real implementation would use contract registry
-  if (address.startsWith('0.0.')) {
-    // Extract numeric ID
-    const id = address.split('.')[2];
-    // Convert to hex and pad
-    const hex = BigInt(id).toString(16).padStart(40, '0');
-    return `0x${hex}`;
-  }
-  return address.toLowerCase();
-}
 ```
 
 ---
