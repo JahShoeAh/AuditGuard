@@ -9,7 +9,7 @@ import { useAutoScroll } from '../hooks/useAutoScroll';
 
 const TABS = [
   { key: 'ALL', label: 'ALL', types: null },
-  { key: 'AUCTIONS', label: 'AUCTIONS', types: new Set(['CONTRACT_DISCOVERED', 'JobPosted', 'BidSubmitted', 'BID_SKIPPED', 'BID_SUBMISSION_FAILED', 'AUCTION_INVITE_SUMMARY', 'LLM_INFERENCE_STARTED', 'LLM_INFERENCE_SUCCEEDED', 'LLM_INFERENCE_FAILED', 'WinnersSelected', 'BidRefunded']) },
+  { key: 'AUCTIONS', label: 'AUCTIONS', types: new Set(['CONTRACT_DISCOVERED', 'JobPosted', 'BidSubmitted', 'BID_SKIPPED', 'BID_SUBMISSION_FAILED', 'AUCTION_INVITE_SUMMARY', 'LLM_INFERENCE_STARTED', 'LLM_INFERENCE_SUCCEEDED', 'LLM_INFERENCE_FAILED', 'WinnersSelected', 'WINNERS_SELECTED', 'WINNER_SELECTED', 'BidRefunded']) },
   { key: 'SUB', label: 'SUB-CTR', types: new Set(['SUB_AUCTION_CREATED', 'SUB_BID', 'SUB_SELECTED', 'RESULT_DELIVERED', 'RESULT_ACCEPTED', 'SUB_JOB_SETTLED']) },
   { key: 'DATA', label: 'DATA', types: new Set(['DATA_LISTED', 'DATA_PURCHASED', 'DATA_RATED']) },
   { key: 'SETTLE', label: 'SETTLE', types: new Set(['JOB_SETTLED', 'SUB_JOB_SETTLED']) },

@@ -19,6 +19,7 @@ export function useAuditJobs() {
   const jobSettlements = useStore((s) => s.jobSettlements);
   const settlements    = useStore((s) => s.settlements);
   const discoveries    = useStore((s) => s.discoveries);
+  const discoveriesByAddress = useStore((s) => s.discoveriesByAddress);
   const agents         = useStore((s) => s.agents);
 
   const jobs = useMemo(() => {
@@ -51,9 +52,16 @@ export function useAuditJobs() {
         }
 
         // Discovery cross-reference
-        const disc = discoveries.find(
-          (d) => d.contractAddress?.toLowerCase() === job.contractAddress?.toLowerCase()
+        const addressKey = String(job.contractAddress || '').toLowerCase();
+        const indexedDiscovery = discoveriesByAddress[addressKey];
+        const disc = indexedDiscovery || discoveries.find(
+          (d) => d.contractAddress?.toLowerCase() === addressKey
         );
+        const classifierMeta = (job.classifier && typeof job.classifier === 'object')
+          ? job.classifier
+          : (disc?.classifier && typeof disc.classifier === 'object')
+            ? disc.classifier
+            : null;
 
         return {
           jobId,
@@ -61,8 +69,20 @@ export function useAuditJobs() {
           contractChain:   job.contractChain || 'hedera',
           contractType:    job.contractType   || disc?.contractType || 'UNKNOWN',
           budgetFormatted: job.budgetFormatted || '—',
-          initialRiskScore: job.initialRiskScore || 0,
-          lineCount:       job.lineCount || 0,
+          initialRiskScore: Number(job.initialRiskScore ?? disc?.initialRiskScore ?? disc?.riskScore ?? 0),
+          lineCount:       Number(job.lineCount ?? disc?.estimatedLineCount ?? disc?.estimatedLOC ?? 0),
+          classifier: classifierMeta,
+          riskSource: classifierMeta?.riskSource ?? disc?.riskSource ?? null,
+          riskModel: classifierMeta?.riskModel ?? disc?.riskModel ?? null,
+          topRiskFactors: Array.isArray(classifierMeta?.topRiskFactors)
+            ? classifierMeta.topRiskFactors
+            : Array.isArray(disc?.topRiskFactors)
+              ? disc.topRiskFactors
+              : [],
+          evmType: classifierMeta?.evmType ?? disc?.evmType ?? null,
+          isProxy: classifierMeta?.isProxy ?? disc?.isProxy ?? null,
+          contractName: classifierMeta?.contractName ?? disc?.contractName ?? null,
+          sourceOrigin: classifierMeta?.sourceOrigin ?? disc?.sourceOrigin ?? null,
           state,
           currentStage,
           bids:            jobBids,
@@ -81,7 +101,7 @@ export function useAuditJobs() {
         };
       })
       .sort((a, b) => Number(b.jobId) - Number(a.jobId)); // newest first
-  }, [activeJobs, bids, winners, parentSubJobs, jobListings, jobSettlements, settlements, discoveries, agents]);
+  }, [activeJobs, bids, winners, parentSubJobs, jobListings, jobSettlements, settlements, discoveries, discoveriesByAddress, agents]);
 
   return { jobs };
 }

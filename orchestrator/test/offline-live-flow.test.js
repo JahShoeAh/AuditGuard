@@ -171,6 +171,7 @@ async function main() {
       agentId: "practice-static-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 28,
         collateral: 6,
@@ -184,6 +185,7 @@ async function main() {
       agentId: "practice-fuzzer-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 26,
         collateral: 5,
@@ -197,6 +199,7 @@ async function main() {
       agentId: "practice-llm-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 34,
         collateral: 8,
@@ -210,6 +213,7 @@ async function main() {
       agentId: "practice-lowstake",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 18,
         collateral: 4,

@@ -21,6 +21,7 @@ const TYPE_COLORS = {
   LLM_INFERENCE_FAILED: 'var(--accent-red)',
   WINNERS_SELECTED: 'var(--accent-green)',
   WinnersSelected: 'var(--accent-green)',
+  WINNER_SELECTED: 'var(--accent-green)',
   PAYMENT_SETTLED: 'var(--accent-gold)',
   AGENT_SLASHED: 'var(--accent-red)',
   AgentRegistered: 'var(--accent-purple)',
@@ -84,7 +85,7 @@ function describeEntry(entry) {
   if (t === 'LLM_INFERENCE_FAILED') {
     return `LLM inference failed for Job #${entry.jobId || '?'}: ${entry.reasonCode || ''} ${entry.reason || ''}`;
   }
-  if (t === 'WinnersSelected' || t === 'WINNERS_SELECTED') {
+  if (t === 'WinnersSelected' || t === 'WINNERS_SELECTED' || t === 'WINNER_SELECTED') {
     return `Job #${entry.jobId} winners selected (${entry.winnerCount || '?'} agents)`;
   }
   if (t === 'PAYMENT_SETTLED') {

@@ -1,5 +1,28 @@
 import { create } from 'zustand';
 
+function toFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeDiscovery(discovery) {
+  const riskScore = toFiniteNumber(
+    discovery?.initialRiskScore ?? discovery?.riskScore ?? 0,
+    0
+  );
+  const estimatedLOC = toFiniteNumber(
+    discovery?.estimatedLineCount ?? discovery?.estimatedLOC ?? 0,
+    0
+  );
+  return {
+    ...discovery,
+    riskScore,
+    initialRiskScore: riskScore,
+    estimatedLOC,
+    estimatedLineCount: estimatedLOC,
+  };
+}
+
 const useStore = create((set) => ({
   // ── Connection state ─────────────────────────────────────
   isConnected: false,
@@ -20,8 +43,19 @@ const useStore = create((set) => ({
 
   // ── Contract discoveries (from HCS Discovery topic) ──────
   discoveries: [],
+  discoveriesByAddress: {},
   addDiscovery: (d) =>
-    set((s) => ({ discoveries: [d, ...s.discoveries].slice(0, 100) })),
+    set((s) => {
+      const normalized = normalizeDiscovery(d);
+      const nextDiscoveries = [normalized, ...s.discoveries].slice(0, 100);
+      const addressKey = String(normalized?.contractAddress || "").toLowerCase();
+      return {
+        discoveries: nextDiscoveries,
+        discoveriesByAddress: addressKey
+          ? { ...s.discoveriesByAddress, [addressKey]: normalized }
+          : s.discoveriesByAddress,
+      };
+    }),
 
   // ── Auction jobs (from AuditAuction.JobPosted events) ────
   activeJobs: {},
@@ -380,7 +414,7 @@ const useStore = create((set) => ({
   // ── Full store reset (debug panel) ───────────────────────
   resetAll: () => set({
     isConnected: false, connectionError: null,
-    discoveries: [], activeJobs: {}, jobTerminal: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
+    discoveries: [], discoveriesByAddress: {}, activeJobs: {}, jobTerminal: {}, bids: {}, jobBidStatus: {}, llmProviderStatus: {}, llmInferenceStatus: {}, agents: {}, auditLog: [],
     reportMetadata: {},
     winners: {}, subJobs: {}, subBids: {}, parentSubJobs: {},
     dataListings: {}, dataPurchases: [], jobListings: {},

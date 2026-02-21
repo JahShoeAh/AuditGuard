@@ -11,6 +11,8 @@ The core issue: the orchestrator can't publish to HCS (INVALID_SIGNATURE), so `A
 
 ---
 
+
+
 ### Person 1 — Contracts
 
 - ✅ All core contracts deployed on Hedera testnet

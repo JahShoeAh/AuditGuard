@@ -11,8 +11,9 @@ const EVENTS_API_BASE_URL = (
   import.meta.env.VITE_EVENTS_API_BASE_URL || '/api'
 ).replace(/\/$/, '');
 
-const HCS_POLL_MS = 4_000;       // 4 s for HCS topics
-const CONTRACT_POLL_MS = 5_000;  // 5 s for on-chain events
+const HCS_POLL_MS = 2_000;       // balanced-fast default for HCS topics
+const CONTRACT_POLL_MS = 2_000;  // balanced-fast default for on-chain events
+const MIN_POLL_MS = 500;
 const DEFAULT_SOURCE_MODE = 'onchain_strict';
 const DEFAULT_HCS_REPLAY_MODE = 'from_now';
 const EVENT_FETCH_LIMIT = 500;
@@ -48,6 +49,12 @@ function resolveSettlementFlowType(paymentType, description = '') {
   return 'MAIN_AUDIT';
 }
 
+function parsePollIntervalMs(value, fallbackMs) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw < MIN_POLL_MS) return fallbackMs;
+  return Math.floor(raw);
+}
+
 // ── Helpers ────────────────────────────────────────────────
 
 /** Convert raw 8-decimal BigInt to human-readable "15.00 GUARD" */
@@ -66,6 +73,69 @@ function parseDisplayBidAmount(value) {
     value: numeric,
     formatted: `${numeric.toFixed(2)} GUARD`,
   };
+}
+
+function normalizeGuardRaw(value) {
+  try {
+    const raw = typeof value === 'bigint' ? value : BigInt(value ?? 0);
+    return { raw, formatted: parseGuardAmount(raw) };
+  } catch {
+    return { raw: 0n, formatted: parseGuardAmount(0n) };
+  }
+}
+
+function isWinnerSelectedType(type) {
+  return type === 'WINNER_SELECTED' || type === 'WINNERS_SELECTED';
+}
+
+const BID_FAILURE_REASON_LABELS = {
+  insufficient_payer_hbar: "Insufficient payer HBAR for transaction fees",
+  insufficient_payer_hbar_after_topup: "Insufficient payer HBAR after auto top-up",
+  insufficient_funds: "Insufficient funds for bid submission",
+  collateral_below_minimum: "Bid collateral below minimum",
+  inactive_agent: "Agent is not active on-chain",
+  bid_exceeds_budget: "Bid exceeds auction budget",
+  auction_expired: "Auction already expired",
+  job_not_found: "Auction job not found",
+  nonce_conflict: "Nonce conflict while submitting bid",
+  network_error: "Network error while submitting bid",
+  network_timeout: "Bid submission timed out",
+  contract_revert: "Bid submission reverted by contract",
+};
+
+function isPayerFundingFailureReason(reasonCode) {
+  return (
+    reasonCode === 'insufficient_payer_hbar' ||
+    reasonCode === 'insufficient_payer_hbar_after_topup'
+  );
+}
+
+function extractCompactRpcMessage(rawError) {
+  if (typeof rawError !== 'string') return '';
+  if (!rawError) return '';
+
+  const mirrorMessageMatch = rawError.match(/\"message\":\"([^\"]+)\"/i);
+  if (mirrorMessageMatch?.[1]) {
+    return mirrorMessageMatch[1];
+  }
+
+  if (rawError.length <= 220) return rawError;
+  return `${rawError.slice(0, 220)}...`;
+}
+
+function normalizeBidFailureReason(payload) {
+  const reasonCode = typeof payload?.reasonCode === 'string' ? payload.reasonCode : '';
+  const mapped = BID_FAILURE_REASON_LABELS[reasonCode] || '';
+  if (mapped) return mapped;
+
+  if (typeof payload?.reason === 'string' && payload.reason.trim()) {
+    return payload.reason.trim();
+  }
+  if (typeof payload?.error === 'string' && payload.error.trim()) {
+    return extractCompactRpcMessage(payload.error.trim());
+  }
+
+  return reasonCode || 'Bid failed';
 }
 
 /** "0x1234...abcd" */
@@ -111,6 +181,20 @@ export class EventListenerService {
       || import.meta.env.VITE_DASHBOARD_HCS_REPLAY_MODE
       || DEFAULT_HCS_REPLAY_MODE
     ).toLowerCase();
+    this.hcsPollMs = parsePollIntervalMs(
+      config?.dashboard?.hcsPollMs
+      || import.meta.env.DASHBOARD_HCS_POLL_MS
+      || import.meta.env.VITE_DASHBOARD_HCS_POLL_MS
+      || HCS_POLL_MS,
+      HCS_POLL_MS
+    );
+    this.contractPollMs = parsePollIntervalMs(
+      config?.dashboard?.contractPollMs
+      || import.meta.env.DASHBOARD_CONTRACT_POLL_MS
+      || import.meta.env.VITE_DASHBOARD_CONTRACT_POLL_MS
+      || CONTRACT_POLL_MS,
+      CONTRACT_POLL_MS
+    );
     const testContracts = Array.isArray(config?.testContracts) ? config.testContracts : [];
     this.allowedDiscoveryContracts = new Set(
       testContracts
@@ -129,6 +213,7 @@ export class EventListenerService {
     this.pendingSettlementBreakdowns = 0;
     this.hcsEventsSeen = 0;
     this.contractEventsSeen = 0;
+    this._contractPollInFlight = false;
 
     this._intervals = [];
     this._running = false;
@@ -142,6 +227,8 @@ export class EventListenerService {
     this.store.setIngestionHealth?.({
       sourceMode: this.sourceMode,
       replayMode: this.hcsReplayMode,
+      hcsPollMs: this.hcsPollMs,
+      contractPollMs: this.contractPollMs,
     });
   }
 
@@ -253,34 +340,37 @@ export class EventListenerService {
     this._setAgentHydrationHealth('degraded', null);
     console.log('[EventListener] Syncing historical agents...');
     try {
-      const eventCount = await this._syncAgentsFromRegistryEvents();
-      if (eventCount > 0) {
-        this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${eventCount} historical agents from events`);
-        return;
-      }
+      // Try view function first (fast, reliable, doesn't hit rate limits)
       const viewCount = await this._syncAgentsFromRegistryViews();
       if (viewCount > 0) {
         this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry view fallback`);
+        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry views (primary method)`);
         return;
       }
-      this._setAgentHydrationHealth('degraded', 'No agents returned from on-chain events or views');
+      // Fallback to events if views returned 0 agents
+      const eventCount = await this._syncAgentsFromRegistryEvents();
+      if (eventCount > 0) {
+        this._setAgentHydrationHealth('ok', null);
+        console.log(`[EventListener] Synced ${eventCount} agents from events (fallback method)`);
+        return;
+      }
+      this._setAgentHydrationHealth('degraded', 'No agents returned from views or events');
       console.warn('[EventListener] Agent hydration returned zero records');
     } catch (err) {
-      const eventErr = err instanceof Error ? err.message : String(err);
-      console.warn(`[EventListener] Agent event hydration failed: ${eventErr}`);
+      const primaryErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[EventListener] Agent view hydration failed: ${primaryErr}`);
       try {
-        const viewCount = await this._syncAgentsFromRegistryViews();
-        if (viewCount > 0) {
+        // If views failed, try events as recovery
+        const eventCount = await this._syncAgentsFromRegistryEvents();
+        if (eventCount > 0) {
           this._setAgentHydrationHealth('ok', null);
-          console.log(`[EventListener] Recovered agent hydration via views (${viewCount} agents)`);
+          console.log(`[EventListener] Recovered agent hydration via events (${eventCount} agents)`);
           return;
         }
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}`);
-      } catch (viewErr) {
-        const fallbackErr = viewErr instanceof Error ? viewErr.message : String(viewErr);
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}; view fallback failed: ${fallbackErr}`);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}`);
+      } catch (fallbackErr) {
+        const eventErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}; event fallback failed: ${eventErrMsg}`);
       }
       throw err;
     }
@@ -304,16 +394,19 @@ export class EventListenerService {
       return;
     }
 
-    // Initial poll to reduce startup latency.
-    this._pollCloudflareEvents().catch((err) => {
-      console.warn('[EventListener] Initial Cloudflare event poll failed:', err.message);
-    });
+    // Discovery topic
+    this._intervals.push(setInterval(() => {
+      this._pollHCSTopic(topics.discovery, 'discovery');
+    }, this.hcsPollMs));
 
     this._intervals.push(setInterval(() => {
-      this._pollCloudflareEvents();
-    }, HCS_POLL_MS));
+      this._pollHCSTopic(topics.auditLog, 'auditLog');
+    }, this.hcsPollMs));
 
-  }
+    // AgentComms topic
+    this._intervals.push(setInterval(() => {
+      this._pollHCSTopic(topics.agentComms, 'agentComms');
+    }, this.hcsPollMs));
 
   async _pollCloudflareEvents() {
     try {
@@ -476,8 +569,52 @@ export class EventListenerService {
     };
 
     if (topicKey === 'discovery') {
+      const normalizedRiskScore = Number(
+        payload.initialRiskScore
+        ?? payload.riskScore
+        ?? entry.initialRiskScore
+        ?? entry.riskScore
+        ?? 0
+      );
+      const normalizedLineCount = Number(
+        payload.estimatedLineCount
+        ?? payload.estimatedLOC
+        ?? entry.estimatedLineCount
+        ?? entry.estimatedLOC
+        ?? 0
+      );
+      const classifierMetadata =
+        (payload.classifier && typeof payload.classifier === "object")
+          ? payload.classifier
+          : (
+            payload.riskSource != null ||
+            payload.riskModel != null ||
+            payload.topRiskFactors != null ||
+            payload.evmType != null ||
+            payload.isProxy != null
+          )
+            ? {
+              riskSource: payload.riskSource ?? null,
+              riskModel: payload.riskModel ?? null,
+              topRiskFactors: Array.isArray(payload.topRiskFactors) ? payload.topRiskFactors : [],
+              evmType: payload.evmType ?? null,
+              isProxy: payload.isProxy ?? null,
+              contractName: payload.contractName ?? null,
+              standards: Array.isArray(payload.standards) ? payload.standards : [],
+              sourceOrigin: payload.sourceOrigin ?? null,
+            }
+            : null;
+      const normalizedDiscovery = {
+        ...entry,
+        riskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
+        initialRiskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
+        estimatedLOC: Number.isFinite(normalizedLineCount) ? normalizedLineCount : 0,
+        estimatedLineCount: Number.isFinite(normalizedLineCount) ? normalizedLineCount : 0,
+        classifier: classifierMetadata,
+      };
+
       if (this.onlyTestDiscoveries) {
-        const contractAddress = String(entry.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
+        const contractAddress = String(normalizedDiscovery.contractAddress ?? payload.contractAddress ?? '').toLowerCase();
         if (!contractAddress) return;
         if (
           this.allowedDiscoveryContracts.size > 0 &&
@@ -489,9 +626,9 @@ export class EventListenerService {
         this.seenTestDiscoveries.add(contractAddress);
       }
 
-      this.store.addDiscovery(entry);
+      this.store.addDiscovery(normalizedDiscovery);
       this.store.incrementStat('totalDiscoveries');
-      this._addLogEntry({ ...entry, source: 'discovery' }, eventId);
+      this._addLogEntry({ ...normalizedDiscovery, source: 'discovery' }, eventId);
       return;
     }
 
@@ -527,11 +664,30 @@ export class EventListenerService {
         reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
       };
     } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+      const reasonCode = typeof payload.reasonCode === 'string' ? payload.reasonCode : null;
+      const normalizedType = isPayerFundingFailureReason(reasonCode)
+        ? 'BID_SKIPPED'
+        : 'BID_SUBMISSION_FAILED';
       displayEntry = {
         ...entry,
-        type: 'BID_SUBMISSION_FAILED',
+        type: normalizedType,
         jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
-        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        reason: normalizeBidFailureReason(payload),
+      };
+    } else if (isWinnerSelectedType(parsedData.type)) {
+      const winnerAgents = Array.isArray(payload.winners)
+        ? payload.winners
+          .map((winner) => String(winner))
+          .filter((winner) => winner.length > 0)
+        : [];
+      if (winnerAgents.length === 0) {
+        skipDisplayEntry = true;
+      }
+      displayEntry = {
+        ...entry,
+        type: 'WINNER_SELECTED',
+        jobId: String(payload.jobId ?? sequenceNumber),
+        winnerCount: winnerAgents.length,
       };
     } else if (parsedData.type === 'LLM_PROVIDER_READY') {
       displayEntry = {
@@ -603,6 +759,27 @@ export class EventListenerService {
       }
 
       const jobId = String(payload.jobId ?? sequenceNumber);
+      const classifierMetadata =
+        (payload.classifier && typeof payload.classifier === "object")
+          ? payload.classifier
+          : (
+            payload.riskSource != null ||
+            payload.riskModel != null ||
+            payload.topRiskFactors != null ||
+            payload.evmType != null ||
+            payload.isProxy != null
+          )
+            ? {
+              riskSource: payload.riskSource ?? null,
+              riskModel: payload.riskModel ?? null,
+              topRiskFactors: Array.isArray(payload.topRiskFactors) ? payload.topRiskFactors : [],
+              evmType: payload.evmType ?? null,
+              isProxy: payload.isProxy ?? null,
+              contractName: payload.contractName ?? null,
+              standards: Array.isArray(payload.standards) ? payload.standards : [],
+              sourceOrigin: payload.sourceOrigin ?? null,
+            }
+            : null;
       this.store.setJob(jobId, {
         jobId,
         contractAddress: payload.contractAddress,
@@ -612,6 +789,7 @@ export class EventListenerService {
         budgetFormatted: parseGuardAmount(payload.budget ?? 0),
         initialRiskScore: Number(payload.riskScore ?? 0),
         lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        classifier: classifierMetadata,
         postedAt: Date.now(),
       });
       this.store.incrementStat('totalAuctions');
@@ -662,13 +840,47 @@ export class EventListenerService {
 
     if (parsedData.type === 'BID_SUBMISSION_FAILED') {
       const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+      const reasonCode = typeof payload.reasonCode === 'string' ? payload.reasonCode : null;
+      const status = isPayerFundingFailureReason(reasonCode) ? 'skipped' : 'failed';
       this.store.addJobBidStatus?.(jobId, {
-        status: 'failed',
+        status,
         agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
         evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
-        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        reason: normalizeBidFailureReason(payload),
         timestamp: parsedData.timestamp ?? Date.now(),
         eventId,
+      });
+      return;
+    }
+
+    if (isWinnerSelectedType(parsedData.type)) {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      const winnerAgents = Array.isArray(payload.winners)
+        ? payload.winners
+          .map((winner) => String(winner))
+          .filter((winner) => winner.length > 0)
+        : [];
+      // Guard gate: ignore malformed winner payloads and preserve authoritative contract winners.
+      if (winnerAgents.length === 0) return;
+      const existingWinnerData = this.store.winners?.[jobId];
+      if (
+        existingWinnerData?.source === 'contract' &&
+        Array.isArray(existingWinnerData?.agents) &&
+        existingWinnerData.agents.length > 0
+      ) {
+        return;
+      }
+      const totalEscrowed = normalizeGuardRaw(payload.totalEscrowed);
+      const platformFee = normalizeGuardRaw(payload.platformFee);
+
+      this.store.setWinners?.(jobId, {
+        agents: winnerAgents,
+        totalEscrowed: totalEscrowed.raw,
+        totalEscrowedFormatted: totalEscrowed.formatted,
+        platformFee: platformFee.raw,
+        platformFeeFormatted: platformFee.formatted,
+        winnersAt: existingWinnerData?.winnersAt ?? (timestamp ?? Date.now()),
+        source: 'auditLog',
       });
       return;
     }
@@ -691,6 +903,18 @@ export class EventListenerService {
 
     if (topicKey === 'agentComms' && parsedData.type === 'AUCTION_INVITE') {
       const jobId = String(payload.jobId ?? sequenceNumber);
+      const existing = this.store.activeJobs?.[jobId];
+      if (existing && payload.classifierHints && typeof payload.classifierHints === 'object') {
+        this.store.setJob?.(jobId, {
+          ...existing,
+          jobId,
+          contractAddress: existing.contractAddress ?? payload.contractAddress,
+          classifier: {
+            ...(existing.classifier || {}),
+            ...payload.classifierHints,
+          },
+        });
+      }
       const targetedIds = Array.isArray(payload.eligibleAgentIds)
         ? payload.eligibleAgentIds.map((value) => String(value))
         : [];
@@ -836,11 +1060,13 @@ export class EventListenerService {
 
     this._intervals.push(setInterval(() => {
       this._pollContractEvents();
-    }, CONTRACT_POLL_MS));
+    }, this.contractPollMs));
     this._pollContractEvents();
   }
 
   async _pollContractEvents() {
+    if (this._contractPollInFlight) return;
+    this._contractPollInFlight = true;
     try {
       const currentBlock = await this.provider.getBlockNumber();
 
@@ -871,9 +1097,24 @@ export class EventListenerService {
         vaultFactoryContract, stakingManagerContract, treasuryContract,
       } = this.contracts;
 
-      // Helper: safely query a contract that may not be deployed yet
-      const q = (contract, event) =>
-        contract ? contract.queryFilter(event, from, to).catch(() => []) : Promise.resolve([]);
+      // Helper: safely query a contract that may not be deployed yet.
+      // Guard gate: do not advance block cursor when core auction queries fail.
+      const criticalQueryFailures = [];
+      const q = async (contract, event, options = {}) => {
+        const { critical = false } = options;
+        if (!contract) return [];
+        try {
+          return await contract.queryFilter(event, from, to);
+        } catch (err) {
+          if (critical) {
+            criticalQueryFailures.push({
+              event,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return [];
+        }
+      };
 
       const [
         jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
@@ -888,12 +1129,12 @@ export class EventListenerService {
         slashInitiated, appealFiled, appealApproved, appealDenied,
         feeReceived, feeDistributed,
       ] = await Promise.all([
-        q(auctionContract, 'JobPosted'),
-        q(auctionContract, 'BidSubmitted'),
-        q(auctionContract, 'WinnersSelected'),
-        q(auctionContract, 'BidRefunded'),
-        q(auctionContract, 'JobCancelled'),
-        q(auctionContract, 'JobCompleted'),
+        q(auctionContract, 'JobPosted', { critical: true }),
+        q(auctionContract, 'BidSubmitted', { critical: true }),
+        q(auctionContract, 'WinnersSelected', { critical: true }),
+        q(auctionContract, 'BidRefunded', { critical: true }),
+        q(auctionContract, 'JobCancelled', { critical: true }),
+        q(auctionContract, 'JobCompleted', { critical: true }),
         q(agentRegistryContract, 'AgentRegistered'),
         q(agentRegistryContract, 'ReputationUpdated'),
         q(agentRegistryContract, 'AgentPromoted'),
@@ -920,6 +1161,18 @@ export class EventListenerService {
         q(treasuryContract, 'FeeReceived'),
         q(treasuryContract, 'FeeDistributed'),
       ]);
+
+      if (criticalQueryFailures.length > 0) {
+        const failedEvents = criticalQueryFailures.map((failure) => failure.event).join(', ');
+        console.warn(
+          `[EventListener] Contract poll incomplete (${from}-${to}); critical queries failed: ${failedEvents}. Retrying without advancing cursor.`
+        );
+        this.store.setIngestionHealth?.({
+          contractPollError: `critical_query_failed:${failedEvents}`,
+          contractPollErrorAt: Date.now(),
+        });
+        return;
+      }
 
       const polledEventCount = [
         jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
@@ -958,6 +1211,8 @@ export class EventListenerService {
           auctionDeadline: a.auctionDeadline,
           initialRiskScore: Number(a.initialRiskScore),
           lineCount: Number(a.lineCount),
+          postedAt: Date.now(),
+          updatedAt: Date.now(),
           blockNumber: ev.blockNumber,
         });
         this.store.incrementStat('totalAuctions');
@@ -1016,12 +1271,16 @@ export class EventListenerService {
 
       for (const ev of winnersSelected) {
         const a = ev.args;
-        this.store.setWinners(a.jobId.toString(), {
+        const jobId = a.jobId.toString();
+        const existingWinnerData = this.store.winners?.[jobId];
+        this.store.setWinners(jobId, {
           agents: Array.from(a.winners),
           totalEscrowed: a.totalEscrowed,
           totalEscrowedFormatted: parseGuardAmount(a.totalEscrowed),
           platformFee: a.platformFee,
           platformFeeFormatted: parseGuardAmount(a.platformFee),
+          winnersAt: existingWinnerData?.winnersAt ?? Date.now(),
+          source: 'contract',
         });
         if ((a.platformFee ?? 0n) > 0n) {
           this._addGuardFlow({
@@ -1752,9 +2011,12 @@ export class EventListenerService {
         lastContractBlock: Number(to),
         contractEventsSeen: this.contractEventsSeen,
         activeAuctionsCount,
+        contractPollError: null,
       });
     } catch (err) {
       console.warn('[EventListener] Contract poll error:', err.message);
+    } finally {
+      this._contractPollInFlight = false;
     }
   }
 }
