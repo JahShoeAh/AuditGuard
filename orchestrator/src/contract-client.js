@@ -1,4 +1,9 @@
 import { ethers } from "ethers";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
+// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
+const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js");
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -45,6 +50,13 @@ function buildProviderWithFallback() {
       staticNetwork: true,
     });
     provider.pollingInterval = 5000;
+    // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
+    // Force eth_getLogs-based polling for all event subscriptions.
+    const _orig = provider._getSubscriber.bind(provider);
+    provider._getSubscriber = (sub) => {
+      if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
+      return _orig(sub);
+    };
     return provider;
   });
 
@@ -84,8 +96,14 @@ export class ContractClient {
     this.agentRegistry = new ethers.Contract(agentRegistryAddress, loadABI("AgentRegistry"), wallet);
     this.budgetVault = new ethers.Contract(budgetVaultAddress, loadABI("AuditBudgetVault"), wallet);
     this.fastWinnerPathEnabled = (process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED ?? "false") === "true";
+    const configuredMaxHighStreak = Number(CONFIG.queue?.writeQueueMaxHighStreak ?? 3);
+    this.writeQueueMaxHighStreak =
+      Number.isFinite(configuredMaxHighStreak) && configuredMaxHighStreak > 0
+        ? Math.floor(configuredMaxHighStreak)
+        : 3;
     this._writeQueue = [];
     this._writeQueueRunning = false;
+    this._highPriorityStreak = 0;
 
     // AuditScheduler — optional; only active after deploy:audit-scheduler has run
     try {
@@ -153,11 +171,16 @@ export class ContractClient {
     this._writeQueueRunning = true;
     try {
       while (this._writeQueue.length > 0) {
-        const task = this._writeQueue.shift();
+        const task = this._dequeueNextWriteTask();
         if (!task) continue;
         try {
           const result = await task.sendFn();
           task.resolve(result);
+          if (task.priority === "high") {
+            this._highPriorityStreak += 1;
+          } else {
+            this._highPriorityStreak = 0;
+          }
         } catch (err) {
           task.reject(err);
         }
@@ -167,21 +190,39 @@ export class ContractClient {
     }
   }
 
+  _dequeueNextWriteTask() {
+    if (this._writeQueue.length === 0) return null;
+    if (
+      this.fastWinnerPathEnabled &&
+      this.writeQueueMaxHighStreak > 0 &&
+      this._highPriorityStreak >= this.writeQueueMaxHighStreak
+    ) {
+      const normalIndex = this._writeQueue.findIndex((entry) => entry.priority !== "high");
+      if (normalIndex >= 0) {
+        const [task] = this._writeQueue.splice(normalIndex, 1);
+        return task ?? null;
+      }
+    }
+    return this._writeQueue.shift() ?? null;
+  }
+
   async createAuditJob(...args) {
     return this._enqueueWriteWithPriority(async () => this.auction.createAuditJob(...args), "normal");
   }
 
-  async selectWinners(jobId, winningBidIndices) {
+  async selectWinners(jobId, winningBidIndices, options = {}) {
+    const priority = options?.priority === "high" ? "high" : "normal";
     const tx = await this._enqueueWriteWithPriority(
       async () => this.auction.selectWinners(jobId, winningBidIndices),
-      "high"
+      priority
     );
     const receipt = await tx.wait();
     return receipt;
   }
 
-  async cancelJob(jobId) {
-    const tx = await this._enqueueWriteWithPriority(async () => this.auction.cancelJob(jobId), "high");
+  async cancelJob(jobId, options = {}) {
+    const priority = options?.priority === "high" ? "high" : "normal";
+    const tx = await this._enqueueWriteWithPriority(async () => this.auction.cancelJob(jobId), priority);
     const receipt = await tx.wait();
     return receipt;
   }

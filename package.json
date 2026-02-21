@@ -16,10 +16,10 @@
     "build": "npm run --workspaces --if-present build",
     "dev": "npm run dev:all",
     "dev:all": "npm run stop:all && npm run preflight:live && npm run dev:all:unsafe",
-    "dev:all:unsafe": "bash -lc 'VITE_TEST_MODE=true export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & node packages/events-api/src/index.js & wait'",
-    "dev:all:test": "npm run stop:all && npm run preflight:live && bash -lc 'export VITE_TEST_MODE=true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & wait'",
-    "dev:backend": "bash -lc 'export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & node packages/events-api/src/index.js & wait'",
-    "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|vite\" >/dev/null 2>&1 || true'",
+    "dev:all:unsafe": "bash scripts/start-dev.sh",
+    "dev:all:test": "npm run stop:all && npm run preflight:live && bash scripts/start-dev.sh --test",
+    "dev:backend": "bash -lc 'export APP_ENV=local EVENT_RELAY_URL=http://localhost:4000/api/events; export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm --prefix packages/events-api run dev & wait'",
+    "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|vite|events-api/src/index.js|events-api run dev\" >/dev/null 2>&1 || true; sleep 2'",
     "start:all": "npm run dev:all",
     "start:all:unsafe": "npm run stop:all && npm run dev:all:unsafe",
     "start:all:live": "npm run dev:all",
@@ -55,7 +55,8 @@
     "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",
     "deploy:audit-scheduler": "HARDHAT_CONFIG=packages/contracts/hardhat.config.js npx hardhat run scripts/deploy-audit-scheduler.js --network hedera_testnet",
     "deploy:exchange": "hardhat run scripts/deploy-guard-exchange.js --network hedera_testnet",
-    "fund:agents": "node scripts/fund-agents.js"
+    "fund:agents": "node scripts/fund-agents.js",
+    "deploy:test-contracts": "npx hardhat run packages/contracts/scripts/deploy-test-contracts.js --network hedera_testnet --config packages/contracts/hardhat.config.js"
   },
   "repository": {
     "type": "git",
@@ -85,6 +86,7 @@
     "checkout": "^1.0.1",
     "evmdecoder": "^0.0.69",
     "git": "^0.1.5",
-    "main": "^1000.0.1"
+    "main": "^1000.0.1",
+    "pg": "^8.18.0"
   }
 }

@@ -105,12 +105,16 @@ async function main() {
   // Listen for sub-auction postings
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
-      await hcs.publishAgentComms({
-        type: "PONG",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {},
-      });
+      try {
+        await hcs.publishAgentComms({
+          type: "PONG",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {},
+        });
+      } catch (err) {
+        log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 

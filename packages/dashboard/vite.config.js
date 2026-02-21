@@ -13,14 +13,20 @@ export default defineConfig({
     port: 5173,
     open: process.env.DASHBOARD_OPEN === 'true',
     proxy: {
-      '/api': {
-        target: `http://localhost:${process.env.API_PORT ?? 3002}`,
-        changeOrigin: true,
-      },
       '/hedera-rpc': {
         target: 'https://testnet.hashio.io',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/hedera-rpc/, '/api'),
+      },
+      // Reports API — served by events-api on port 4000; listed before /api so its prefix wins
+      '/api/reports': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      // Events API (packages/events-api — port 4000, started by npm run dev:all)
+      '/api': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
       },
     },
   },

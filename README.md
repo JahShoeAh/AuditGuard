@@ -1,10 +1,10 @@
 # AuditGuard
 
-Autonomous agent-based smart contract security audit marketplace built on Hedera Hashgraph.
+Autonomous agent-based smart contract security audit marketplace built on Hedera Hashgraph. Seven TypeScript agents discover contracts, bid in on-chain auctions, perform security analysis, and get paid in GUARD tokens — coordinated through Hedera Consensus Service (HCS) and EVM smart contracts.
 
-> Current build notes (2026-02-20): `AUCTION_INVITE` handling includes race-safe fallback context, agent `PING` -> `PONG` liveness is active, and `npm run dev:test` includes the dedicated agent invite suite.
+---
 
-## System Architecture
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -64,100 +64,304 @@ flowchart TB
     AA & AR & PS --> DASH
 ```
 
-### Data Flow
+---
 
-1. **Discovery**: Scanner Agent monitors Hedera for new contract deployments, publishes `CONTRACT_DISCOVERED` to HCS
-2. **Auction**: Orchestrator creates an on-chain audit job via `AuditAuction.createAuditJob()`
-3. **Bidding**: Eligible agents receive invites, calculate dynamic bids, submit on-chain + publish to HCS
-4. **Winner Selection**: Orchestrator scores bids (55% reputation, 25% price, 20% speed) and selects winners
-5. **Audit**: Winners perform security analysis (static, fuzz, LLM semantic), submit findings hashes
-6. **Sub-contracting**: LLM Agent can sub-contract dependency analysis via `SubAuction`
-7. **Data Commerce**: Agents buy/sell scan reports on the `DataMarketplace`
-8. **Reporting**: Report Agent aggregates findings, detects duplicates, publishes final report
-9. **Settlement**: `PaymentSettlement` distributes GUARD atomically to all participants
-10. **Reputation**: Agent scores update based on finding accuracy; `StakingManager` handles slashing
+## Prerequisites
+
+- **Node.js** >= 20
+- **npm** >= 10
+- **Docker** (optional — needed only for local Postgres; report persistence works without it)
+- A funded **Hedera testnet account** with ECDSA private key
+
+---
+
+## Environment Setup
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in the required private keys. All account IDs are pre-populated with testnet values. At minimum you need:
+
+| Variable | Required for |
+|----------|-------------|
+| `OPERATOR_PRIVATE_KEY` | Orchestrator, contract calls |
+| `HEDERA_PRIVATE_KEY` | Contract deployment, HTS token ops |
+| `STATIC_PRIVATE_KEY` / `FUZZER_PRIVATE_KEY` / `LLM_PRIVATE_KEY` | Individual agents |
+| `SCANNER_PRIVATE_KEY` | Scanner agent |
+
+Leave everything else at the defaults in `.env.example` for local dev.
+
+---
+
+## Install Dependencies
+
+```bash
+npm install
+```
+
+This installs all workspace dependencies (agents, orchestrator, dashboard, events-api, inft).
+
+If `packages/events-api` dependencies are missing after the workspace install (known npm hoisting issue with native modules):
+
+```bash
+npm install --prefix packages/events-api
+```
+
+---
+
+## Full Dev Stack
+
+### Option A — Skip preflight (fastest, use for local dev)
+
+Starts: dashboard · orchestrator · all 7 agents · iNFT listeners · events-api
+
+```bash
+npm run dev:all:unsafe
+```
+
+Ports assigned:
+| Service | Port |
+|---------|------|
+| Dashboard (Vite) | 5173 |
+| Events API (SQLite) | 4000 |
+| Reports endpoints (`/api/reports`) | 4000 |
+
+### Option B — Full preflight + live agent verification (production-like)
+
+Runs preflight checks, activates and verifies live agents on Hedera testnet, then starts the full stack:
+
+```bash
+npm run dev:all
+```
+
+### Stop everything
+
+```bash
+npm run stop:all
+```
+
+---
+
+## Starting Services Individually
+
+### Dashboard only
+
+```bash
+npm --prefix packages/dashboard run dev
+```
+
+### Orchestrator only
+
+```bash
+npm run orchestrator
+```
+
+### All agents (supervisor — auto-restarts failed agents)
+
+```bash
+npm run agents
+```
+
+### Individual agent
+
+```bash
+npm --workspace agents run scanner
+npm --workspace agents run static
+npm --workspace agents run fuzzer
+npm --workspace agents run llm
+npm --workspace agents run dependency
+npm --workspace agents run report
+npm --workspace agents run alert
+```
+
+### Events API (SQLite — port 4000)
+
+```bash
+node packages/events-api/src/index.js
+```
+
+### iNFT listeners
+
+```bash
+npm run inft:listen          # discovery listener
+npm run inft:listen:events   # event listener
+```
+
+### Backend only (no dashboard)
+
+```bash
+npm run dev:backend
+```
+
+---
+
+## Report Persistence (PostgreSQL)
+
+The report generation pipeline writes audit reports to PostgreSQL after each `WinnersSelected` on-chain event. Without a `DATABASE_URL`, report writes are silently skipped (orchestrator logs a warning) — the system won't crash.
+
+### 1. Start a local Postgres instance
+
+```bash
+docker run -d --name pg-local \
+  -e POSTGRES_USER=auditguard \
+  -e POSTGRES_PASSWORD=dev \
+  -e POSTGRES_DB=auditguard \
+  -p 5432:5432 \
+  postgres:16-alpine
+```
+
+### 2. Add to `.env`
+
+```
+DATABASE_URL=postgresql://auditguard:dev@localhost:5432/auditguard
+```
+
+### 3. Run the schema migration (one-time)
+
+```bash
+psql "$DATABASE_URL" -f orchestrator/src/schema.sql
+```
+
+### 4. Verify reports route on the Events API (port 4000)
+
+```bash
+curl "http://localhost:4000/api/reports?deployer=0x0000000000000000000000000000000000000000"
+```
+
+### S3 (optional — local dev skips it)
+
+Leave `AWS_S3_BUCKET` unset. When unset, the markdown content is omitted from the DB record and the "Show Preview" in the dashboard will show a placeholder. Set the following for production:
+
+```
+AWS_S3_BUCKET=auditguard-reports
+AWS_REGION=us-east-1
+```
+
+---
+
+## First-Time Deployment (Hedera Testnet)
+
+Only needed when starting from scratch or after a contract upgrade:
+
+```bash
+# Deploy GUARD HTS token
+npm run deploy:token
+
+# Deploy all EVM smart contracts
+npm run deploy:contracts
+
+# Create HCS topics
+npm run setup:hcs
+
+# Fund agent accounts with HBAR + GUARD
+npm run fund:agents
+```
+
+Deployed addresses and topic IDs are written to `packages/sdk/config.json` automatically.
+
+---
+
+## Testing
+
+```bash
+# Recommended dev test suite (fastest)
+npm run dev:test
+
+# Contract tests (Hardhat)
+npm run test
+
+# All test suites
+npm run test:all
+
+# Individual suites
+npm --workspace agents run test           # Agent vitest
+npm --workspace agents run test:invite    # Auction invite flow
+npm --prefix orchestrator run test:mocks  # Orchestrator mock tests
+npm --prefix orchestrator run test:offline
+npm --prefix packages/dashboard test      # Dashboard tests
+```
+
+---
 
 ## Project Structure
 
 ```
 AuditGuard/
 ├── agents/                  # 7 autonomous TypeScript agents
-│   ├── scanner/             # Monitors chain for new contracts
-│   ├── static-analysis/     # Static code analysis
-│   ├── fuzzer/              # Fuzz testing
-│   ├── llm-contextual/      # Deep semantic analysis + sub-contracting
-│   ├── dependency/          # Dependency analysis (sub-contractor)
-│   ├── report/              # Finding aggregation + dedup
-│   ├── alert/               # Critical finding alerts
-│   └── shared/              # Common HCS client, contract client, utils, metrics
-├── orchestrator/            # Central coordination service
+│   ├── scanner/
+│   ├── static-analysis/
+│   ├── fuzzer/
+│   ├── llm-contextual/
+│   ├── dependency/
+│   ├── report/
+│   ├── alert/
+│   └── shared/              # HCS client, contract client, message types
+├── orchestrator/            # Central coordination service (JS/ESM)
+│   └── src/
+│       ├── orchestrator.js  # Main state machine
+│       ├── report-writer.js # Markdown generation + DB persistence hook
+│       └── schema.sql       # PostgreSQL DDL — run once
 ├── packages/
-│   ├── contracts/           # 10 Solidity smart contracts (Hardhat)
-│   ├── dashboard/           # React observer dashboard (Vite) — deployed to Vercel
-│   ├── events-api/          # Express + SQLite event persistence API — runs on EC2
-│   ├── inft/                # iNFT schemas, minting, state transitions
-│   └── sdk/                 # Shared config (deployed addresses, topic IDs)
-└── .env.example             # Required environment variables
+│   ├── contracts/           # Solidity smart contracts (Hardhat)
+│   ├── dashboard/           # React 18 + Vite + TailwindCSS observer UI
+│   ├── events-api/          # Express + SQLite event persistence (port 4000)
+│   ├── inft/                # 0g Labs DA layer, iNFT minting
+│   └── sdk/
+│       ├── config.json      # Single source of truth: contract addresses, topic IDs
+│       └── db/
+│           ├── report-db.js    # PostgreSQL + S3 report persistence
+│           └── report-types.js # StoredAuditReport schema + helpers
+└── scripts/                 # Deployment and utility scripts
 ```
 
-## Quick Start
+---
 
-```bash
-# Install dependencies
-npm install
+## Key Config
 
-# Copy and configure environment
-cp .env.example .env
+`packages/sdk/config.json` — all deployed contract addresses, HCS topic IDs, and iNFT collection IDs. Updated automatically on deploy. Never hardcode addresses; always read from this file.
 
-# Deploy GUARD token + contracts + HCS topics (requires Hedera testnet account)
-npm run deploy:token
-npm run deploy:contracts
-npm run setup:hcs
+### HCS Topics
 
-# Run all agents
-npm run agents:demo
+| Topic | ID | Purpose |
+|-------|----|---------|
+| Discovery | `0.0.7940144` | Contract discovery events |
+| Audit Log | `0.0.7940145` | Findings, reports, alerts |
+| Agent Comms | `0.0.7940146` | Invites, bids, heartbeats, sub-contracting |
 
-# Run orchestrator
-npm run orchestrator
+### GUARD Token
 
-# Run dashboard
-npm --prefix packages/dashboard run dev
-```
+HTS fungible token — **8 decimal places** (not 18). Always use `parseUnits(amount, 8)` in scripts and frontend. Token ID: `0.0.7977433`.
 
-## Deployment
-
-- **Frontend (Dashboard)**: Deployed to Vercel via `.github/workflows/deploy-dashboard-vercel.yml`
-- **Backend (Orchestrator + Agents + Events API)**: Deployed to AWS EC2 via Docker/GHCR, workflow: `.github/workflows/ghcr-build-devall.yml`
-- **Events API**: Runs inside the backend Docker container on port 4000 (Express + SQLite)
-- Full runbook: `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
-
-## Current Integration Items (as of February 20, 2026)
-
-### Integrated
-- Contract addresses, HCS topics, and iNFT collection IDs are centralized in `packages/sdk/config.json`.
-- Agent swarm includes all 7 roles with shared message types and health/restart supervision (`agents/run-all.ts`).
-- Orchestrator is wired for invites, heartbeat PING/PONG, findings intake, and report/alert flow.
-- iNFT discovery listener is wired to mint Audit Job and Contract Health iNFTs from discovery events.
-- Dashboard includes live-feed, agents, contracts, and analytics surfaces.
-- Events API migrated from Cloudflare Workers + D1 to Express + better-sqlite3 on EC2.
-- Dashboard deployment migrated from Cloudflare Workers to Vercel.
-
-### In Progress / Needs Cleanup
-- Root contract test path is valid, but local execution still depends on environment key format and dependency state.
-- Agent and dashboard test commands require their package dependencies to be installed locally.
-- Some docs still overstate readiness; this README section is now the canonical integration snapshot.
-
-### Deferred (Tracked)
-- Signature verification for PONG messages.
-- Persistent orchestrator roster/cache storage.
+---
 
 ## Tech Stack
 
-- **Blockchain**: Hedera Hashgraph (HTS, HCS, HSCS)
-- **Smart Contracts**: Solidity 0.8.24 / Hardhat
-- **Agents**: TypeScript / Node.js / tsx
-- **Orchestrator**: JavaScript / ES Modules
-- **Dashboard**: React 18 / Vite / TailwindCSS / Zustand / Framer Motion — hosted on Vercel
-- **Events API**: Express / better-sqlite3 — hosted on EC2
-- **iNFT**: 0g Labs DA layer for evolving NFT metadata
-- **Token**: GUARD (HTS fungible token, 8 decimals)
+| Layer | Technology |
+|-------|------------|
+| Blockchain | Hedera Hashgraph (HTS, HCS, HSCS/EVM) |
+| Smart Contracts | Solidity 0.8.24 / Hardhat |
+| Agents | TypeScript / Node.js 20 / tsx |
+| Orchestrator | JavaScript / ES Modules |
+| Dashboard | React 18 / Vite / TailwindCSS / Zustand / Framer Motion |
+| Events API | Express / better-sqlite3 + reports routes |
+| Reports Storage | PostgreSQL (pg) |
+| iNFT | 0g Labs DA layer (`@0gfoundation/0g-ts-sdk`) |
+| Hosting | Vercel (dashboard) · AWS EC2 Docker (backend) |
+
+---
+
+## Deployment
+
+- **Dashboard**: Deployed to Vercel via `.github/workflows/deploy-dashboard-vercel.yml`
+- **Backend (orchestrator + agents + events-api)**: AWS EC2 via Docker/GHCR — `.github/workflows/ghcr-build-devall.yml`
+- **Reports API**: Served by `packages/events-api` on port 4000 (`/api/reports`). Set `DATABASE_URL` in the EC2 runtime env.
+- Full runbook: `docs/DOCKER_AWS_EC2_GHCR_RUNBOOK.md`
+
+---
+
+## Known Deferred Items
+
+- Signature verification for agent PONG messages
+- Persistent orchestrator roster/cache (currently in-memory only)
+- `StakingManager.propagateSlash` → `DelegatedStaking` wiring requires manual relay

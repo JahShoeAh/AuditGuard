@@ -8,6 +8,11 @@
  */
 
 import { ethers } from "ethers";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
+// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
+const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js") as { PollingEventSubscriber: new (provider: any, filter: any) => any };
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -202,6 +207,13 @@ export class ContractClient {
         staticNetwork: true,
       });
       provider.pollingInterval = 5000;
+      // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
+      // Force eth_getLogs-based polling for all event subscriptions.
+      const _orig = (provider as any)._getSubscriber.bind(provider);
+      (provider as any)._getSubscriber = (sub: any) => {
+        if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
+        return _orig(sub);
+      };
       return provider;
     });
     if (providers.length === 1) return providers[0];

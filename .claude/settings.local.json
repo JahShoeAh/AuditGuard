@@ -30,7 +30,12 @@
       "Bash(find:*)",
       "Bash(npm show:*)",
       "Bash(npm test:*)",
-      "Bash(npx hardhat run:*)"
+      "Bash(npx hardhat run:*)",
+      "Bash(curl:*)",
+      "Bash(chmod:*)",
+      "Bash(psql:*)",
+      "WebFetch(domain:docs.hedera.com)",
+      "Bash(pg_isready:*)"
     ]
   }
 }

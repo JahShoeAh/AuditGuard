@@ -409,6 +409,14 @@ export default function ReportMarketplace() {
           </AnimatePresence>
         </div>
 
+        {/* ── My Reports — wallet-filtered audit reports (deployer view) ── */}
+        <div className="mt-10 pt-8 border-t border-gray-900">
+          <h2 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-300 mb-4">
+            My Reports
+          </h2>
+          <UserReportList />
+        </div>
+
         {/* ── Purchase history ── */}
         <PurchaseHistory
           sessionPurchasedIds={sessionPurchasedIds}

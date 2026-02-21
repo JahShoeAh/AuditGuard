@@ -713,6 +713,13 @@ export class EventListenerService {
               sourceOrigin: payload.sourceOrigin ?? null,
             }
             : null;
+      console.log('[ContractType:discovery]', {
+        rawContractType: payload.contractType ?? entry.contractType,
+        rawEvmType: payload.evmType ?? entry.evmType,
+        contractAddress: payload.contractAddress ?? entry.contractAddress,
+        topicKey,
+        parsedDataType: parsedData.type,
+      });
       const normalizedDiscovery = {
         ...entry,
         riskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
@@ -901,6 +908,11 @@ export class EventListenerService {
         auctionDeadline: payload.auctionDeadlineSec ?? payload.auctionDeadline ?? undefined,
         classifier: classifierMetadata,
         postedAt: Date.now(),
+      });
+      console.log('[ContractType:JOB_CREATED]', {
+        rawContractType: payload.contractType,
+        normalized: normalizeAuctionType(payload.contractType),
+        jobId,
       });
       this.store.incrementStat('totalAuctions');
       return;
@@ -1318,6 +1330,12 @@ export class EventListenerService {
           continue;
         }
 
+        console.log('[ContractType:JobPosted]', {
+          rawContractType: a.contractType,
+          normalized: normalizeAuctionType(a.contractType),
+          jobId: a.jobId.toString(),
+          contractAddress: a.contractAddress,
+        });
         this.store.setJob(a.jobId.toString(), {
           jobId: a.jobId.toString(),
           contractAddress: a.contractAddress,

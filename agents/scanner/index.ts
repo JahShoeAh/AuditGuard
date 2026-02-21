@@ -530,6 +530,19 @@ async function resolveDiscoveryClassification(contractAddress: string, contract:
   }
 }
 
+async function fetchDeployerAddress(contractId: string): Promise<string> {
+  const url = `${MIRROR_NODE}/api/v1/contracts/${contractId}/results?limit=1&order=asc`;
+  try {
+    const res = await fetchWithRetry(url);
+    if (!res.ok) return ZERO_ADDRESS;
+    const body = await res.json() as { results?: Array<{ from?: string }> };
+    const from = body?.results?.[0]?.from;
+    return from ? from.toLowerCase() : ZERO_ADDRESS;
+  } catch {
+    return ZERO_ADDRESS;
+  }
+}
+
 async function createDiscoveryFromMirror(contract: MirrorContract) {
   const contractAddress = (contract.evm_address || '').toLowerCase();
   const createdTs = extractCreatedTimestamp(contract) || String(Date.now());
@@ -547,6 +560,10 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
     (SCANNER_CLASSIFIER_PIPELINE ? " (classifier pipeline)" : " (baseline)")
   );
 
+  const deployerAddress = contract.contract_id
+    ? await fetchDeployerAddress(contract.contract_id)
+    : ZERO_ADDRESS;
+
   return {
     type: 'CONTRACT_DISCOVERED' as const,
     agentId: AGENT_ID,
@@ -554,7 +571,7 @@ async function createDiscoveryFromMirror(contract: MirrorContract) {
     payload: {
       contractAddress,
       chain: 'hedera-testnet',
-      deployerAddress: ZERO_ADDRESS,
+      deployerAddress,
       estimatedLOC: estimateLoc(hydratedContract),
       contractType: classification.contractType,
       riskScore: classification.riskScore,

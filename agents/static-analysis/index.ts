@@ -445,12 +445,16 @@ async function main() {
   // Listen for AUCTION_INVITE from orchestrator (carries real jobId)
   hcs.subscribeAgentComms(async (msg: HCSMessage) => {
     if (msg.type === "PING") {
-      await hcs.publishAgentComms({
-        type: "PONG",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {},
-      });
+      try {
+        await hcs.publishAgentComms({
+          type: "PONG",
+          agentId: AGENT_ID,
+          timestamp: Date.now(),
+          payload: {},
+        });
+      } catch (err) {
+        log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 
@@ -458,6 +462,7 @@ async function main() {
     const {
       jobId,
       contractAddress,
+      deployerAddress: inviteDeployer,
       contractType,
       riskScore,
       estimatedLOC,
@@ -829,6 +834,7 @@ async function main() {
       pendingJobs.set(jobKey, {
         jobId: jobKey,
         contractAddress,
+        deployerAddress: String(inviteDeployer ?? ""),
         contractType: resolved.contractType,
         loc: resolved.loc,
       });
@@ -913,6 +919,7 @@ async function main() {
     simulateAuditCycle(
       pending.jobId,
       pending.contractAddress,
+      pending.deployerAddress,
       pending.contractType,
       pending.loc,
       hcs,
@@ -961,6 +968,7 @@ async function main() {
 async function simulateAuditCycle(
   jobId: string,
   contractAddress: string,
+  deployerAddress: string,
   contractType: ContractType,
   loc: number,
   hcs: HCSClient,
@@ -987,6 +995,8 @@ async function simulateAuditCycle(
     timestamp: Date.now(),
     payload: {
       jobId,
+      contractAddress,
+      deployerAddress,
       findingsHash,
       findingsCount: findings.length,
       criticalCount,

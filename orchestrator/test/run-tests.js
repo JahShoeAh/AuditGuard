@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { OrchestratorAgent } from "../src/orchestrator.js";
 import { Roster } from "../src/roster.js";
+import { ContractClient } from "../src/contract-client.js";
 import { MessageType, now } from "../../agents/shared/types.js";
 import { CONFIG } from "../src/config.js";
 
@@ -11,6 +12,10 @@ const ADDR_ORCH = "0x0000000000000000000000000000000000000abc";
 
 function mockLog() {
   return { info() {}, warn() {}, error() {} };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function makeMocks(opts = {}) {
@@ -505,6 +510,7 @@ async function testConfigEnvPropagation() {
     "ORCHESTRATOR_CREATE_RETRY_MAX_ATTEMPTS",
     "ORCHESTRATOR_CREATE_RETRY_BACKOFF_MS",
     "ORCHESTRATOR_CREATE_RETRY_MAX_BACKOFF_MS",
+    "ORCHESTRATOR_WRITE_QUEUE_MAX_HIGH_STREAK",
   ];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   process.env.ORCHESTRATOR_WINNER_WAIT_MS = "91000";
@@ -514,6 +520,7 @@ async function testConfigEnvPropagation() {
   process.env.ORCHESTRATOR_CREATE_RETRY_MAX_ATTEMPTS = "7";
   process.env.ORCHESTRATOR_CREATE_RETRY_BACKOFF_MS = "222";
   process.env.ORCHESTRATOR_CREATE_RETRY_MAX_BACKOFF_MS = "7777";
+  process.env.ORCHESTRATOR_WRITE_QUEUE_MAX_HIGH_STREAK = "4";
   try {
     const configModule = await import(`../src/config.js?reload=${Date.now()}`);
     const cfg = configModule.CONFIG;
@@ -524,6 +531,7 @@ async function testConfigEnvPropagation() {
     assert.equal(cfg.createRetry.maxAttempts, 7, "create retry attempts should honor env");
     assert.equal(cfg.createRetry.backoffMs, 222, "create retry backoff should honor env");
     assert.equal(cfg.createRetry.maxBackoffMs, 7777, "create retry max backoff should honor env");
+    assert.equal(cfg.queue.writeQueueMaxHighStreak, 4, "write queue high-streak cap should honor env");
   } finally {
     for (const key of keys) {
       if (previous[key] == null) delete process.env[key];
@@ -970,17 +978,62 @@ async function testReconcileSelectCapRespected() {
     });
     const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
     const calls = [];
-    orch.selectWinnersOnChain = async (jobId, opts = {}) => {
-      calls.push({ jobId: String(jobId), path: opts.path ?? "" });
+    orch.requestWinnerSelection = async (jobId, opts = {}) => {
+      calls.push({ jobId: String(jobId), sourcePath: opts.sourcePath ?? "" });
     };
 
     await orch.reconcileExpiredActiveAuctions();
 
     assert.equal(calls.length, 1, "reconcile must honor max selects per cycle cap");
-    assert.equal(calls[0].path, "reconcile", "reconcile-triggered selection should carry reconcile path");
+    assert.equal(calls[0].sourcePath, "reconcile", "reconcile-triggered selection should carry reconcile source");
   } finally {
     if (previousCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
     else process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = previousCap;
+  }
+}
+
+async function testReconcileInspectionWindowRotation() {
+  const previousInspectCap = process.env.ORCHESTRATOR_RECONCILE_MAX_INSPECT_PER_CYCLE;
+  const previousSelectCap = process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
+  const previousCloseCap = process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE;
+  process.env.ORCHESTRATOR_RECONCILE_MAX_INSPECT_PER_CYCLE = "2";
+  process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = "10";
+  process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE = "10";
+  try {
+    const log = mockLog();
+    const roster = new Roster(log);
+    const { hcs, contracts } = makeMocks({ onChainBids: [] });
+    contracts.getActiveJobs = async () => [5001n, 5002n, 5003n];
+    const inspected = [];
+    contracts.getJob = async (jobId) => {
+      inspected.push(Number(jobId));
+      return {
+        auctionDeadline: BigInt(Math.floor(Date.now() / 1000) + 120),
+        status: 0,
+      };
+    };
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+    await orch.reconcileExpiredActiveAuctions();
+    await orch.reconcileExpiredActiveAuctions();
+
+    assert.deepEqual(
+      inspected.slice(0, 2),
+      [5001, 5002],
+      "first reconcile cycle should inspect only first two active jobs"
+    );
+    assert.deepEqual(
+      inspected.slice(2, 4),
+      [5003, 5001],
+      "second reconcile cycle should rotate inspection window"
+    );
+  } finally {
+    if (previousInspectCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_INSPECT_PER_CYCLE;
+    else process.env.ORCHESTRATOR_RECONCILE_MAX_INSPECT_PER_CYCLE = previousInspectCap;
+    if (previousSelectCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE;
+    else process.env.ORCHESTRATOR_RECONCILE_MAX_SELECTS_PER_CYCLE = previousSelectCap;
+    if (previousCloseCap == null) delete process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE;
+    else process.env.ORCHESTRATOR_RECONCILE_MAX_CLOSES_PER_CYCLE = previousCloseCap;
   }
 }
 
@@ -1020,6 +1073,318 @@ async function testWinnerSelectionTimingTelemetry() {
   assert.ok(Number(timing.payload.attempts) >= 1, "timing telemetry should include attempts");
 }
 
+async function testReportPublishedPreDeadlineDefersAndRearms() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks({
+    onChainBids: [
+      {
+        agent: ADDR_AGENT_A,
+        bidAmount: 1000000000n,
+        collateralLocked: 5000000000n,
+        reputationAtBid: 90n,
+        estimatedCompletionTime: 100n,
+        timestamp: 1n,
+      },
+    ],
+  });
+  const futureDeadlineSec = Math.floor(Date.now() / 1000) + 45;
+  contracts.getJob = async () => ({
+    status: 0,
+    auctionDeadline: BigInt(futureDeadlineSec),
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+  });
+  let selectCalls = 0;
+  contracts.selectWinners = async () => {
+    selectCalls += 1;
+    return { hash: "0xselect", status: 1 };
+  };
+
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+    auctionDeadlineSec: futureDeadlineSec,
+  });
+
+  await orch.handleReportPublished({
+    type: "REPORT_PUBLISHED",
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: { jobId: "4242", totalFindings: 0, criticalFindings: 0, reportHash: "0xrep" },
+  });
+  await sleep(25);
+
+  assert.equal(selectCalls, 0, "report-published path must not select before deadline");
+  assert.ok(orch.winnerSelectionTimers.has("4242"), "deferred report trigger should re-arm winner timer");
+  const deferred = auditLogMessages.find((m) => m.type === "WINNER_SELECTION_DEFERRED");
+  assert.ok(deferred, "deferred telemetry should be emitted");
+  assert.equal(deferred?.payload?.reasonCode, "deadline_not_reached");
+  orch.clearWinnerSelectionTimer("4242");
+}
+
+async function testReportPublishedPostDeadlineWithBidsSelects() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, auditLogMessages } = makeMocks({
+    onChainBids: [
+      {
+        agent: ADDR_AGENT_A,
+        bidAmount: 1000000000n,
+        collateralLocked: 5000000000n,
+        reputationAtBid: 90n,
+        estimatedCompletionTime: 100n,
+        timestamp: 1n,
+      },
+    ],
+  });
+  const pastDeadlineSec = Math.floor(Date.now() / 1000) - 5;
+  contracts.getJob = async () => ({
+    status: 0,
+    auctionDeadline: BigInt(pastDeadlineSec),
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+  });
+  let selectCalls = 0;
+  contracts.selectWinners = async () => {
+    selectCalls += 1;
+    return { hash: "0xselect", status: 1 };
+  };
+
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+    auctionDeadlineSec: pastDeadlineSec,
+  });
+
+  await orch.handleReportPublished({
+    type: "REPORT_PUBLISHED",
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: { jobId: "4242", totalFindings: 0, criticalFindings: 0, reportHash: "0xrep" },
+  });
+  await sleep(25);
+
+  assert.equal(selectCalls, 1, "report-published path should select after deadline when bids exist");
+  assert.ok(
+    !auditLogMessages.some(
+      (m) => m.type === "WINNER_SELECTION_DEFERRED" && m?.payload?.reasonCode === "deadline_not_reached"
+    ),
+    "post-deadline report flow should not be deferred for deadline"
+  );
+}
+
+async function testReportPublishedPostDeadlineNoBidsCancels() {
+  const log = mockLog();
+  const roster = new Roster(log);
+  const { hcs, contracts, cancelledJobs, auditLogMessages } = makeMocks({ onChainBids: [] });
+  const pastDeadlineSec = Math.floor(Date.now() / 1000) - 5;
+  contracts.getJob = async () => ({
+    status: 0,
+    auctionDeadline: BigInt(pastDeadlineSec),
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+  });
+  let selectCalls = 0;
+  contracts.selectWinners = async () => {
+    selectCalls += 1;
+    return { hash: "0xselect", status: 1 };
+  };
+
+  const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+  orch.setJobByKey("4242", {
+    contractAddress: ADDR_JOB,
+    contractType: "vault",
+    bidders: [],
+    winners: [],
+    findings: [],
+    reportPublished: false,
+    auctionDeadlineSec: pastDeadlineSec,
+  });
+
+  await orch.handleReportPublished({
+    type: "REPORT_PUBLISHED",
+    agentId: "report-agent",
+    timestamp: now(),
+    payload: { jobId: "4242", totalFindings: 0, criticalFindings: 0, reportHash: "0xrep" },
+  });
+  await sleep(25);
+
+  assert.equal(selectCalls, 0, "report-published path should skip selection when no on-chain bids");
+  assert.ok(cancelledJobs.includes(4242), "post-deadline/no-bid report flow should cancel expired job");
+  const deferred = auditLogMessages.find((m) => m.type === "WINNER_SELECTION_DEFERRED");
+  assert.ok(deferred, "deferred telemetry should exist for no-bid path");
+  assert.equal(deferred?.payload?.reasonCode, "no_onchain_bids");
+}
+
+async function testWinnerSelectionPriorityOnlyWhenReady() {
+  const previousFastPath = process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED;
+  process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED = "true";
+  try {
+    const log = mockLog();
+    const roster = new Roster(log);
+    const { hcs, contracts, auditLogMessages } = makeMocks({
+      onChainBids: [
+        {
+          agent: ADDR_AGENT_A,
+          bidAmount: 1000000000n,
+          collateralLocked: 5000000000n,
+          reputationAtBid: 90n,
+          estimatedCompletionTime: 100n,
+          timestamp: 1n,
+        },
+      ],
+    });
+    const nowSec = Math.floor(Date.now() / 1000);
+    contracts.getJob = async (jobId) => {
+      const numericJobId = Number(jobId);
+      if (numericJobId === 4243) {
+        return {
+          status: 0,
+          auctionDeadline: BigInt(nowSec + 60),
+          contractAddress: ADDR_JOB,
+          contractType: "vault",
+        };
+      }
+      return {
+        status: 0,
+        auctionDeadline: BigInt(nowSec - 5),
+        contractAddress: ADDR_JOB,
+        contractType: "vault",
+      };
+    };
+    const usedPriorities = [];
+    contracts.selectWinners = async (_jobId, _indices, opts = {}) => {
+      usedPriorities.push(opts.priority ?? "normal");
+      return { hash: "0xselect", status: 1 };
+    };
+
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+    orch.setJobByKey("4242", {
+      contractAddress: ADDR_JOB,
+      contractType: "vault",
+      bidders: [],
+      winners: [],
+      findings: [],
+      reportPublished: false,
+      auctionDeadlineSec: nowSec - 5,
+    });
+    orch.setJobByKey("4243", {
+      contractAddress: ADDR_JOB,
+      contractType: "vault",
+      bidders: [],
+      winners: [],
+      findings: [],
+      reportPublished: false,
+      auctionDeadlineSec: nowSec + 60,
+    });
+
+    await orch.requestWinnerSelection("4242", { sourcePath: "reconcile" });
+    await orch.requestWinnerSelection("4243", { sourcePath: "report_published" });
+    await sleep(20);
+
+    assert.deepEqual(
+      usedPriorities,
+      ["high"],
+      "high priority should only be used when selection is ready (closed + bids)"
+    );
+    const successTiming = auditLogMessages.find(
+      (m) => m.type === "WINNER_SELECTION_TIMING" && m?.payload?.jobId === "4242" && m?.payload?.result === "success"
+    );
+    assert.ok(successTiming, "ready path should emit winner timing telemetry");
+    assert.equal(successTiming?.payload?.priorityUsed, "high");
+    const deferredTiming = auditLogMessages.find(
+      (m) => m.type === "WINNER_SELECTION_TIMING" && m?.payload?.jobId === "4243" && m?.payload?.result === "deferred"
+    );
+    assert.ok(deferredTiming, "not-ready path should emit deferred timing telemetry");
+    assert.equal(deferredTiming?.payload?.suppressedReason, "deadline_not_reached");
+    orch.clearWinnerSelectionTimer("4243");
+  } finally {
+    if (previousFastPath == null) delete process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED;
+    else process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED = previousFastPath;
+  }
+}
+
+async function testContractClientPriorityDefaults() {
+  const client = Object.create(ContractClient.prototype);
+  const priorities = [];
+  client._enqueueWriteWithPriority = async (_sendFn, priority = "normal") => {
+    priorities.push(priority);
+    return { wait: async () => ({ hash: "0xok", status: 1 }) };
+  };
+  client.auction = {
+    createAuditJob: async () => ({ hash: "0xcreate" }),
+    selectWinners: async () => ({ hash: "0xselect" }),
+    cancelJob: async () => ({ hash: "0xcancel" }),
+  };
+
+  await client.createAuditJob(ADDR_JOB, "hedera-testnet", "vault", 50, 1000n, 1000, 120);
+  await client.cancelJob(4242);
+  await client.selectWinners(4242, [0]);
+  await client.selectWinners(4242, [0], { priority: "high" });
+  await client.cancelJob(4242, { priority: "high" });
+
+  assert.deepEqual(
+    priorities,
+    ["normal", "normal", "normal", "high", "high"],
+    "contract client should default cancel/select to normal and require explicit high override"
+  );
+}
+
+async function testContractClientWriteQueueFairness() {
+  const queueHarness = Object.create(ContractClient.prototype);
+  queueHarness.fastWinnerPathEnabled = true;
+  queueHarness.writeQueueMaxHighStreak = 2;
+  queueHarness._writeQueue = [];
+  queueHarness._writeQueueRunning = false;
+  queueHarness._highPriorityStreak = 0;
+
+  const order = [];
+  let releaseGate;
+  const gate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+
+  const tasks = [
+    queueHarness._enqueueWriteWithPriority(async () => {
+      await gate;
+      order.push("H1");
+    }, "high"),
+    queueHarness._enqueueWriteWithPriority(async () => {
+      order.push("H2");
+    }, "high"),
+    queueHarness._enqueueWriteWithPriority(async () => {
+      order.push("N1");
+    }, "normal"),
+    queueHarness._enqueueWriteWithPriority(async () => {
+      order.push("H3");
+    }, "high"),
+    queueHarness._enqueueWriteWithPriority(async () => {
+      order.push("H4");
+    }, "high"),
+  ];
+
+  await sleep(5);
+  releaseGate();
+  await Promise.all(tasks);
+
+  assert.deepEqual(
+    order,
+    ["H1", "H2", "N1", "H3", "H4"],
+    "queue fairness must interleave a normal task after high-streak cap is reached"
+  );
+}
+
 async function testStartupWinnerRearmSchedulesTimers() {
   const previousRearm = process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
   process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = "true";
@@ -1041,6 +1406,44 @@ async function testStartupWinnerRearmSchedulesTimers() {
     assert.ok(orch.getJobByKey("4242"), "startup re-arm should hydrate active on-chain jobs");
     assert.ok(orch.winnerSelectionTimers.has("4242"), "startup re-arm should schedule winner selection timer");
     orch.clearWinnerSelectionTimer("4242");
+  } finally {
+    if (previousRearm == null) delete process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
+    else process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = previousRearm;
+  }
+}
+
+async function testStartupWinnerRearmSkipsExpiredJobs() {
+  const previousRearm = process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
+  process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = "true";
+  try {
+    const log = mockLog();
+    const roster = new Roster(log);
+    const { hcs, contracts } = makeMocks();
+    const nowSec = Math.floor(Date.now() / 1000);
+    contracts.getActiveJobs = async () => [4242n, 4243n];
+    contracts.getJob = async (jobId) => {
+      if (Number(jobId) === 4242) {
+        return {
+          status: 0,
+          auctionDeadline: BigInt(nowSec - 5),
+          contractAddress: ADDR_JOB,
+          contractType: "lending",
+        };
+      }
+      return {
+        status: 0,
+        auctionDeadline: BigInt(nowSec + 30),
+        contractAddress: ADDR_JOB,
+        contractType: "lending",
+      };
+    };
+    const orch = new OrchestratorAgent({ log, roster, hcs, contracts, enablePing: false });
+
+    await orch.bootstrapWinnerSelectionFromActiveJobs();
+
+    assert.ok(orch.winnerSelectionTimers.has("4243"), "future active job should be re-armed on startup");
+    assert.ok(!orch.winnerSelectionTimers.has("4242"), "expired active job should not be re-armed on startup");
+    orch.clearWinnerSelectionTimer("4243");
   } finally {
     if (previousRearm == null) delete process.env.ORCHESTRATOR_STARTUP_WINNER_REARM;
     else process.env.ORCHESTRATOR_STARTUP_WINNER_REARM = previousRearm;
@@ -1243,8 +1646,16 @@ async function run() {
     ["select winners ignores local ghost bids when on-chain empty", testSelectWinnersIgnoresLocalGhostBidsWhenOnChainEmpty],
     ["select winners hydrates missing job from chain", testSelectWinnersHydratesMissingJobFromChain],
     ["reconcile select cap respected", testReconcileSelectCapRespected],
+    ["reconcile inspection window rotation", testReconcileInspectionWindowRotation],
     ["winner selection timing telemetry", testWinnerSelectionTimingTelemetry],
+    ["report published pre-deadline defers and re-arms", testReportPublishedPreDeadlineDefersAndRearms],
+    ["report published post-deadline with bids selects", testReportPublishedPostDeadlineWithBidsSelects],
+    ["report published post-deadline no-bids cancels", testReportPublishedPostDeadlineNoBidsCancels],
+    ["winner priority only when selection-ready", testWinnerSelectionPriorityOnlyWhenReady],
+    ["contract client priority defaults", testContractClientPriorityDefaults],
+    ["contract client write-queue fairness", testContractClientWriteQueueFairness],
     ["startup winner rearm schedules timers", testStartupWinnerRearmSchedulesTimers],
+    ["startup winner rearm skips expired jobs", testStartupWinnerRearmSkipsExpiredJobs],
     ["auto-buy data listing", testAutoBuyDataListing],
     ["auto-buy skipped inactive buyer", testAutoBuySkippedForInactiveBuyer],
     ["create sub-auction and accept result", testCreateSubAuctionAndAcceptResult],

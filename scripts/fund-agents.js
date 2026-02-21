@@ -44,7 +44,7 @@ async function fundAgents() {
   console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
   const guardTokenId = TokenId.fromString(config.guardTokenId);
-  const FUND_AMOUNT = parseInt(process.env.FUND_GUARD_AMOUNT || '500', 10);
+  const FUND_AMOUNT = parseInt(process.env.FUND_GUARD_AMOUNT || '3000', 10);
   const FUND_HBAR_AMOUNT = Number(process.env.FUND_HBAR_AMOUNT || '5');
   const MIN_SOURCE_GUARD = FUND_AMOUNT * 2;
 
