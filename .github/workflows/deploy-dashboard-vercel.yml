@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --workspaces --include-workspace-root
 
+      - name: Fix rollup platform binary
+        run: npm install @rollup/rollup-linux-x64-gnu --no-save
+
       - name: Build dashboard
         run: npm --prefix packages/dashboard run build
         env:
