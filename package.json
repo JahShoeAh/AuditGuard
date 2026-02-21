@@ -44,6 +44,8 @@
     "scanner": "npm --workspace agents run scanner",
     "agents": "npm --workspace agents run all",
     "agents:demo": "npm --workspace agents run all:demo",
+    "agents:slither": "node agents/slither-agent/index.js",
+    "test:slither": "node agents/slither-agent/test.js",
     "inft:create-collections": "npm --prefix packages/inft run create-collections",
     "inft:listen": "npm --prefix packages/inft run listen",
     "inft:listen:events": "npm --prefix packages/inft run listen:events",

@@ -43,47 +43,62 @@ async function fundAgents() {
   console.log('║              Fund Unfunded Agents with GUARD                  ║');
   console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
-  // Try OPERATOR account first (has supply key for minting)
-  let sourceId, sourceKey;
+  const guardTokenId = TokenId.fromString(config.guardTokenId);
+  const MIN_SOURCE_GUARD = 150;
 
+  const candidates = [];
   if (process.env.OPERATOR_ACCOUNT_ID && process.env.OPERATOR_PRIVATE_KEY) {
-    console.log('Using OPERATOR account as source...');
-    sourceId = AccountId.fromString(process.env.OPERATOR_ACCOUNT_ID);
-    sourceKey = parsePrivateKey(process.env.OPERATOR_PRIVATE_KEY, process.env.OPERATOR_PRIVATE_KEY_TYPE || 'ECDSA');
-  } else {
-    console.log('Using HEDERA account as source...');
-    sourceId = AccountId.fromString(process.env.HEDERA_ACCOUNT_ID);
-    sourceKey = parsePrivateKey(process.env.HEDERA_PRIVATE_KEY, process.env.HEDERA_PRIVATE_KEY_TYPE);
+    candidates.push({
+      label: 'OPERATOR',
+      id: AccountId.fromString(process.env.OPERATOR_ACCOUNT_ID),
+      key: parsePrivateKey(process.env.OPERATOR_PRIVATE_KEY, process.env.OPERATOR_PRIVATE_KEY_TYPE || 'ECDSA'),
+    });
+  }
+  if (process.env.HEDERA_ACCOUNT_ID && process.env.HEDERA_PRIVATE_KEY) {
+    candidates.push({
+      label: 'HEDERA',
+      id: AccountId.fromString(process.env.HEDERA_ACCOUNT_ID),
+      key: parsePrivateKey(process.env.HEDERA_PRIVATE_KEY, process.env.HEDERA_PRIVATE_KEY_TYPE),
+    });
+  }
+  if (!candidates.length) {
+    console.error('No OPERATOR or HEDERA credentials found in .env');
+    process.exit(1);
   }
 
-  // Get GUARD token ID from config
-  const guardTokenId = TokenId.fromString(config.guardTokenId);
+  let sourceId, sourceKey;
+  const probeClient = Client.forTestnet();
+
+  for (const c of candidates) {
+    probeClient.setOperator(c.id, c.key);
+    try {
+      const bal = await new AccountBalanceQuery().setAccountId(c.id).execute(probeClient);
+      const tokenBal = bal.tokens.get(guardTokenId);
+      const guard = tokenBal ? fromTokenUnits(tokenBal.toNumber()) : 0;
+      console.log(`${c.label} (${c.id}) balance: ${guard.toFixed(4)} GUARD`);
+      if (guard >= MIN_SOURCE_GUARD) {
+        sourceId = c.id;
+        sourceKey = c.key;
+        break;
+      }
+      console.log(`  -> insufficient (need ${MIN_SOURCE_GUARD}), trying next source...`);
+    } catch (err) {
+      console.log(`  -> error querying ${c.label}: ${err.message}`);
+    }
+  }
+  probeClient.close();
+
+  if (!sourceId) {
+    console.error(`\nNo source account has >= ${MIN_SOURCE_GUARD} GUARD. Fund one of them first.\n`);
+    process.exit(1);
+  }
 
   const client = Client.forTestnet();
   client.setOperator(sourceId, sourceKey);
   client.setDefaultMaxTransactionFee(new Hbar(2));
 
-  console.log(`💰 Source Account: ${sourceId.toString()}`);
-  console.log(`🪙  GUARD Token: ${guardTokenId.toString()}\n`);
-
-  // Check source balance
-  try {
-    const balance = await new AccountBalanceQuery().setAccountId(sourceId).execute(client);
-    const tokenBalance = balance.tokens.get(guardTokenId);
-    const sourceGuard = tokenBalance ? fromTokenUnits(tokenBalance.toNumber()) : 0;
-    console.log(`Source balance: ${sourceGuard.toFixed(4)} GUARD\n`);
-
-    if (sourceGuard < 150) {
-      console.error(`❌ Insufficient GUARD in source account. Need at least 150 GUARD.`);
-      console.log(`\nRun this first: npm run deploy:token  # or transfer GUARD to ${sourceId.toString()}\n`);
-      client.close();
-      process.exit(1);
-    }
-  } catch (err) {
-    console.error(`❌ Error checking source balance: ${err.message}\n`);
-    client.close();
-    process.exit(1);
-  }
+  console.log(`\nUsing source: ${sourceId.toString()}`);
+  console.log(`GUARD Token:  ${guardTokenId.toString()}\n`);
 
   // Agents to fund
   const agentsToFund = [
