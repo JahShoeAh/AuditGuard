@@ -12,14 +12,19 @@ const HEDERA_CHAIN_ID = 296;
 
 export async function retrieveContractSource(
   contractAddress: string,
-  rpcUrl: string
+  rpcUrl: string,
+  existingBytecode?: string
 ): Promise<SourceRetrievalResult> {
   let bytecode = "0x";
-  try {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    bytecode = await provider.getCode(contractAddress);
-  } catch {
-    bytecode = "0x";
+  if (existingBytecode !== undefined) {
+    bytecode = existingBytecode;
+  } else {
+    try {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      bytecode = await provider.getCode(contractAddress);
+    } catch {
+      bytecode = "0x";
+    }
   }
 
   const fullMatchSource = await fetchSourcify(contractAddress, "full");

@@ -1,0 +1,16 @@
+**/node_modules
+.git
+.gitignore
+**/.env
+**/*.log
+packages/dashboard/dist
+packages/*/node_modules
+agents/node_modules
+orchestrator/node_modules
+recon/
+tools/
+scripts/
+*.md
+docker-compose*.yml
+Dockerfile
+packages/dashboard/Dockerfile

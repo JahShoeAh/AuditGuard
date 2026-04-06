@@ -30,7 +30,14 @@
       "Bash(find:*)",
       "Bash(npm show:*)",
       "Bash(npm test:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(sqlite3:*)",
+      "Bash(head -3 grep -r \"auditScheduler\\\\|AuditScheduler\" /Users/ssongirk/Projects/AuditGuard/packages/dashboard/src --include=\"*.js\" --include=\"*.jsx\" -l)",
+      "Bash(npm --workspace agents run test)",
+      "Bash(npx vitest run:*)",
+      "Bash(RUN_CLASSIFIER_RISK_TESTS=true npx vitest:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)"
     ]
   }
 }

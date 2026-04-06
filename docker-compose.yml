@@ -1,0 +1,74 @@
+version: '3.9'
+
+networks:
+  auditguard:
+    driver: bridge
+
+volumes:
+  events-data:
+
+services:
+  events-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: node packages/events-api/src/index.js
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+    volumes:
+      - events-data:/app/packages/events-api/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - auditguard
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: node orchestrator/src/index.js
+    env_file: .env
+    environment:
+      - ALLOW_SHARED_PAYER=true
+      - EVENTS_API_URL=http://events-api:3001
+      - NODE_ENV=production
+    depends_on:
+      events-api:
+        condition: service_healthy
+    networks:
+      - auditguard
+
+  agents:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: node -e "require('./agents/run-all.ts')"
+    env_file: .env
+    environment:
+      - ALLOW_SHARED_PAYER=true
+      - EVENTS_API_URL=http://events-api:3001
+      - NODE_ENV=production
+    depends_on:
+      events-api:
+        condition: service_healthy
+    networks:
+      - auditguard
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
+      args:
+        VITE_EVENTS_API_URL: ${VITE_EVENTS_API_URL:-http://localhost:3001}
+    ports:
+      - "5173:80"
+    networks:
+      - auditguard

@@ -5,7 +5,9 @@
  * and ethers.js contract-event polling, routing everything into
  * the Zustand store.
  */
+import { Contract } from 'ethers';
 import { normalizeAuctionType } from '../utils/auction-type';
+import AuditSchedulerABI from '@sdk/abis/AuditScheduler.json';
 
 const MIRROR_NODE = import.meta.env.VITE_HEDERA_MIRROR_NODE
   || 'https://testnet.mirrornode.hedera.com';
@@ -935,10 +937,88 @@ export class EventListenerService {
       return;
     }
 
+    // Wire AuditScheduler HSS events
+    this._startAuditSchedulerListeners();
+
     this._intervals.push(setInterval(() => {
       this._pollContractEvents();
     }, CONTRACT_POLL_MS));
     this._pollContractEvents();
+  }
+
+  _startAuditSchedulerListeners() {
+    try {
+      const schedulerAddress = this.config?.contracts?.auditScheduler?.evmAddress;
+      if (!schedulerAddress || !this.provider) return;
+
+      const scheduler = new Contract(schedulerAddress, AuditSchedulerABI.abi, this.provider);
+
+      scheduler.on('AuditScheduled', (contractAddr, owner, scheduleAddress, nextAuditDue, mode, intervalSeconds, event) => {
+        this.store.addHssEvent?.({
+          type: 'AuditScheduled',
+          contractAddress: contractAddr,
+          owner,
+          scheduleAddress,
+          nextAuditDue: Number(nextAuditDue),
+          mode: Number(mode),
+          intervalSeconds: Number(intervalSeconds),
+          txHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          timestamp: Date.now(),
+        });
+        this._addLogEntry({
+          type: 'HSS_SCHEDULED',
+          source: 'contract',
+          contractAddress: contractAddr,
+          intervalSeconds: Number(intervalSeconds),
+          timestamp: Date.now(),
+        });
+      });
+
+      scheduler.on('AuditTriggered', (contractAddr, scheduleAddress, triggeredAt, timesTriggered, nextScheduleAddress, event) => {
+        this.store.addHssEvent?.({
+          type: 'AuditTriggered',
+          contractAddress: contractAddr,
+          scheduleAddress,
+          triggeredAt: Number(triggeredAt),
+          timesTriggered: Number(timesTriggered),
+          nextScheduleAddress,
+          txHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          timestamp: Date.now(),
+        });
+        this._addLogEntry({
+          type: 'HSS_TRIGGERED',
+          source: 'contract',
+          contractAddress: contractAddr,
+          timesTriggered: Number(timesTriggered),
+          timestamp: Date.now(),
+        });
+      });
+
+      scheduler.on('AuditScheduleCancelled', (contractAddr, cancelledBy, reason, event) => {
+        this.store.addHssEvent?.({
+          type: 'AuditScheduleCancelled',
+          contractAddress: contractAddr,
+          cancelledBy,
+          reason,
+          txHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          timestamp: Date.now(),
+        });
+        this._addLogEntry({
+          type: 'HSS_CANCELLED',
+          source: 'contract',
+          contractAddress: contractAddr,
+          reason,
+          timestamp: Date.now(),
+        });
+      });
+
+      console.log(`[EventListener] AuditScheduler HSS listeners attached (${schedulerAddress})`);
+    } catch (err) {
+      console.warn('[EventListener] AuditScheduler listener setup failed:', err.message || err);
+    }
   }
 
   async _pollContractEvents() {

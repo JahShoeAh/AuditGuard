@@ -1,0 +1,20 @@
+{
+  "name": "@auditguard/events-api",
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0",
+    "express": "^4.18.3",
+    "jsonwebtoken": "^9.0.2",
+    "ws": "^8.17.0",
+    "@hashgraph/sdk": "^2.46.0"
+  }
+}

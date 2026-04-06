@@ -1081,6 +1081,29 @@ export class OrchestratorAgent {
     await this.settleAll(key, job, reportAgentAddress);
     await this.updateReputation(key, job.findings);
     await this.inft.markJobCompleted(key, null);
+
+    // Store report in events-api for deployer-gated access
+    const eventsApiUrl = process.env.EVENTS_API_URL;
+    if (eventsApiUrl) {
+      const client = this.getJobByKey(key);
+      fetch(`${eventsApiUrl}/internal/reports`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Internal-Key': process.env.INTERNAL_API_KEY ?? '',
+        },
+        body: JSON.stringify({
+          jobId: key,
+          contractAddress: job.contractAddress ?? null,
+          deployerAddress: job.deployerAddress ?? null,
+          reportHash,
+          findings: job.findings,
+          totalFindings,
+          criticalCount: criticalFindings,
+          settledAt: new Date().toISOString(),
+        }),
+      }).catch((e) => this.log.warn(`events-api report store failed: ${e.message}`));
+    }
   }
 
   async handleDataListing(msg) {

@@ -11,7 +11,7 @@ export interface RiskInferenceResult {
 
 let broker: any = null;
 let brokerReady = false;
-let zgHealthy = true;
+let zgHealthy = !!(process.env.ZG_PRIVATE_KEY?.trim() && process.env.ZG_PROVIDER_ADDRESS?.trim());
 let healthCheckTimer: NodeJS.Timeout | null = null;
 
 function getZgPrivateKey(): string {

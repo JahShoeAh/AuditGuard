@@ -314,24 +314,24 @@ describe("contract-classifier.ts", () => {
     expect(result.defiCategory).toBe("vault");
   });
 
-  it("maps ERC721 standard → vault", async () => {
+  it("maps ERC721 standard → nft", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "NFT", standards: ["ERC721"] },
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "5".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("nft");
   });
 
-  it("maps ERC1155 standard → vault", async () => {
+  it("maps ERC1155 standard → nft", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "NFT", standards: ["ERC1155"] },
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "6".repeat(40));
-    expect(result.defiCategory).toBe("vault");
+    expect(result.defiCategory).toBe("nft");
   });
 
   it("uses DEX function selector in bytecode → dex", async () => {
@@ -902,6 +902,11 @@ describe("risk-inference.ts — assessRisk()", () => {
     process.env.ZG_RPC_URL = "https://evmrpc-testnet.0g.ai";
     process.env.ANTHROPIC_API_KEY = "sk-ant-mock-key";
 
+    // Ensure mockClaudeCreate is primed with a valid default response
+    mockClaudeCreate.mockReset().mockResolvedValue({
+      content: [{ type: "text", text: validRiskJson }],
+    });
+
     // Reset broker mock state
     mockBrokerInference.getServiceMetadata.mockResolvedValue({
       endpoint: "https://mock-0g-provider.ai",
@@ -1239,6 +1244,13 @@ describe("risk-inference.ts — health-check loop", () => {
 // =========================================================================
 
 describe("Scanner integration", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    // Restore EvmDecoder mock after module reset
+    mockContractInfoFn.mockReset();
+    mockInitializeFn.mockReset().mockResolvedValue(undefined);
+  });
+
   afterEach(() => {
     delete process.env.TEST_MODE;
     vi.clearAllMocks();
@@ -1317,7 +1329,7 @@ describe("Scanner integration", () => {
       contractName: "FlashLender",
     });
 
-    const classification = await classifyContract("0x" + "abc123".repeat(6) + "ab");
+    const classification = await classifyContract("0x" + "abc123".repeat(6) + "abcd");
     expect(classification.defiCategory).toBe("lending");
 
     const blended = blendRiskScore({

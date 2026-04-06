@@ -52,7 +52,11 @@
     "orchestrator:test": "npm --prefix orchestrator test",
     "test:offline": "npm --prefix orchestrator run test:mocks && npm --prefix orchestrator run test:offline && npm --prefix orchestrator test",
     "deploy:audit-scheduler": "HARDHAT_CONFIG=packages/contracts/hardhat.config.js npx hardhat run scripts/deploy-audit-scheduler.js --network hedera_testnet",
-    "deploy:exchange": "hardhat run scripts/deploy-guard-exchange.js --network hedera_testnet"
+    "deploy:exchange": "hardhat run scripts/deploy-guard-exchange.js --network hedera_testnet",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "repository": {
     "type": "git",
