@@ -38,6 +38,8 @@ module.exports = {
       accounts: normalizedPk ? [normalizedPk] : [],
       chainId: 296, // Hedera Testnet chain ID
       timeout: 120000, // 2 minutes for Hedera mirror node delays
+      gasPrice: 1010000000000, // match Hedera testnet eth_gasPrice
+      gas: 4000000,
       httpHeaders: {
         "Connection": "keep-alive"
       }

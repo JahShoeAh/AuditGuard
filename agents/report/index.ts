@@ -15,6 +15,10 @@ import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
 import { ethers } from "ethers";
 import { formatReport, type Finding as ReportFinding } from "../shared/report-formatter.js";
+import { writeFile, mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
+
+const REPORTS_DIR = resolve(process.cwd(), "data", "reports");
 
 // ---- Config ----
 const AGENT_ID = "report-aggregator-001";
@@ -46,6 +50,7 @@ const log = createAgentLogger(AGENT_ID, "report");
 const jobFindings = new Map<string, {
   submissions: FindingsSubmittedEvent[];
   timer: ReturnType<typeof setTimeout> | null;
+  aggregating: boolean; // prevents double-execution if two processes race
   agentAddresses: Map<string, string>; // agentId -> evmAddress
   contractAddress?: string;
   deployerAddress?: string;
@@ -187,6 +192,7 @@ async function main() {
       jobFindings.set(jobId, {
         submissions: [],
         timer: null,
+        aggregating: false,
         agentAddresses: new Map(),
       });
     }
@@ -231,6 +237,11 @@ async function aggregateAndPublish(
 ) {
   const job = jobFindings.get(jobId);
   if (!job || job.submissions.length === 0) return;
+  if (job.aggregating) {
+    log.warn(`[ReportAgent] aggregateAndPublish already in progress for job ${jobId} — skipping duplicate call`);
+    return;
+  }
+  job.aggregating = true;
 
   if (!DEMO_MODE) {
     try {
@@ -448,6 +459,16 @@ async function aggregateAndPublish(
   log.info(`[ReportAgent] Generated ${markdownContent.length} char report with ${allFindings.length} findings`);
 
   const contentHash = ethers.keccak256(ethers.toUtf8Bytes(markdownContent));
+
+  // Write report to local file — always works, no Postgres required.
+  try {
+    await mkdir(REPORTS_DIR, { recursive: true });
+    const reportFile = resolve(REPORTS_DIR, `${jobId}.md`);
+    await writeFile(reportFile, markdownContent, "utf8");
+    log.info(`[ReportAgent] Report written to ${reportFile}`);
+  } catch (err) {
+    log.warn(`[ReportAgent] Could not write report file: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Persist report to Postgres via the dashboard API server.
   const deployer =
