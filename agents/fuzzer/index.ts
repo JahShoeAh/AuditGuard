@@ -36,6 +36,7 @@ const BASE_REPUTATION = 82;
 const MAX_DATA_PURCHASE_PRICE = 1.0; // GUARD
 const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;
 const GUARD_DECIMALS = 8;
+const FUZZER_SERVICE_URL = process.env.FUZZER_SERVICE_URL ?? "http://localhost:4001";
 
 const log = createAgentLogger(AGENT_ID, "fuzzer");
 
@@ -136,6 +137,80 @@ export function generateFindings(contractType: ContractType, hasExternalData: bo
   }
 
   return findings;
+}
+
+// ---- Real Fuzzing via Service ----
+
+/**
+ * Submit a fuzz job to the fuzzer-service and poll for results.
+ * Falls back to generateFindings() if the service is unavailable,
+ * or if the service returns no findings (tool not installed).
+ */
+async function runFuzzOrFallback(
+  contractAddress: string,
+  contractType: ContractType,
+  hasExternalData: boolean,
+  budgetSeconds: number,
+): Promise<Finding[]> {
+  try {
+    const submitRes = await fetch(`${FUZZER_SERVICE_URL}/fuzz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contractAddress,
+        chainForkUrl: process.env.HEDERA_JSON_RPC_URL,
+        budgetSeconds,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!submitRes.ok) {
+      throw new Error(`Fuzzer service returned ${submitRes.status}`);
+    }
+
+    const { jobId } = (await submitRes.json()) as { jobId: string };
+    log.info(`Fuzzer service job submitted: ${jobId} (budget ${budgetSeconds}s)`);
+
+    // Poll until done or deadline
+    const deadline = Date.now() + (budgetSeconds + 30) * 1000;
+    while (Date.now() < deadline) {
+      await sleep(8_000);
+      const pollRes = await fetch(`${FUZZER_SERVICE_URL}/results/${jobId}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!pollRes.ok) continue;
+
+      const result = (await pollRes.json()) as {
+        status: string;
+        findings: Finding[];
+        toolUsed: string | null;
+        elapsed: number;
+      };
+
+      if (result.status === "done" || result.status === "failed") {
+        if (result.findings.length > 0) {
+          log.info(
+            `Fuzzer service complete (tool=${result.toolUsed}, elapsed=${result.elapsed}s): ` +
+            `${result.findings.length} findings`
+          );
+          return result.findings;
+        }
+        // Service ran but found nothing (or no tool installed) — use mock
+        log.info(
+          `Fuzzer service returned 0 findings (tool=${result.toolUsed ?? "none"}) — using mock fallback`
+        );
+        return generateFindings(contractType, hasExternalData);
+      }
+    }
+
+    // Deadline exceeded while polling
+    log.warn("Fuzzer service timed out — using mock fallback");
+    return generateFindings(contractType, hasExternalData);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`Fuzzer service unavailable (${msg}) — using mock fallback`);
+    return generateFindings(contractType, hasExternalData);
+  }
 }
 
 export interface InviteResolutionInput {
@@ -869,10 +944,9 @@ async function simulateAuditCycle(
   // Fuzz with optional time reduction from purchased data
   const baseTime = DEMO_MODE ? randomInt(15, 45) : randomInt(30, 90);
   const auditTime = hasExternalData ? Math.round(baseTime * 0.8) : baseTime;
-  log.info(`Running fuzz testing... (${auditTime}s${hasExternalData ? " — optimized" : ""})`);
-  await sleep(auditTime * 1000);
+  log.info(`Running fuzz testing... (budget ${auditTime}s${hasExternalData ? " — optimized" : ""})`);
 
-  const findings = generateFindings(contractType, hasExternalData);
+  const findings = await runFuzzOrFallback(contractAddress, contractType, hasExternalData, auditTime);
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
 
   log.info(

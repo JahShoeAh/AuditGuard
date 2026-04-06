@@ -1,0 +1,14 @@
+{
+  "name": "fuzzer-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fuzzing microservice wrapping ItyFuzz and Mythril for AuditGuard",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
