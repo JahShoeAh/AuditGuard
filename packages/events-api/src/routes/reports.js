@@ -1,82 +1,70 @@
-'use strict';
+import { Router } from "express";
+import {
+  saveReport,
+  getReportsByDeployer,
+  getReportById,
+} from "../../../sdk/db/report-db.js";
 
-const express = require('express');
-const db = require('../db');
-const { requireAuth } = require('../auth');
+export const reportsRouter = Router();
 
-const router = express.Router();
-const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || '';
-
-// GET /reports — public metadata list
-router.get('/', (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 20, 100);
-  const offset = Number(req.query.offset) || 0;
-  const reports = db.listAuditReports({ limit, offset });
-  res.json({ reports });
-});
-
-// GET /reports/:jobId — full report, deployer-gated
-router.get('/:jobId', requireAuth, (req, res) => {
-  const { jobId } = req.params;
-  const report = db.getAuditReport(jobId);
-  if (!report) {
-    return res.status(404).json({ error: 'Report not found' });
+// POST /api/reports — called by report agent to persist a completed report
+reportsRouter.post("/reports", async (req, res) => {
+  const body = req.body;
+  if (!body?.jobId) {
+    return res.status(400).json({ success: false, error: "jobId is required" });
   }
 
-  const client = db.getJobClient(jobId);
-  if (!client) {
-    return res.status(403).json({ error: 'No deployer record for this job' });
-  }
-
-  if (client.deployer_address.toLowerCase() !== req.walletAddress.toLowerCase()) {
-    return res.status(403).json({ error: 'Forbidden: only the contract deployer can access this report' });
-  }
-
-  let findings = null;
   try {
-    findings = report.findings_json ? JSON.parse(report.findings_json) : null;
-  } catch {
-    findings = null;
+    const id = await saveReport({
+      jobId:              String(body.jobId),
+      contractAddress:    body.contractAddress   ?? "",
+      deployerAddress:    body.deployerAddress   ?? "",
+      hederaAccountId:    body.hederaAccountId   ?? null,
+      chain:              body.chain             ?? "hedera-testnet",
+      contractType:       body.contractType      ?? "unknown",
+      contentHash:        body.contentHash       ?? "",
+      mdContent:          body.mdContent         ?? "",
+      agentAddresses:     body.agentAddresses    ?? [],
+      agentCount:         body.agentCount        ?? 0,
+      findingCount:       body.findingCount      ?? 0,
+      findingsBySeverity: body.findingsBySeverity ?? { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      timestamp:          body.timestamp         ?? Date.now(),
+      tags:               body.tags              ?? [],
+      source:             body.source            ?? "agent",
+    });
+    return res.status(201).json({ success: true, id });
+  } catch (err) {
+    console.error("[reports] POST /api/reports error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
-
-  res.json({
-    jobId: report.job_id,
-    contractAddress: report.contract_address,
-    deployerAddress: report.deployer_address,
-    reportHash: report.report_hash,
-    findings,
-    totalFindings: report.total_findings,
-    criticalCount: report.critical_count,
-    settledAt: report.settled_at,
-    createdAt: report.created_at,
-  });
 });
 
-// POST /internal/reports — called by orchestrator (protected by X-Internal-Key header)
-router.post('/internal/reports', (req, res) => {
-  const key = req.headers['x-internal-key'] || '';
-  if (INTERNAL_API_KEY && key !== INTERNAL_API_KEY) {
-    return res.status(403).json({ error: 'Forbidden' });
+// GET /api/reports?deployer={addr} — list all reports for a deployer
+reportsRouter.get("/reports", async (req, res) => {
+  const deployer = req.query.deployer;
+  if (!deployer) {
+    return res.status(400).json({ success: false, error: "deployer query param is required" });
   }
 
-  const { jobId, contractAddress, deployerAddress, reportHash, findings, totalFindings, criticalCount, settledAt } = req.body || {};
-  if (!jobId) {
-    return res.status(400).json({ error: 'jobId required' });
+  try {
+    const data = await getReportsByDeployer(String(deployer));
+    return res.json({ success: true, data, count: data.length });
+  } catch (err) {
+    console.error("[reports] GET /api/reports error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
-
-  db.upsertAuditReport({
-    jobId,
-    contractAddress: contractAddress || null,
-    deployerAddress: deployerAddress?.toLowerCase() || null,
-    reportHash: reportHash || null,
-    findingsJson: findings ? JSON.stringify(findings) : null,
-    totalFindings: Number(totalFindings) || 0,
-    criticalCount: Number(criticalCount) || 0,
-    settledAt: settledAt || new Date().toISOString(),
-    rawJson: JSON.stringify(req.body),
-  });
-
-  res.json({ ok: true });
 });
 
-module.exports = router;
+// GET /api/reports/:jobId — single report with mdContent
+reportsRouter.get("/reports/:jobId", async (req, res) => {
+  try {
+    const report = await getReportById(String(req.params.jobId));
+    if (!report) {
+      return res.status(404).json({ success: false, error: "Report not found" });
+    }
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    console.error("[reports] GET /api/reports/:jobId error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});

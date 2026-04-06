@@ -1,13 +1,18 @@
 import {
   HCSClient,
+  ContractClient,
+  ensureOperationalHbar,
+  getHbarTopUpConfig,
   createAgentLogger,
   createAgentWallet,
 } from "../shared/index.js";
 import type { HCSMessage } from "../shared/types.js";
+import { ethers } from "ethers";
 
 // ---- Config ----
 const AGENT_ID = "alert-sentinel-001";
 const WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || "";
+const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 const log = createAgentLogger(AGENT_ID, "alert");
 
@@ -18,8 +23,31 @@ async function main() {
 
   const wallet = createAgentWallet("ALERT");
   const hcs = new HCSClient(wallet.hederaClient);
+  const contracts = new ContractClient(wallet.evmWallet);
 
   log.info(`Wallet: ${wallet.evmAddress}`);
+  if (!DEMO_MODE) {
+    try {
+      const hbarTopUpConfig = getHbarTopUpConfig();
+      log.info(
+        `Payer HBAR auto-top-up: ${hbarTopUpConfig.enabled ? "enabled" : "disabled"} ` +
+        `(donors=${hbarTopUpConfig.donorsConfigured}, min=${ethers.formatEther(hbarTopUpConfig.minRequiredWei)} HBAR, ` +
+        `target=${ethers.formatEther(hbarTopUpConfig.targetWei)} HBAR)`
+      );
+      const startupPayer = await ensureOperationalHbar({
+        contracts,
+        recipientAddress: wallet.evmAddress,
+        requiredWei: hbarTopUpConfig.targetWei,
+        logger: log,
+      });
+      if (!startupPayer.ok) {
+        log.warn(`Startup preflight: ${startupPayer.reason ?? "Insufficient payer HBAR for transaction fees"}`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn(`Startup HBAR preflight failed: ${error}`);
+    }
+  }
 
   // Subscribe to audit log for report publications
   hcs.subscribeAuditLog(async (msg: HCSMessage) => {
@@ -65,6 +93,29 @@ async function main() {
       }
 
       // Log alert to HCS audit trail
+      if (!DEMO_MODE) {
+        try {
+          const hbarTopUpConfig = getHbarTopUpConfig();
+          const payerReady = await ensureOperationalHbar({
+            contracts,
+            recipientAddress: wallet.evmAddress,
+            requiredWei: hbarTopUpConfig.minRequiredWei,
+            logger: log,
+          });
+          if (!payerReady.ok) {
+            log.warn(
+              `Pre-alert publish payer preflight failed: ` +
+              `${payerReady.reason ?? "Insufficient payer HBAR for transaction fees"} (continuing)`
+            );
+          } else if (payerReady.toppedUpWei > 0n) {
+            log.info(`Auto top-up applied before alert publish: +${ethers.formatEther(payerReady.toppedUpWei)} HBAR`);
+          }
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          log.warn(`Pre-alert publish HBAR preflight failed: ${error} (continuing)`);
+        }
+      }
+
       await hcs.publishAuditLog({
         type: "ALERT_FIRED",
         agentId: AGENT_ID,
@@ -84,6 +135,14 @@ async function main() {
 }
 
 if (!process.env.VITEST) {
+  process.on("unhandledRejection", (reason) => {
+    const msg = String(reason instanceof Error ? reason.message : reason);
+    if (msg.includes("502") || msg.includes("Bad Gateway") || msg.includes("rate limit") || msg.includes("-32005")) {
+      log.warn(`[unhandledRejection] transient RPC error (swallowed): ${msg.slice(0, 120)}`);
+    } else {
+      log.error(`[unhandledRejection] ${msg}`);
+    }
+  });
   main().catch((err) => {
     log.error(`Fatal: ${err}`);
     process.exit(1);

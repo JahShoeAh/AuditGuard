@@ -17,6 +17,45 @@ import {
 import { CONFIG, getAgentEnv } from "./config.js";
 import type { HCSMessage } from "./types.js";
 
+const eventRelayUrl = process.env.EVENT_RELAY_URL?.trim() || "";
+const eventRelayToken = process.env.EVENT_RELAY_TOKEN?.trim() || "";
+
+async function publishEventRelay(
+  source: "agent",
+  topicId: string,
+  message: HCSMessage,
+): Promise<void> {
+  if (!eventRelayUrl) return;
+
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+
+  if (eventRelayToken) {
+    headers.authorization = `Bearer ${eventRelayToken}`;
+  }
+
+  try {
+    const response = await fetch(eventRelayUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        source,
+        topicId,
+        message,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(
+        `[HCSClient] Event relay publish failed (${response.status}) for ${message.type}`,
+      );
+    }
+  } catch (error) {
+    console.error(`[HCSClient] Event relay error for ${message.type}:`, error);
+  }
+}
+
 export class HCSClient {
   private client: Client;
   private readonly subscribeLookbackMs: number;
@@ -62,6 +101,7 @@ export class HCSClient {
 
     const response = await tx.execute(this.client);
     await response.getReceipt(this.client);
+    void publishEventRelay("agent", topicId, message);
   }
 
   async publishDiscovery(message: HCSMessage): Promise<void> {

@@ -8,6 +8,11 @@
  */
 
 import { ethers } from "ethers";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
+// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
+const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js") as { PollingEventSubscriber: new (provider: any, filter: any) => any };
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -202,6 +207,13 @@ export class ContractClient {
         staticNetwork: true,
       });
       provider.pollingInterval = 5000;
+      // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
+      // Force eth_getLogs-based polling for all event subscriptions.
+      const _orig = (provider as any)._getSubscriber.bind(provider);
+      (provider as any)._getSubscriber = (sub: any) => {
+        if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
+        return _orig(sub);
+      };
       return provider;
     });
     if (providers.length === 1) return providers[0];
@@ -276,6 +288,15 @@ export class ContractClient {
     callback: (jobId: bigint, winners: string[], totalEscrowed: bigint, platformFee: bigint) => void
   ): void {
     this.auction.on("WinnersSelected", callback);
+  }
+
+  /**
+   * Event: JobCancelled(uint256 jobId)
+   */
+  onJobCancelled(
+    callback: (jobId: bigint) => void
+  ): void {
+    this.auction.on("JobCancelled", callback);
   }
 
   // ─── SubAuction Convenience Methods ────────────────────────────────────
@@ -481,7 +502,18 @@ export class ContractClient {
     spender: string,
     minRequired: bigint
   ): Promise<ethers.ContractTransactionResponse | null> {
-    const allowance = await this.getGuardAllowance(this.wallet.address, spender);
+    // Retry the allowance read — a transient 502 here would otherwise cause
+    // the preflight to mark allowance as missing and attempt a failing approve.
+    let allowance = 0n;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        allowance = await this.getGuardAllowance(this.wallet.address, spender);
+        break;
+      } catch {
+        if (attempt === 2) throw new Error("Could not read GUARD allowance after 3 attempts");
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+      }
+    }
     if (allowance >= minRequired) return null;
 
     // Hedera HTS ERC-20 precompile frequently rejects MaxUint256 approvals.

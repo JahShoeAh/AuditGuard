@@ -1,4 +1,4 @@
-import { forwardRef, useMemo } from 'react';
+import { useMemo, forwardRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Countdown from './Countdown';
 import BidRow from './BidRow';
@@ -26,7 +26,7 @@ function bidLifecycleLabel(status) {
   if (status === 'skipped') return 'Bid Skipped';
   if (status === 'failed') return 'Bid Failed';
   return status || 'Unknown';
-}
+};
 
 function llmInferenceLabel(status) {
   if (status === 'started') return 'LLM Inference Started';
@@ -118,7 +118,10 @@ const AuctionCard = forwardRef(function AuctionCard({
         latestByAgent.set(key, item);
       }
     }
-    return Array.from(latestByAgent.values()).slice(0, 6);
+    // Suppress invite-only noise in card view; keep actionable lifecycle states.
+    return Array.from(latestByAgent.values())
+      .filter((item) => item?.status !== 'invite_sent')
+      .slice(0, 6);
   }, [bidLifecycle]);
   const llmPreview = useMemo(() => {
     const latestByAgent = new Map();
@@ -137,6 +140,7 @@ const AuctionCard = forwardRef(function AuctionCard({
 
   return (
     <motion.div
+      ref={ref}
       layout
       initial={{ opacity: 0, y: -20, scale: 0.96 }}
       animate={{
@@ -149,7 +153,6 @@ const AuctionCard = forwardRef(function AuctionCard({
       transition={{ type: 'spring', stiffness: 350, damping: 30,
         boxShadow: isWinnerState ? { duration: 0.8, times: [0, 0.4, 1] } : undefined,
       }}
-      ref={ref}
       className="card mb-3 relative overflow-hidden"
       style={{
         borderColor: isWinnerState ? 'rgba(16, 185, 129, 0.3)' : undefined,

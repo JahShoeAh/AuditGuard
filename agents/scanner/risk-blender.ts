@@ -20,15 +20,12 @@ export function getWeights(): BlendWeights {
 }
 
 export const CATEGORY_RISK_BASE: Record<DefiCategory, number> = {
-  bridge:      78,  // Cross-chain complexity, high-value targets
-  derivatives: 72,  // Leverage mechanics, liquidation logic, oracle reliance
-  lending:     68,  // Oracle manipulation, flash-loan attack surface
-  dex:         58,  // Sandwich attacks, price-impact exploits
-  oracle:      55,  // Price manipulation, staleness risk
-  vault:       48,  // Delegation / strategy risk
-  governance:  52,  // Governance attacks, timelock bypass vectors
-  staking:     42,  // Typically simpler; inflation / slashing edge cases
-  nft:         35,  // Generally simpler; reentrancy in mint/transfer
+  bridge: 78,
+  lending: 68,
+  dex: 58,
+  staking: 42,
+  vault: 48,
+  nft: 48,
 };
 
 export function scoreBytecodeComplexity(bytecodeHex: string): number {

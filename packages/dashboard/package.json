@@ -1,7 +1,7 @@
 {
   "name": "@auditguard/dashboard",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,17 +10,13 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "engines": {
-    "node": "24.0.2",
-    "npm": "11.3.0"
-  },
   "dependencies": {
-    "@hashgraph/sdk": "^2.51.0",
+    "@hashgraph/sdk": "^2.24.0",
     "@tanstack/react-query": "^5.50.0",
     "date-fns": "^3.6.0",
     "ethers": "^6.13.0",
     "framer-motion": "^11.0.0",
-    "hashconnect": "^3.0.14",
+    "hashconnect": "^0.2.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.1.0",
@@ -32,7 +28,7 @@
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
-    "vite": "^5.4.0",
-    "vitest": "^1.6.0"
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
   }
 }

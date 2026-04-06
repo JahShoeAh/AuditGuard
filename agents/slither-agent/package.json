@@ -1,0 +1,18 @@
+{
+  "name": "slither-agent",
+  "version": "1.0.0",
+  "description": "Static analysis security agent using Slither",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.49.2",
+    "ethers": "^6.16.0",
+    "dotenv": "^16.4.7"
+  },
+  "keywords": ["security", "audit", "slither", "hedera"],
+  "author": "",
+  "license": "MIT"
+}

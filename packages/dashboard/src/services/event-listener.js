@@ -1,7 +1,7 @@
 /**
  * EventListenerService
  *
- * Unified event ingestion — manages both HCS mirror-node polling
+ * Unified event ingestion — manages EC2 events API polling
  * and ethers.js contract-event polling, routing everything into
  * the Zustand store.
  */
@@ -9,13 +9,16 @@ import { Contract } from 'ethers';
 import { normalizeAuctionType } from '../utils/auction-type';
 import AuditSchedulerABI from '@sdk/abis/AuditScheduler.json';
 
-const MIRROR_NODE = import.meta.env.VITE_HEDERA_MIRROR_NODE
-  || 'https://testnet.mirrornode.hedera.com';
+const EVENTS_API_BASE_URL = (
+  import.meta.env.VITE_EVENTS_API_BASE_URL || '/api'
+).replace(/\/$/, '');
 
-const HCS_POLL_MS = 4_000;       // 4 s for HCS topics
-const CONTRACT_POLL_MS = 5_000;  // 5 s for on-chain events
+const HCS_POLL_MS = 2_000;       // balanced-fast default for HCS topics
+const CONTRACT_POLL_MS = 2_000;  // balanced-fast default for on-chain events
+const MIN_POLL_MS = 500;
 const DEFAULT_SOURCE_MODE = 'onchain_strict';
 const DEFAULT_HCS_REPLAY_MODE = 'from_now';
+const EVENT_FETCH_LIMIT = 500;
 
 // ── DataMarketplace enum mappings ───────────────────────────
 const DATA_CATEGORIES = [
@@ -48,6 +51,23 @@ function resolveSettlementFlowType(paymentType, description = '') {
   return 'MAIN_AUDIT';
 }
 
+function parsePollIntervalMs(value, fallbackMs) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw < MIN_POLL_MS) return fallbackMs;
+  return Math.floor(raw);
+}
+
+function toTimestampMs(value, fallbackMs = Date.now()) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallbackMs;
+}
+
 // ── Helpers ────────────────────────────────────────────────
 
 /** Convert raw 8-decimal BigInt to human-readable "15.00 GUARD" */
@@ -66,6 +86,69 @@ function parseDisplayBidAmount(value) {
     value: numeric,
     formatted: `${numeric.toFixed(2)} GUARD`,
   };
+}
+
+function normalizeGuardRaw(value) {
+  try {
+    const raw = typeof value === 'bigint' ? value : BigInt(value ?? 0);
+    return { raw, formatted: parseGuardAmount(raw) };
+  } catch {
+    return { raw: 0n, formatted: parseGuardAmount(0n) };
+  }
+}
+
+function isWinnerSelectedType(type) {
+  return type === 'WINNER_SELECTED' || type === 'WINNERS_SELECTED';
+}
+
+const BID_FAILURE_REASON_LABELS = {
+  insufficient_payer_hbar: "Insufficient payer HBAR for transaction fees",
+  insufficient_payer_hbar_after_topup: "Insufficient payer HBAR after auto top-up",
+  insufficient_funds: "Insufficient funds for bid submission",
+  collateral_below_minimum: "Bid collateral below minimum",
+  inactive_agent: "Agent is not active on-chain",
+  bid_exceeds_budget: "Bid exceeds auction budget",
+  auction_expired: "Auction already expired",
+  job_not_found: "Auction job not found",
+  nonce_conflict: "Nonce conflict while submitting bid",
+  network_error: "Network error while submitting bid",
+  network_timeout: "Bid submission timed out",
+  contract_revert: "Bid submission reverted by contract",
+};
+
+function isPayerFundingFailureReason(reasonCode) {
+  return (
+    reasonCode === 'insufficient_payer_hbar' ||
+    reasonCode === 'insufficient_payer_hbar_after_topup'
+  );
+}
+
+function extractCompactRpcMessage(rawError) {
+  if (typeof rawError !== 'string') return '';
+  if (!rawError) return '';
+
+  const mirrorMessageMatch = rawError.match(/\"message\":\"([^\"]+)\"/i);
+  if (mirrorMessageMatch?.[1]) {
+    return mirrorMessageMatch[1];
+  }
+
+  if (rawError.length <= 220) return rawError;
+  return `${rawError.slice(0, 220)}...`;
+}
+
+function normalizeBidFailureReason(payload) {
+  const reasonCode = typeof payload?.reasonCode === 'string' ? payload.reasonCode : '';
+  const mapped = BID_FAILURE_REASON_LABELS[reasonCode] || '';
+  if (mapped) return mapped;
+
+  if (typeof payload?.reason === 'string' && payload.reason.trim()) {
+    return payload.reason.trim();
+  }
+  if (typeof payload?.error === 'string' && payload.error.trim()) {
+    return extractCompactRpcMessage(payload.error.trim());
+  }
+
+  return reasonCode || 'Bid failed';
 }
 
 /** "0x1234...abcd" */
@@ -111,6 +194,20 @@ export class EventListenerService {
       || import.meta.env.VITE_DASHBOARD_HCS_REPLAY_MODE
       || DEFAULT_HCS_REPLAY_MODE
     ).toLowerCase();
+    this.hcsPollMs = parsePollIntervalMs(
+      config?.dashboard?.hcsPollMs
+      || import.meta.env.DASHBOARD_HCS_POLL_MS
+      || import.meta.env.VITE_DASHBOARD_HCS_POLL_MS
+      || HCS_POLL_MS,
+      HCS_POLL_MS
+    );
+    this.contractPollMs = parsePollIntervalMs(
+      config?.dashboard?.contractPollMs
+      || import.meta.env.DASHBOARD_CONTRACT_POLL_MS
+      || import.meta.env.VITE_DASHBOARD_CONTRACT_POLL_MS
+      || CONTRACT_POLL_MS,
+      CONTRACT_POLL_MS
+    );
     const testContracts = Array.isArray(config?.testContracts) ? config.testContracts : [];
     this.allowedDiscoveryContracts = new Set(
       testContracts
@@ -118,22 +215,19 @@ export class EventListenerService {
         .filter(Boolean)
     );
     this.seenTestDiscoveries = new Set();
-    this.hcsHistorySkipped = {
-      discovery: false,
-      auditLog: false,
-      agentComms: false,
-    };
-    this.hcsCursorInitialized = {
-      discovery: false,
-      auditLog: false,
-      agentComms: false,
-    };
-
-    // HCS state — last seen sequence number per topic
+    this.seenEventIds = new Set();
+    this.maxSeenEventIds = 5_000;
+    this.syntheticSequence = 0;
+    this.eventsBacklogSkipped = false;
     this.lastSeq = {
-      discovery:  0,
-      auditLog:   0,
+      discovery: 0,
+      auditLog: 0,
       agentComms: 0,
+    };
+    this._topicReplayInitialized = {
+      discovery: false,
+      auditLog: false,
+      agentComms: false,
     };
 
     // Contract event state
@@ -142,15 +236,12 @@ export class EventListenerService {
     this.pendingSettlementBreakdowns = 0;
     this.hcsEventsSeen = 0;
     this.contractEventsSeen = 0;
+    this._contractPollInFlight = false;
+    this._lastEventsApiError = null;
 
     this._intervals = [];
     this._running = false;
 
-    console.log(
-      `[EventListener] mode=${this.sourceMode} replay=${this.hcsReplayMode} ` +
-      `testFilter=${this.onlyTestDiscoveries ? "on" : "off"} ` +
-      `allowlist=${this.allowedDiscoveryContracts.size}`
-    );
     if (this.onlyTestDiscoveries) {
       console.log(
         `[EventListener] TEST_MODE discovery filter enabled ` +
@@ -160,6 +251,8 @@ export class EventListenerService {
     this.store.setIngestionHealth?.({
       sourceMode: this.sourceMode,
       replayMode: this.hcsReplayMode,
+      hcsPollMs: this.hcsPollMs,
+      contractPollMs: this.contractPollMs,
     });
   }
 
@@ -202,17 +295,22 @@ export class EventListenerService {
 
   async _syncAgentsFromRegistryEvents() {
     if (!this.contracts?.agentRegistryContract) return 0;
-    // Many public RPC providers (e.g. Hashio) reject eth_getLogs requests that
-    // span more than 7 days.  Querying from block 0 always exceeds this limit.
-    // If the call fails for any reason we return 0 so the caller falls back to
-    // the view-based hydration path.
-    let events;
-    try {
-      events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', 0, 'latest');
-    } catch {
-      return 0;
+
+    const MAX_BLOCK_RANGE = 10000;
+    const latestBlock = await this.provider.getBlockNumber();
+    let allEvents = [];
+
+    for (let fromBlock = 0; fromBlock <= latestBlock; fromBlock += MAX_BLOCK_RANGE) {
+      const toBlock = Math.min(fromBlock + MAX_BLOCK_RANGE - 1, latestBlock);
+      try {
+        const events = await this.contracts.agentRegistryContract.queryFilter('AgentRegistered', fromBlock, toBlock);
+        allEvents = allEvents.concat(events);
+      } catch (err) {
+        console.warn(`[EventListener] Failed to fetch AgentRegistered events from ${fromBlock} to ${toBlock}:`, err.message);
+      }
     }
-    for (const ev of events) {
+
+    for (const ev of allEvents) {
       const a = ev.args;
       this.store.setAgent(a.agent, {
         address: a.agent,
@@ -223,7 +321,7 @@ export class EventListenerService {
         source: 'onchain_event',
       });
     }
-    return events.length;
+    return allEvents.length;
   }
 
   async _syncAgentsFromRegistryViews() {
@@ -266,34 +364,37 @@ export class EventListenerService {
     this._setAgentHydrationHealth('degraded', null);
     console.log('[EventListener] Syncing historical agents...');
     try {
-      const eventCount = await this._syncAgentsFromRegistryEvents();
-      if (eventCount > 0) {
-        this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${eventCount} historical agents from events`);
-        return;
-      }
+      // Try view function first (fast, reliable, doesn't hit rate limits)
       const viewCount = await this._syncAgentsFromRegistryViews();
       if (viewCount > 0) {
         this._setAgentHydrationHealth('ok', null);
-        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry view fallback`);
+        console.log(`[EventListener] Synced ${viewCount} agents from AgentRegistry views (primary method)`);
         return;
       }
-      this._setAgentHydrationHealth('degraded', 'No agents returned from on-chain events or views');
+      // Fallback to events if views returned 0 agents
+      const eventCount = await this._syncAgentsFromRegistryEvents();
+      if (eventCount > 0) {
+        this._setAgentHydrationHealth('ok', null);
+        console.log(`[EventListener] Synced ${eventCount} agents from events (fallback method)`);
+        return;
+      }
+      this._setAgentHydrationHealth('degraded', 'No agents returned from views or events');
       console.warn('[EventListener] Agent hydration returned zero records');
     } catch (err) {
-      const eventErr = err instanceof Error ? err.message : String(err);
-      console.warn(`[EventListener] Agent event hydration failed: ${eventErr}`);
+      const primaryErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[EventListener] Agent view hydration failed: ${primaryErr}`);
       try {
-        const viewCount = await this._syncAgentsFromRegistryViews();
-        if (viewCount > 0) {
+        // If views failed, try events as recovery
+        const eventCount = await this._syncAgentsFromRegistryEvents();
+        if (eventCount > 0) {
           this._setAgentHydrationHealth('ok', null);
-          console.log(`[EventListener] Recovered agent hydration via views (${viewCount} agents)`);
+          console.log(`[EventListener] Recovered agent hydration via events (${eventCount} agents)`);
           return;
         }
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}`);
-      } catch (viewErr) {
-        const fallbackErr = viewErr instanceof Error ? viewErr.message : String(viewErr);
-        this._setAgentHydrationHealth('failed', `Hydration failed: ${eventErr}; view fallback failed: ${fallbackErr}`);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}`);
+      } catch (fallbackErr) {
+        const eventErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        this._setAgentHydrationHealth('failed', `Hydration failed: ${primaryErr}; event fallback failed: ${eventErrMsg}`);
       }
       throw err;
     }
@@ -312,136 +413,214 @@ export class EventListenerService {
   // ── HCS polling ──────────────────────────────────────────
 
   startHCSPolling() {
-    const topics = this.config.hcsTopics;
-    if (!topics) {
-      console.warn('[EventListener] No HCS topics in config — skipping HCS polling');
-      return;
-    }
+    // Initial poll to reduce startup latency.
+    this._pollEventsAPI().catch((err) => {
+      console.warn('[EventListener] Initial events API poll failed:', err.message);
+    });
 
-    // Discovery topic
     this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.discovery, 'discovery');
-    }, HCS_POLL_MS));
-
-    // AuditLog topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.auditLog, 'auditLog');
-    }, HCS_POLL_MS));
-
-    // AgentComms topic
-    this._intervals.push(setInterval(() => {
-      this._pollHCSTopic(topics.agentComms, 'agentComms');
-    }, HCS_POLL_MS));
-
-    // Prime immediately so first data is visible without waiting for interval.
-    this._pollHCSTopic(topics.discovery, 'discovery');
-    this._pollHCSTopic(topics.auditLog, 'auditLog');
-    this._pollHCSTopic(topics.agentComms, 'agentComms');
+      this._pollEventsAPI();
+    }, this.hcsPollMs));
   }
 
-  async _pollHCSTopic(topicId, topicKey) {
+  async _pollEventsAPI() {
     try {
-      if (!this.hcsCursorInitialized[topicKey]) {
-        const shouldSkipHistory = this.onlyTestDiscoveries || this.hcsReplayMode === 'from_now';
-        if (shouldSkipHistory) {
-          const latest = await this.fetchHCSMessages(topicId, 0, { limit: 1, order: 'desc' });
-          if (latest.length > 0) {
-            this.lastSeq[topicKey] = latest[latest.length - 1].sequenceNumber;
-          }
-        }
-        this.hcsCursorInitialized[topicKey] = true;
-        this.hcsHistorySkipped[topicKey] = shouldSkipHistory;
-        this.store.setIngestionHealth?.({
-          lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
-          lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
-        });
-        if (shouldSkipHistory) return;
-      }
+      const messages = await this.fetchEvents();
+      this._lastEventsApiError = null;
 
-      if (this.onlyTestDiscoveries && !this.hcsHistorySkipped[topicKey]) {
-        const history = await this.fetchHCSMessages(topicId, 0);
-        if (history.length > 0) {
-          this.lastSeq[topicKey] = history[history.length - 1].sequenceNumber;
+      if (this.onlyTestDiscoveries && !this.eventsBacklogSkipped) {
+        for (const msg of messages) {
+          this.seenEventIds.add(msg.eventId);
         }
-        this.hcsHistorySkipped[topicKey] = true;
+        this.eventsBacklogSkipped = true;
         return;
       }
 
-      const messages = await this.fetchHCSMessages(topicId, this.lastSeq[topicKey]);
       if (messages.length === 0) return;
 
       for (const msg of messages) {
-        this.lastSeq[topicKey] = msg.sequenceNumber;
-        this._routeHCSMessage(topicKey, msg);
+        if (this.seenEventIds.has(msg.eventId)) continue;
+        this._rememberEventId(msg.eventId);
+        this._routeHCSMessage(msg.topicKey, msg);
       }
       this.hcsEventsSeen += messages.length;
       const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
         (job) => !job?.terminalStatus
       ).length;
       this.store.setIngestionHealth?.({
-        lastHcsSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
-        lastTopicSeq: { [topicKey]: Number(this.lastSeq[topicKey] || 0) },
         hcsEventsSeen: this.hcsEventsSeen,
         activeAuctionsCount,
       });
     } catch (err) {
-      console.warn(`[EventListener] HCS poll error (${topicKey}):`, err.message);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== this._lastEventsApiError) {
+        console.warn('[EventListener] Events API poll error:', message);
+        this._lastEventsApiError = message;
+      }
     }
   }
 
-  /**
-   * Fetch new HCS messages from the mirror node REST API.
-   * Returns array of { sequenceNumber, timestamp, parsedData }.
-   */
-  async fetchHCSMessages(topicId, afterSequence, options = {}) {
-    const order = options.order || 'desc';
-    const limit = Number(options.limit || 100);
-    const url = `${MIRROR_NODE}/api/v1/topics/${topicId}/messages?order=${order}&limit=${limit}`;
+  _rememberEventId(eventId) {
+    this.seenEventIds.add(eventId);
+    if (this.seenEventIds.size <= this.maxSeenEventIds) return;
 
-    const res = await fetch(url);
+    const oldest = this.seenEventIds.values().next().value;
+    if (oldest) {
+      this.seenEventIds.delete(oldest);
+    }
+  }
+
+  async fetchEvents() {
+    const url = `${EVENTS_API_BASE_URL}/events?limit=${EVENT_FETCH_LIMIT}`;
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
     if (!res.ok) {
-      // 404 is normal for topics with no messages yet
-      if (res.status === 404) return [];
-      throw new Error(`Mirror node responded ${res.status}`);
+      throw new Error(`Events API responded ${res.status} for ${url}`);
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const bodyPreview = await res.text().catch(() => '');
+      const compactPreview = String(bodyPreview).replace(/\s+/g, ' ').slice(0, 180);
+      throw new Error(
+        `Events API returned non-JSON (${contentType || 'unknown'}) for ${url}. ` +
+        `Body preview: ${compactPreview}`
+      );
     }
 
     const json = await res.json();
-    const items = (json.messages || [])
-      .filter((m) => Number(m.sequence_number) > Number(afterSequence || 0))
-      .sort((a, b) => Number(a.sequence_number) - Number(b.sequence_number));
+    const events = Array.isArray(json?.data?.events) ? json.data.events : [];
 
-    return items.map((m) => {
-      let parsedData = {};
-      try {
-        const decoded = atob(m.message);
-        parsedData = JSON.parse(decoded);
-      } catch {
-        this.decodeFailures += 1;
-        this.store.setIngestionHealth?.({ decodeFailures: this.decodeFailures });
-        parsedData = { raw: m.message };
-      }
-      
-      const ts = m.consensus_timestamp;
-      const timestamp = (() => {
-        if (typeof ts === 'bigint') return ts;
-        if (typeof ts === 'number') return BigInt(Math.floor(ts * 1e9));
-        if (typeof ts === 'string') {
-          const parts = ts.split('.');
-          if (parts.length === 2) {
-            const sec = BigInt(parts[0]);
-            const nano = BigInt(parts[1].padEnd(9, '0').slice(0, 9));
-            return sec * 1_000_000_000n + nano;
-          }
-          return BigInt(Math.floor(parseFloat(ts) * 1e9));
-        }
-        return BigInt(0);
-      })();
-      
+    return events
+      .filter((event) => typeof event?.id === 'string' && event.id.length > 0)
+      .map((event) => {
+        const rawMessage = event?.rawMessage && typeof event.rawMessage === 'object'
+          ? event.rawMessage
+          : null;
+        const parsedData = rawMessage || {
+          type: event?.messageType || 'UNKNOWN',
+          agentId: event?.agentId || 'unknown',
+          timestamp: event?.messageTimestamp || Date.now(),
+          payload: event?.payload && typeof event.payload === 'object' ? event.payload : {},
+        };
+        const topicKey = this._topicKeyFromTopicId(event?.topicId);
+        this.syntheticSequence += 1;
+
+        return {
+          eventId: event.id,
+          topicKey,
+          sequenceNumber: this.syntheticSequence,
+          timestamp: event?.receivedAt || String(Date.now()),
+          parsedData,
+        };
+      })
+      .filter((event) => event.topicKey !== null)
+      .sort((a, b) => {
+        const aTs = Number(new Date(a.timestamp).getTime()) || 0;
+        const bTs = Number(new Date(b.timestamp).getTime()) || 0;
+        return aTs - bTs;
+      });
+  }
+
+  _topicKeyFromTopicId(topicId) {
+    const normalized = String(topicId || '');
+    const topics = this.config?.hcsTopics || {};
+    if (normalized === topics.discovery) return 'discovery';
+    if (normalized === topics.auditLog) return 'auditLog';
+    if (normalized === topics.agentComms) return 'agentComms';
+    return null;
+  }
+
+  /**
+   * Compatibility shim for older tests/imports.
+   */
+  async fetchHCSMessages() {
+    return this.fetchEvents().map((event) => {
       return {
-        sequenceNumber: m.sequence_number,
-        timestamp,
-        parsedData,
+        topicKey: event.topicKey,
+        sequenceNumber: event.sequenceNumber,
+        timestamp: event.timestamp,
+        parsedData: event.parsedData,
       };
+    });
+  }
+
+  /**
+   * Backward-compatible topic polling shim retained for tests and legacy callers.
+   */
+  async _pollHCSTopic(topicId, topicKey) {
+    const normalizedTopicKey = String(topicKey || '');
+    if (!['discovery', 'auditLog', 'agentComms'].includes(normalizedTopicKey)) return;
+
+    const rawMessages = await this.fetchHCSMessages(topicId, normalizedTopicKey);
+    const messages = Array.isArray(rawMessages)
+      ? rawMessages
+          .filter((msg) => !msg.topicKey || msg.topicKey === normalizedTopicKey)
+          .map((msg) => ({
+            sequenceNumber: Number(msg?.sequenceNumber ?? 0),
+            timestamp: msg?.timestamp ?? String(Date.now()),
+            parsedData:
+              typeof msg?.parsedData === 'object' && msg.parsedData !== null
+                ? msg.parsedData
+                : {},
+          }))
+          .filter((msg) => Number.isFinite(msg.sequenceNumber) && msg.sequenceNumber > 0)
+          .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      : [];
+
+    if (messages.length === 0) return;
+
+    const latestSeen = messages[messages.length - 1].sequenceNumber;
+    const prevSeq = Number(this.lastSeq[normalizedTopicKey] ?? 0);
+
+    if (this.hcsReplayMode === 'from_now' && !this._topicReplayInitialized[normalizedTopicKey]) {
+      this.lastSeq[normalizedTopicKey] = Math.max(prevSeq, latestSeen);
+      this._topicReplayInitialized[normalizedTopicKey] = true;
+      const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+        (job) => !job?.terminalStatus
+      ).length;
+      this.store.setIngestionHealth?.({
+        hcsEventsSeen: this.hcsEventsSeen,
+        activeAuctionsCount,
+        lastTopicSeq: { ...this.lastSeq },
+      });
+      return;
+    }
+
+    this._topicReplayInitialized[normalizedTopicKey] = true;
+    let cursor = prevSeq;
+    let processed = 0;
+
+    for (const msg of messages) {
+      if (msg.sequenceNumber <= cursor) continue;
+
+      const eventId = this._mkHcsEventId(topicId, msg.sequenceNumber);
+      cursor = msg.sequenceNumber;
+      if (this.seenEventIds.has(eventId)) continue;
+
+      this._rememberEventId(eventId);
+      this._routeHCSMessage(normalizedTopicKey, {
+        eventId,
+        topicKey: normalizedTopicKey,
+        sequenceNumber: msg.sequenceNumber,
+        timestamp: msg.timestamp,
+        parsedData: msg.parsedData,
+      });
+      processed += 1;
+    }
+
+    this.lastSeq[normalizedTopicKey] = Math.max(Number(this.lastSeq[normalizedTopicKey] ?? 0), cursor);
+    this.hcsEventsSeen += processed;
+    const activeAuctionsCount = Object.values(this.store.activeJobs || {}).filter(
+      (job) => !job?.terminalStatus
+    ).length;
+    this.store.setIngestionHealth?.({
+      hcsEventsSeen: this.hcsEventsSeen,
+      activeAuctionsCount,
+      lastTopicSeq: { ...this.lastSeq },
     });
   }
 
@@ -536,6 +715,13 @@ export class EventListenerService {
               sourceOrigin: payload.sourceOrigin ?? null,
             }
             : null;
+      console.log('[ContractType:discovery]', {
+        rawContractType: payload.contractType ?? entry.contractType,
+        rawEvmType: payload.evmType ?? entry.evmType,
+        contractAddress: payload.contractAddress ?? entry.contractAddress,
+        topicKey,
+        parsedDataType: parsedData.type,
+      });
       const normalizedDiscovery = {
         ...entry,
         riskScore: Number.isFinite(normalizedRiskScore) ? normalizedRiskScore : 0,
@@ -596,11 +782,30 @@ export class EventListenerService {
         reason: payload.reason ?? payload.reasonCode ?? 'Bid skipped',
       };
     } else if (parsedData.type === 'BID_SUBMISSION_FAILED') {
+      const reasonCode = typeof payload.reasonCode === 'string' ? payload.reasonCode : null;
+      const normalizedType = isPayerFundingFailureReason(reasonCode)
+        ? 'BID_SKIPPED'
+        : 'BID_SUBMISSION_FAILED';
       displayEntry = {
         ...entry,
-        type: 'BID_SUBMISSION_FAILED',
+        type: normalizedType,
         jobId: String(payload.jobId ?? payload.contractAddress ?? sequenceNumber),
-        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        reason: normalizeBidFailureReason(payload),
+      };
+    } else if (isWinnerSelectedType(parsedData.type)) {
+      const winnerAgents = Array.isArray(payload.winners)
+        ? payload.winners
+          .map((winner) => String(winner))
+          .filter((winner) => winner.length > 0)
+        : [];
+      if (winnerAgents.length === 0) {
+        skipDisplayEntry = true;
+      }
+      displayEntry = {
+        ...entry,
+        type: 'WINNER_SELECTED',
+        jobId: String(payload.jobId ?? sequenceNumber),
+        winnerCount: winnerAgents.length,
       };
     } else if (parsedData.type === 'LLM_PROVIDER_READY') {
       displayEntry = {
@@ -702,8 +907,14 @@ export class EventListenerService {
         budgetFormatted: parseGuardAmount(payload.budget ?? 0),
         initialRiskScore: Number(payload.riskScore ?? 0),
         lineCount: Number(payload.estimatedLOC ?? payload.estimatedLineCount ?? 0),
+        auctionDeadline: payload.auctionDeadlineSec ?? payload.auctionDeadline ?? undefined,
         classifier: classifierMetadata,
         postedAt: Date.now(),
+      });
+      console.log('[ContractType:JOB_CREATED]', {
+        rawContractType: payload.contractType,
+        normalized: normalizeAuctionType(payload.contractType),
+        jobId,
       });
       this.store.incrementStat('totalAuctions');
       return;
@@ -753,13 +964,54 @@ export class EventListenerService {
 
     if (parsedData.type === 'BID_SUBMISSION_FAILED') {
       const jobId = String(payload.jobId ?? payload.contractAddress ?? sequenceNumber);
+      const reasonCode = typeof payload.reasonCode === 'string' ? payload.reasonCode : null;
+      const status = isPayerFundingFailureReason(reasonCode) ? 'skipped' : 'failed';
       this.store.addJobBidStatus?.(jobId, {
-        status: 'failed',
+        status,
         agentId: parsedData.agentId ?? payload.agentId ?? 'unknown',
         evmAddress: payload.evmAddress ?? payload.agentAddress ?? null,
-        reason: payload.error ?? payload.reasonCode ?? 'Bid failed',
+        reason: normalizeBidFailureReason(payload),
         timestamp: parsedData.timestamp ?? Date.now(),
         eventId,
+      });
+      return;
+    }
+
+    if (isWinnerSelectedType(parsedData.type)) {
+      const jobId = String(payload.jobId ?? sequenceNumber);
+      const winnerAgents = Array.isArray(payload.winners)
+        ? payload.winners
+          .map((winner) => String(winner))
+          .filter((winner) => winner.length > 0)
+        : [];
+      // Guard gate: ignore malformed winner payloads and preserve authoritative contract winners.
+      if (winnerAgents.length === 0) return;
+      const existingWinnerData = this.store.winners?.[jobId];
+      if (
+        existingWinnerData?.source === 'contract' &&
+        Array.isArray(existingWinnerData?.agents) &&
+        existingWinnerData.agents.length > 0
+      ) {
+        return;
+      }
+      const totalEscrowed = normalizeGuardRaw(payload.totalEscrowed);
+      const platformFee = normalizeGuardRaw(payload.platformFee);
+      const winnerAtValue = existingWinnerData?.winnersAt ?? (timestamp ?? Date.now());
+      const winnerTsMs = toTimestampMs(winnerAtValue);
+
+      this.store.setWinners?.(jobId, {
+        agents: winnerAgents,
+        totalEscrowed: totalEscrowed.raw,
+        totalEscrowedFormatted: totalEscrowed.formatted,
+        platformFee: platformFee.raw,
+        platformFeeFormatted: platformFee.formatted,
+        winnersAt: winnerAtValue,
+        source: 'auditLog',
+      });
+      this.store.setIngestionHealth?.({
+        winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
+        lastWinnerEventAt: winnerTsMs,
+        winnerSource: 'auditLog',
       });
       return;
     }
@@ -782,8 +1034,8 @@ export class EventListenerService {
 
     if (topicKey === 'agentComms' && parsedData.type === 'AUCTION_INVITE') {
       const jobId = String(payload.jobId ?? sequenceNumber);
-      if (payload.classifierHints && typeof payload.classifierHints === 'object') {
-        const existing = this.store.activeJobs?.[jobId] || {};
+      const existing = this.store.activeJobs?.[jobId];
+      if (existing && payload.classifierHints && typeof payload.classifierHints === 'object') {
         this.store.setJob?.(jobId, {
           ...existing,
           jobId,
@@ -942,7 +1194,7 @@ export class EventListenerService {
 
     this._intervals.push(setInterval(() => {
       this._pollContractEvents();
-    }, CONTRACT_POLL_MS));
+    }, this.contractPollMs));
     this._pollContractEvents();
   }
 
@@ -1022,6 +1274,8 @@ export class EventListenerService {
   }
 
   async _pollContractEvents() {
+    if (this._contractPollInFlight) return;
+    this._contractPollInFlight = true;
     try {
       const currentBlock = await this.provider.getBlockNumber();
 
@@ -1052,9 +1306,24 @@ export class EventListenerService {
         vaultFactoryContract, stakingManagerContract, treasuryContract,
       } = this.contracts;
 
-      // Helper: safely query a contract that may not be deployed yet
-      const q = (contract, event) =>
-        contract ? contract.queryFilter(event, from, to).catch(() => []) : Promise.resolve([]);
+      // Helper: safely query a contract that may not be deployed yet.
+      // Guard gate: do not advance block cursor when core auction queries fail.
+      const criticalQueryFailures = [];
+      const q = async (contract, event, options = {}) => {
+        const { critical = false } = options;
+        if (!contract) return [];
+        try {
+          return await contract.queryFilter(event, from, to);
+        } catch (err) {
+          if (critical) {
+            criticalQueryFailures.push({
+              event,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return [];
+        }
+      };
 
       const [
         jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
@@ -1069,12 +1338,12 @@ export class EventListenerService {
         slashInitiated, appealFiled, appealApproved, appealDenied,
         feeReceived, feeDistributed,
       ] = await Promise.all([
-        q(auctionContract, 'JobPosted'),
-        q(auctionContract, 'BidSubmitted'),
-        q(auctionContract, 'WinnersSelected'),
-        q(auctionContract, 'BidRefunded'),
-        q(auctionContract, 'JobCancelled'),
-        q(auctionContract, 'JobCompleted'),
+        q(auctionContract, 'JobPosted', { critical: true }),
+        q(auctionContract, 'BidSubmitted', { critical: true }),
+        q(auctionContract, 'WinnersSelected', { critical: true }),
+        q(auctionContract, 'BidRefunded', { critical: true }),
+        q(auctionContract, 'JobCancelled', { critical: true }),
+        q(auctionContract, 'JobCompleted', { critical: true }),
         q(agentRegistryContract, 'AgentRegistered'),
         q(agentRegistryContract, 'ReputationUpdated'),
         q(agentRegistryContract, 'AgentPromoted'),
@@ -1101,6 +1370,18 @@ export class EventListenerService {
         q(treasuryContract, 'FeeReceived'),
         q(treasuryContract, 'FeeDistributed'),
       ]);
+
+      if (criticalQueryFailures.length > 0) {
+        const failedEvents = criticalQueryFailures.map((failure) => failure.event).join(', ');
+        console.warn(
+          `[EventListener] Contract poll incomplete (${from}-${to}); critical queries failed: ${failedEvents}. Retrying without advancing cursor.`
+        );
+        this.store.setIngestionHealth?.({
+          contractPollError: `critical_query_failed:${failedEvents}`,
+          contractPollErrorAt: Date.now(),
+        });
+        return;
+      }
 
       const polledEventCount = [
         jobPosted, bidSubmitted, winnersSelected, bidRefunded, jobCancelled, jobCompleted,
@@ -1129,6 +1410,12 @@ export class EventListenerService {
           continue;
         }
 
+        console.log('[ContractType:JobPosted]', {
+          rawContractType: a.contractType,
+          normalized: normalizeAuctionType(a.contractType),
+          jobId: a.jobId.toString(),
+          contractAddress: a.contractAddress,
+        });
         this.store.setJob(a.jobId.toString(), {
           jobId: a.jobId.toString(),
           contractAddress: a.contractAddress,
@@ -1139,6 +1426,8 @@ export class EventListenerService {
           auctionDeadline: a.auctionDeadline,
           initialRiskScore: Number(a.initialRiskScore),
           lineCount: Number(a.lineCount),
+          postedAt: Date.now(),
+          updatedAt: Date.now(),
           blockNumber: ev.blockNumber,
         });
         this.store.incrementStat('totalAuctions');
@@ -1197,12 +1486,23 @@ export class EventListenerService {
 
       for (const ev of winnersSelected) {
         const a = ev.args;
-        this.store.setWinners(a.jobId.toString(), {
+        const jobId = a.jobId.toString();
+        const existingWinnerData = this.store.winners?.[jobId];
+        const winnerAtValue = existingWinnerData?.winnersAt ?? Date.now();
+        const winnerTsMs = toTimestampMs(winnerAtValue);
+        this.store.setWinners(jobId, {
           agents: Array.from(a.winners),
           totalEscrowed: a.totalEscrowed,
           totalEscrowedFormatted: parseGuardAmount(a.totalEscrowed),
           platformFee: a.platformFee,
           platformFeeFormatted: parseGuardAmount(a.platformFee),
+          winnersAt: winnerAtValue,
+          source: 'contract',
+        });
+        this.store.setIngestionHealth?.({
+          winnerEventLagMs: Math.max(0, Date.now() - winnerTsMs),
+          lastWinnerEventAt: winnerTsMs,
+          winnerSource: 'contract',
         });
         if ((a.platformFee ?? 0n) > 0n) {
           this._addGuardFlow({
@@ -1933,9 +2233,12 @@ export class EventListenerService {
         lastContractBlock: Number(to),
         contractEventsSeen: this.contractEventsSeen,
         activeAuctionsCount,
+        contractPollError: null,
       });
     } catch (err) {
       console.warn('[EventListener] Contract poll error:', err.message);
+    } finally {
+      this._contractPollInFlight = false;
     }
   }
 }

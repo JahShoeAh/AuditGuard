@@ -16,6 +16,8 @@ const TYPE_CONFIG = {
   LLM_INFERENCE_SUCCEEDED: { color: 'var(--accent-green)', label: 'LOK'  },
   LLM_INFERENCE_FAILED: { color: '#ef4444', label: 'LFAIL'  },
   WinnersSelected:    { color: 'var(--accent-green)',  label: 'WIN'    },
+  WINNERS_SELECTED:   { color: 'var(--accent-green)',  label: 'WIN'    },
+  WINNER_SELECTED:    { color: 'var(--accent-green)',  label: 'WIN'    },
   BidRefunded:        { color: '#f59e0b',              label: 'REFUND' },
   // Sub-contract
   SUB_AUCTION_CREATED:{ color: '#a855f7',              label: 'SUB+'   },
@@ -65,6 +67,10 @@ function describe(e) {
     case 'LLM_INFERENCE_FAILED':
       return `LLM failed Job #${e.jobId}: ${e.reasonCode || '?'} ${e.reason || ''}`;
     case 'WinnersSelected':
+      return `Winners selected for Job #${e.jobId}`;
+    case 'WINNERS_SELECTED':
+      return `Winners selected for Job #${e.jobId}`;
+    case 'WINNER_SELECTED':
       return `Winners selected for Job #${e.jobId}`;
     case 'BidRefunded':
       return `Collateral refunded to ${e.agentName || '?'} — ${e.refunded || '?'}`;

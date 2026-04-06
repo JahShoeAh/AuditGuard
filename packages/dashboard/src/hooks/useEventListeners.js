@@ -54,6 +54,7 @@ export function useEventListeners(connection) {
         incrementStat:             useStore.getState().incrementStat,
         get agents()               { return useStore.getState().agents; },
         get activeJobs()           { return useStore.getState().activeJobs; },
+        get winners()              { return useStore.getState().winners; },
         get reportMetadata()       { return useStore.getState().reportMetadata; },
         // Day 2 — SubAuction
         addSubJob:                 useStore.getState().addSubJob,
@@ -77,6 +78,10 @@ export function useEventListeners(connection) {
         addTreasuryRevenue:        useStore.getState().addTreasuryRevenue,
         addTreasuryDistribution:   useStore.getState().addTreasuryDistribution,
         setIngestionHealth:        useStore.getState().setIngestionHealth,
+        // Auction bid lifecycle + LLM inference tracking
+        addJobBidStatus:           useStore.getState().addJobBidStatus,
+        setLlmProviderStatus:      useStore.getState().setLlmProviderStatus,
+        addLlmInferenceStatus:     useStore.getState().addLlmInferenceStatus,
       };
       const service = new EventListenerService(config, contracts, storeActions, ethersProvider);
       const stop = service.startAll();

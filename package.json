@@ -16,14 +16,14 @@
     "build": "npm run --workspaces --if-present build",
     "dev": "npm run dev:all",
     "dev:all": "npm run stop:all && npm run preflight:live && npm run dev:all:unsafe",
-    "dev:all:unsafe": "bash -lc 'export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & wait'",
-    "dev:all:test": "bash -lc 'VITE_TEST_MODE=true export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & wait'",
-    "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|vite|fuzzer-service/src/index.js|static-analysis-service/src/index.js\" >/dev/null 2>&1 || true'",
+    "dev:all:unsafe": "bash -lc 'export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
+    "dev:all:test": "bash -lc 'VITE_TEST_MODE=true export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
+    "dev:backend": "bash -lc 'export APP_ENV=local EVENT_RELAY_URL=http://localhost:4000/api/events; export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
+    "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|vite|fuzzer-service/src/index.js|static-analysis-service/src/index.js|events-api/src/index.js|events-api run dev\" >/dev/null 2>&1 || true; sleep 2'",
     "fuzzer:service": "node packages/fuzzer-service/src/index.js",
     "static-analysis:service": "node packages/static-analysis-service/src/index.js",
     "start:all": "npm run dev:all",
     "start:all:unsafe": "npm run stop:all && npm run dev:all:unsafe",
-    "start:all:test": "npm run stop:all && npm run preflight:live && npm run dev:all:test",
     "start:all:live": "npm run dev:all",
     "compile": "npx hardhat compile --config packages/contracts/hardhat.config.js",
     "test": "npx hardhat test --config packages/contracts/hardhat.config.js",
@@ -47,6 +47,8 @@
     "scanner": "npm --workspace agents run scanner",
     "agents": "npm --workspace agents run all",
     "agents:demo": "npm --workspace agents run all:demo",
+    "agents:slither": "node agents/slither-agent/index.js",
+    "test:slither": "node agents/slither-agent/test.js",
     "inft:create-collections": "npm --prefix packages/inft run create-collections",
     "inft:listen": "npm --prefix packages/inft run listen",
     "inft:listen:events": "npm --prefix packages/inft run listen:events",
@@ -58,7 +60,9 @@
     "docker:build": "docker compose build",
     "docker:up": "docker compose up",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "fund:agents": "node scripts/fund-agents.js",
+    "deploy:test-contracts": "npx hardhat run packages/contracts/scripts/deploy-test-contracts.js --network hedera_testnet --config packages/contracts/hardhat.config.js"
   },
   "repository": {
     "type": "git",
@@ -68,11 +72,6 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "engines": {
-    "node": "24.0.2",
-    "npm": "11.3.0"
-  },
-  "packageManager": "npm@11.3.0",
   "bugs": {
     "url": "https://github.com/JahShoeAh/AuditGuard/issues"
   },
@@ -82,9 +81,18 @@
     "ethers": "^6.16.0",
     "hardhat": "^2.28.0"
   },
+  "overrides": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@hashgraph/sdk": "^2.80.0",
     "@openzeppelin/contracts": "^5.4.0",
-    "evmdecoder": "^0.0.69"
+    "checkout": "^1.0.1",
+    "evmdecoder": "^0.0.69",
+    "git": "^0.1.5",
+    "main": "^1000.0.1",
+    "pg": "^8.18.0"
   }
 }

@@ -15,10 +15,10 @@ const STAGES = [
 
 // ── Contract type colors ───────────────────────────────────
 const TYPE_COLORS = {
-  lending_protocol: '#22d3ee',
-  dex:              '#a855f7',
-  staking_pool:     '#4ade80',
-  yield_aggregator: '#f59e0b',
+  lending:  '#22d3ee',
+  dex:      '#a855f7',
+  staking:  '#4ade80',
+  vault:    '#f59e0b',
 };
 
 // ── Risk score color ───────────────────────────────────────

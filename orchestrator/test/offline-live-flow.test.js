@@ -19,6 +19,15 @@ function makeOfflineHarness() {
   const agentCommsMessages = [];
   const settledCalls = [];
   const settledOnChain = new Set();
+  const dataMarketplace = { purchaseData: async () => {} };
+  const subAuction = { createSubAuction: async () => {}, acceptResult: async () => {} };
+  const paymentSettlement = {
+    isJobSettled: async (jobId) => settledOnChain.has(Number(jobId)),
+    settleJob: async (jobId, payments, reportAgent) => {
+      settledCalls.push({ jobId: Number(jobId), payments, reportAgent });
+      settledOnChain.add(Number(jobId));
+    },
+  };
 
   const hcs = {
     publishAgentComms: async (msg) => agentCommsMessages.push(msg),
@@ -40,15 +49,13 @@ function makeOfflineHarness() {
     },
     cancelJob: async () => ({ hash: "0xcancel", status: 1 }),
     selectWinners: async () => ({ hash: "0xselect", status: 1 }),
-    dataMarketplace: { purchaseData: async () => {} },
-    subAuction: { createSubAuction: async () => {}, acceptResult: async () => {} },
-    paymentSettlement: {
-      isJobSettled: async (jobId) => settledOnChain.has(Number(jobId)),
-      settleJob: async (jobId, payments, reportAgent) => {
-        settledCalls.push({ jobId: Number(jobId), payments, reportAgent });
-        settledOnChain.add(Number(jobId));
-      },
-    },
+    dataMarketplace,
+    subAuction,
+    paymentSettlement,
+    purchaseData: async (...args) => dataMarketplace.purchaseData(...args),
+    createSubAuction: async (...args) => subAuction.createSubAuction(...args),
+    acceptSubResult: async (...args) => subAuction.acceptResult(...args),
+    settleJob: async (...args) => paymentSettlement.settleJob(...args),
     getAddress: () => "0x0000000000000000000000000000000000000abc",
   };
 
@@ -171,6 +178,7 @@ async function main() {
       agentId: "practice-static-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 28,
         collateral: 6,
@@ -184,6 +192,7 @@ async function main() {
       agentId: "practice-fuzzer-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 26,
         collateral: 5,
@@ -197,6 +206,7 @@ async function main() {
       agentId: "practice-llm-1",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 34,
         collateral: 8,
@@ -210,6 +220,7 @@ async function main() {
       agentId: "practice-lowstake",
       timestamp: now(),
       payload: {
+        jobId: "4242",
         contractAddress: "0xdeadbeef00000000000000000000000000ff1111",
         bidAmount: 18,
         collateral: 4,

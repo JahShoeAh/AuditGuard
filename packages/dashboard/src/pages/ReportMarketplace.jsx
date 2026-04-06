@@ -9,6 +9,7 @@ import ReportCard from '../components/reports/ReportCard';
 import PurchaseModal from '../components/reports/PurchaseModal';
 import ReportViewer from '../components/reports/ReportViewer';
 import PurchaseHistory from '../components/reports/PurchaseHistory';
+import UserReportList from '../components/reports/UserReportList';
 import { HUMAN_FILTER_TABS, HUMAN_CATEGORY_IDS, fmtGuard } from '../components/reports/reportConstants';
 import { fmt } from '../utils/format';
 
@@ -372,6 +373,20 @@ export default function ReportMarketplace() {
 
       {/* ── Main content ── */}
       <main className="flex-1 px-5 py-6">
+        <section className="mb-8">
+          <div className="rounded-xl border border-gray-800 bg-gray-950/70 p-4 md:p-5">
+            <h2 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-100">
+              My Audit Reports
+            </h2>
+            <p className="text-xs font-mono text-gray-500 mt-1">
+              Reports generated for contracts deployed by your connected wallet.
+            </p>
+            <div className="mt-4">
+              <UserReportList />
+            </div>
+          </div>
+        </section>
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           <AnimatePresence initial={false}>
             {displayedListings.length === 0 ? (
@@ -392,6 +407,14 @@ export default function ReportMarketplace() {
               })
             )}
           </AnimatePresence>
+        </div>
+
+        {/* ── My Reports — wallet-filtered audit reports (deployer view) ── */}
+        <div className="mt-10 pt-8 border-t border-gray-900">
+          <h2 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-300 mb-4">
+            My Reports
+          </h2>
+          <UserReportList />
         </div>
 
         {/* ── Purchase history ── */}

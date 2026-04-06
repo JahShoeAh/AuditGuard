@@ -274,13 +274,13 @@ describe("contract-classifier.ts", () => {
     expect(mockInitializeFn).toHaveBeenCalledOnce();
   });
 
-  it("returns EOA result with defiCategory=lending when isContract=false", async () => {
+  it("returns EOA result with defiCategory=vault when isContract=false", async () => {
     mockContractInfoFn.mockResolvedValue({ isContract: false });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "1".repeat(40));
     expect(result.isContract).toBe(false);
     expect(result.evmType).toBe("EOA");
-    expect(result.defiCategory).toBe("lending");
+    expect(result.defiCategory).toBe("vault");
     expect(result.standards).toEqual([]);
   });
 
@@ -334,7 +334,7 @@ describe("contract-classifier.ts", () => {
     expect(result.defiCategory).toBe("nft");
   });
 
-  it("uses DEX function selector in bytecode → dex", async () => {
+  it("ignores bytecode selector hints in contractInfo path → vault", async () => {
     // 0x38ed1739 = swapExactTokensForTokens
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -343,10 +343,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "7".repeat(40));
-    expect(result.defiCategory).toBe("dex");
+    expect(result.defiCategory).toBe("vault");
   });
 
-  it("uses staking function selector in bytecode → staking", async () => {
+  it("ignores staking selector hints in contractInfo path → vault", async () => {
     // 0xa694fc3a = stake
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -355,10 +355,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "8".repeat(40));
-    expect(result.defiCategory).toBe("staking");
+    expect(result.defiCategory).toBe("vault");
   });
 
-  it("uses bridge function selector in bytecode → bridge", async () => {
+  it("ignores bridge selector hints in contractInfo path → vault", async () => {
     // 0x0f5287b0 = bridgeOut
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
@@ -367,10 +367,10 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "9".repeat(40));
-    expect(result.defiCategory).toBe("bridge");
+    expect(result.defiCategory).toBe("vault");
   });
 
-  it("defaults to lending when no standards, no selectors, unknown evmType", async () => {
+  it("defaults to vault when no standards, no selectors, unknown evmType", async () => {
     mockContractInfoFn.mockResolvedValue({
       isContract: true,
       contractType: { name: "unknown", standards: [] },
@@ -378,7 +378,7 @@ describe("contract-classifier.ts", () => {
     });
     const { classifyContract } = await import("../scanner/contract-classifier.js");
     const result = await classifyContract("0x" + "f".repeat(40));
-    expect(result.defiCategory).toBe("lending");
+    expect(result.defiCategory).toBe("vault");
   });
 
   it("extracts proxyTarget from last proxy entry", async () => {
@@ -1077,7 +1077,7 @@ describe("risk-inference.ts — assessRisk()", () => {
     expect(getCurrentInferenceSource()).toBe("claude");
   });
 
-  it("model field in result reflects ZG_MODEL env var", async () => {
+  it("model field in result reflects provider model when configured model is unsupported", async () => {
     process.env.ZG_MODEL = "custom-model-v1";
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -1090,7 +1090,11 @@ describe("risk-inference.ts — assessRisk()", () => {
     const { assessRisk, _resetRiskInference } = await import("../scanner/risk-inference.js");
     _resetRiskInference();
     const result = await assessRisk(makeRiskCtx(), mockLog);
-    expect(result.model).toBe("custom-model-v1");
+    expect(result.model).toBe("qwen/qwen-2.5-7b-instruct");
+    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const requestInit = callArgs?.[1] as { body?: string } | undefined;
+    const parsed = JSON.parse(String(requestInit?.body ?? "{}"));
+    expect(parsed.model).toBe("qwen/qwen-2.5-7b-instruct");
   });
 
   it("_resetRiskInference() restores zgHealthy to true", async () => {

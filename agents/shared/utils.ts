@@ -84,30 +84,6 @@ const FINDING_TITLES: Record<ContractType, string[]> = {
     "Strategy migration rug vector",
     "Unauthorized strategy update",
   ],
-  derivatives: [
-    "Liquidation threshold bypass via price manipulation",
-    "Unchecked leverage ratio on position open",
-    "Funding rate calculation overflow",
-    "Missing mark-price validation",
-  ],
-  oracle: [
-    "Stale price data accepted without staleness check",
-    "Single-source price feed manipulation",
-    "Missing circuit-breaker for extreme price moves",
-    "Integer overflow in price scaling",
-  ],
-  governance: [
-    "Flash-loan governance attack via vote delegation",
-    "Missing timelock on critical parameter change",
-    "Quorum threshold bypass via token inflation",
-    "Proposal execution without sufficient delay",
-  ],
-  nft: [
-    "Reentrancy in mint() via ERC-721 callback",
-    "Unrestricted token URI overwrite",
-    "Royalty bypass via direct marketplace transfer",
-    "Missing ownership check in safeTransferFrom",
-  ],
 };
 
 export function randomFindingTitle(contractType: ContractType): string {

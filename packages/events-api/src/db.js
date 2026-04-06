@@ -1,225 +1,234 @@
-'use strict';
+import { existsSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname } from "node:path";
 
-const path = require('path');
-const Database = require('better-sqlite3');
-
-const DB_PATH = process.env.EVENTS_DB_PATH
-  || path.join(__dirname, '..', 'data', 'events.db');
+const DB_PATH = process.env.EVENTS_DB_PATH || "data/events.db";
+const require = createRequire(import.meta.url);
 
 let db;
 
-function getDb() {
+const MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS audit_events (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  topic_id TEXT NOT NULL,
+  message_type TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  message_timestamp INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  received_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_received_at
+  ON audit_events(received_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_message_type
+  ON audit_events(message_type);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_agent_id
+  ON audit_events(agent_id);
+
+CREATE TABLE IF NOT EXISTS bid_skips (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  job_id INTEGER,
+  agent_id TEXT NOT NULL,
+  reason_code TEXT,
+  reason TEXT,
+  invite_budget REAL,
+  bid_amount REAL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (event_id) REFERENCES audit_events(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bid_skips_created_at
+  ON bid_skips(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_bid_skips_reason_code
+  ON bid_skips(reason_code);
+
+CREATE INDEX IF NOT EXISTS idx_bid_skips_agent_id
+  ON bid_skips(agent_id);
+`;
+
+function normalizeSql(sql) {
+  return String(sql ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function toFiniteLimit(value, fallback = 100) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+class InMemoryStatement {
+  constructor(store, sql) {
+    this.store = store;
+    this.sql = sql;
+    this.normalizedSql = normalizeSql(sql);
+  }
+
+  run(...params) {
+    if (this.normalizedSql.startsWith("insert into audit_events")) {
+      const [
+        id,
+        source,
+        topic_id,
+        message_type,
+        agent_id,
+        message_timestamp,
+        payload_json,
+        raw_json,
+        received_at,
+      ] = params;
+      this.store.auditEvents.push({
+        id,
+        source,
+        topic_id,
+        message_type,
+        agent_id,
+        message_timestamp,
+        payload_json,
+        raw_json,
+        received_at,
+      });
+      return { changes: 1 };
+    }
+
+    if (this.normalizedSql.startsWith("insert into bid_skips")) {
+      const [
+        id,
+        event_id,
+        job_id,
+        agent_id,
+        reason_code,
+        reason,
+        invite_budget,
+        bid_amount,
+        created_at,
+      ] = params;
+      this.store.bidSkips.push({
+        id,
+        event_id,
+        job_id,
+        agent_id,
+        reason_code,
+        reason,
+        invite_budget,
+        bid_amount,
+        created_at,
+      });
+      return { changes: 1 };
+    }
+
+    throw new Error(`In-memory DB cannot run statement: ${this.sql}`);
+  }
+
+  all(...params) {
+    if (this.normalizedSql.includes("from audit_events")) {
+      const hasMessageType = this.normalizedSql.includes("message_type = ?");
+      const hasAgentId = this.normalizedSql.includes("agent_id = ?");
+      const hasTopicId = this.normalizedSql.includes("topic_id = ?");
+
+      let paramIndex = 0;
+      const expectedMessageType = hasMessageType ? params[paramIndex++] : undefined;
+      const expectedAgentId = hasAgentId ? params[paramIndex++] : undefined;
+      const expectedTopicId = hasTopicId ? params[paramIndex++] : undefined;
+      const limit = toFiniteLimit(params[paramIndex], 100);
+
+      return this.store.auditEvents
+        .filter((row) => (hasMessageType ? row.message_type === expectedMessageType : true))
+        .filter((row) => (hasAgentId ? row.agent_id === expectedAgentId : true))
+        .filter((row) => (hasTopicId ? row.topic_id === expectedTopicId : true))
+        .sort((a, b) => String(b.received_at).localeCompare(String(a.received_at)))
+        .slice(0, limit);
+    }
+
+    if (this.normalizedSql.includes("from bid_skips")) {
+      const hasReasonCode = this.normalizedSql.includes("reason_code = ?");
+      const hasAgentId = this.normalizedSql.includes("agent_id = ?");
+
+      let paramIndex = 0;
+      const expectedReasonCode = hasReasonCode ? params[paramIndex++] : undefined;
+      const expectedAgentId = hasAgentId ? params[paramIndex++] : undefined;
+      const limit = toFiniteLimit(params[paramIndex], 100);
+
+      return this.store.bidSkips
+        .filter((row) => (hasReasonCode ? row.reason_code === expectedReasonCode : true))
+        .filter((row) => (hasAgentId ? row.agent_id === expectedAgentId : true))
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .slice(0, limit);
+    }
+
+    throw new Error(`In-memory DB cannot query statement: ${this.sql}`);
+  }
+
+  get() {
+    if (this.normalizedSql === "select 1 as ok") {
+      return { ok: 1 };
+    }
+    const rows = this.all();
+    return rows[0];
+  }
+}
+
+class InMemoryDb {
+  constructor() {
+    this.auditEvents = [];
+    this.bidSkips = [];
+  }
+
+  pragma() {}
+
+  exec() {}
+
+  prepare(sql) {
+    return new InMemoryStatement(this, sql);
+  }
+}
+
+function loadSqliteConstructor() {
+  try {
+    return require("better-sqlite3");
+  } catch {
+    return null;
+  }
+}
+
+export function initDb() {
   if (db) return db;
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  initSchema();
+
+  const Sqlite = loadSqliteConstructor();
+  if (!Sqlite) {
+    const requireSqlite = (process.env.EVENTS_API_REQUIRE_SQLITE ?? "false") === "true";
+    if (requireSqlite) {
+      throw new Error(
+        "better-sqlite3 is required but not installed. Install dependencies or unset EVENTS_API_REQUIRE_SQLITE."
+      );
+    }
+    db = new InMemoryDb();
+    console.warn("[events-api] better-sqlite3 not found; using in-memory event store fallback");
+    return db;
+  }
+
+  const dir = dirname(DB_PATH);
+  if (dir && dir !== "." && !existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  db = new Sqlite(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.exec(MIGRATION_SQL);
+  console.log(`[events-api] SQLite database initialised at ${DB_PATH}`);
   return db;
 }
 
-function initSchema() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS audit_events (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      source      TEXT,
-      topic_id    TEXT,
-      message_type TEXT,
-      agent_id    TEXT,
-      message_timestamp TEXT,
-      payload_json TEXT,
-      raw_json    TEXT,
-      received_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS bid_skips (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      event_id    INTEGER REFERENCES audit_events(id),
-      job_id      TEXT,
-      agent_id    TEXT,
-      reason_code TEXT,
-      reason      TEXT,
-      invite_budget REAL,
-      bid_amount  REAL,
-      created_at  TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS job_clients (
-      job_id           TEXT PRIMARY KEY,
-      contract_address TEXT,
-      deployer_address TEXT,
-      created_at       TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_reports (
-      job_id          TEXT PRIMARY KEY,
-      contract_address TEXT,
-      deployer_address TEXT,
-      report_hash     TEXT,
-      findings_json   TEXT,
-      total_findings  INTEGER DEFAULT 0,
-      critical_count  INTEGER DEFAULT 0,
-      settled_at      TEXT,
-      raw_json        TEXT,
-      created_at      TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS marketplace_purchases (
-      id               TEXT PRIMARY KEY,
-      listing_id       TEXT,
-      buyer_address    TEXT,
-      job_id           TEXT,
-      contract_address TEXT,
-      tx_hash          TEXT,
-      price_guard      REAL,
-      category         TEXT,
-      purchased_at     TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS hcs_cursors (
-      topic_key  TEXT PRIMARY KEY,
-      last_seq   INTEGER DEFAULT 0,
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS auth_nonces (
-      wallet_address TEXT,
-      nonce          TEXT,
-      expires_at     INTEGER,
-      used           INTEGER DEFAULT 0
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(message_type);
-    CREATE INDEX IF NOT EXISTS idx_audit_events_agent ON audit_events(agent_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_reports_deployer ON audit_reports(deployer_address);
-    CREATE INDEX IF NOT EXISTS idx_job_clients_deployer ON job_clients(deployer_address);
-  `);
-}
-
-// ── Audit events ────────────────────────────────────────────
-
-function insertAuditEvent({ source, topicId, messageType, agentId, messageTimestamp, payloadJson, rawJson }) {
-  return getDb()
-    .prepare(`INSERT INTO audit_events (source, topic_id, message_type, agent_id, message_timestamp, payload_json, raw_json)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(source, topicId, messageType, agentId, messageTimestamp, payloadJson, rawJson);
-}
-
-function getAuditEvents({ type, since, limit = 50, offset = 0 } = {}) {
-  let sql = 'SELECT * FROM audit_events WHERE 1=1';
-  const params = [];
-  if (type) { sql += ' AND message_type = ?'; params.push(type); }
-  if (since) { sql += ' AND id > ?'; params.push(since); }
-  sql += ' ORDER BY id DESC LIMIT ? OFFSET ?';
-  params.push(limit, offset);
-  return getDb().prepare(sql).all(...params);
-}
-
-function getLastAuditEventId() {
-  const row = getDb().prepare('SELECT MAX(id) as maxId FROM audit_events').get();
-  return row?.maxId ?? 0;
-}
-
-// ── Job clients ─────────────────────────────────────────────
-
-function upsertJobClient({ jobId, contractAddress, deployerAddress }) {
-  return getDb()
-    .prepare(`INSERT OR REPLACE INTO job_clients (job_id, contract_address, deployer_address)
-              VALUES (?, ?, ?)`)
-    .run(jobId, contractAddress, deployerAddress);
-}
-
-function getJobClient(jobId) {
-  return getDb().prepare('SELECT * FROM job_clients WHERE job_id = ?').get(jobId);
-}
-
-// ── Audit reports ────────────────────────────────────────────
-
-function upsertAuditReport({ jobId, contractAddress, deployerAddress, reportHash, findingsJson, totalFindings, criticalCount, settledAt, rawJson }) {
-  return getDb()
-    .prepare(`INSERT OR REPLACE INTO audit_reports
-              (job_id, contract_address, deployer_address, report_hash, findings_json, total_findings, critical_count, settled_at, raw_json)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(jobId, contractAddress, deployerAddress, reportHash, findingsJson, totalFindings, criticalCount, settledAt, rawJson);
-}
-
-function getAuditReport(jobId) {
-  return getDb().prepare('SELECT * FROM audit_reports WHERE job_id = ?').get(jobId);
-}
-
-function listAuditReports({ limit = 20, offset = 0 } = {}) {
-  return getDb()
-    .prepare('SELECT job_id, contract_address, deployer_address, report_hash, total_findings, critical_count, settled_at, created_at FROM audit_reports ORDER BY created_at DESC LIMIT ? OFFSET ?')
-    .all(limit, offset);
-}
-
-// ── Marketplace purchases ────────────────────────────────────
-
-function insertMarketplacePurchase({ id, listingId, buyerAddress, jobId, contractAddress, txHash, priceGuard, category }) {
-  return getDb()
-    .prepare(`INSERT OR IGNORE INTO marketplace_purchases (id, listing_id, buyer_address, job_id, contract_address, tx_hash, price_guard, category)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, listingId, buyerAddress, jobId, contractAddress, txHash, priceGuard, category);
-}
-
-function getMarketplacePurchases({ buyerAddress, limit = 50 } = {}) {
-  if (buyerAddress) {
-    return getDb().prepare('SELECT * FROM marketplace_purchases WHERE LOWER(buyer_address) = LOWER(?) ORDER BY purchased_at DESC LIMIT ?').all(buyerAddress, limit);
+export function getDb() {
+  if (!db) {
+    throw new Error("Database not initialised. Call initDb() first.");
   }
-  return getDb().prepare('SELECT * FROM marketplace_purchases ORDER BY purchased_at DESC LIMIT ?').all(limit);
+  return db;
 }
-
-function getMarketplacePurchase(listingId) {
-  return getDb().prepare('SELECT * FROM marketplace_purchases WHERE listing_id = ?').get(listingId);
-}
-
-// ── HCS cursors ──────────────────────────────────────────────
-
-function getHcsCursor(topicKey) {
-  return getDb().prepare('SELECT last_seq FROM hcs_cursors WHERE topic_key = ?').get(topicKey);
-}
-
-function setHcsCursor(topicKey, lastSeq) {
-  return getDb()
-    .prepare(`INSERT OR REPLACE INTO hcs_cursors (topic_key, last_seq, updated_at) VALUES (?, ?, datetime('now'))`)
-    .run(topicKey, lastSeq);
-}
-
-// ── Auth nonces ──────────────────────────────────────────────
-
-function insertNonce(walletAddress, nonce, expiresAt) {
-  return getDb()
-    .prepare('INSERT INTO auth_nonces (wallet_address, nonce, expires_at) VALUES (?, ?, ?)')
-    .run(walletAddress, nonce, expiresAt);
-}
-
-function getNonce(walletAddress, nonce) {
-  return getDb()
-    .prepare('SELECT * FROM auth_nonces WHERE wallet_address = ? AND nonce = ? AND used = 0 AND expires_at > ?')
-    .get(walletAddress, nonce, Date.now());
-}
-
-function markNonceUsed(walletAddress, nonce) {
-  return getDb()
-    .prepare('UPDATE auth_nonces SET used = 1 WHERE wallet_address = ? AND nonce = ?')
-    .run(walletAddress, nonce);
-}
-
-module.exports = {
-  getDb,
-  insertAuditEvent,
-  getAuditEvents,
-  getLastAuditEventId,
-  upsertJobClient,
-  getJobClient,
-  upsertAuditReport,
-  getAuditReport,
-  listAuditReports,
-  insertMarketplacePurchase,
-  getMarketplacePurchases,
-  getMarketplacePurchase,
-  getHcsCursor,
-  setHcsCursor,
-  insertNonce,
-  getNonce,
-  markNonceUsed,
-};

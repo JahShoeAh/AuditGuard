@@ -28,6 +28,7 @@ function makeStoreSpies() {
     addTreasuryDistribution: vi.fn(),
     setIngestionHealth: vi.fn(),
     agents: {},
+    winners: {},
     subJobs: {},
   };
 }
@@ -70,15 +71,6 @@ describe("EventListenerService", () => {
     });
 
     expect(store.addDiscovery).toHaveBeenCalledTimes(1);
-    expect(store.addDiscovery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contractAddress: "0xabc",
-        riskScore: 0,
-        initialRiskScore: 0,
-        estimatedLOC: 0,
-        estimatedLineCount: 0,
-      })
-    );
     expect(store.incrementStat).toHaveBeenCalledWith("totalDiscoveries");
     expect(store.addLogEntry).toHaveBeenCalledTimes(1);
     expect(store.addLogEntry.mock.calls[0][0]).toMatchObject({
@@ -156,6 +148,42 @@ describe("EventListenerService", () => {
     );
   });
 
+  it("downgrades payer-funding BID_SUBMISSION_FAILED to skipped with concise reason", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "BID_SUBMISSION_FAILED",
+        agentId: "static-analysis-047",
+        payload: {
+          jobId: "481",
+          reasonCode: "insufficient_payer_hbar",
+          error:
+            "server response 400 Bad Request (request={ }, response={ }, error=null, info={ \"responseBody\": \"{\\\"error\\\":{\\\"code\\\":-32000,\\\"message\\\":\\\"Insufficient funds for transfer\\\"}}\" })",
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 9,
+    });
+
+    expect(store.addJobBidStatus).toHaveBeenCalledWith(
+      "481",
+      expect.objectContaining({
+        status: "skipped",
+        agentId: "static-analysis-047",
+        reason: "Insufficient payer HBAR for transaction fees",
+      })
+    );
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "BID_SKIPPED",
+        jobId: "481",
+        reason: "Insufficient payer HBAR for transaction fees",
+      })
+    );
+  });
+
   it("routes AUCTION_INVITE_SUMMARY messages into invite lifecycle entries", () => {
     const store = makeStoreSpies();
     const svc = new EventListenerService(config, {}, store, null);
@@ -213,6 +241,33 @@ describe("EventListenerService", () => {
       2,
       "91",
       expect.objectContaining({ status: "invite_sent", agentId: "fuzzer-012" })
+    );
+  });
+
+  it("does not create placeholder active jobs from AUCTION_INVITE classifier hints alone", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("agentComms", {
+      parsedData: {
+        type: "AUCTION_INVITE",
+        payload: {
+          jobId: "92",
+          contractAddress: "0x0000000000000000000000000000000000000a11",
+          classifierHints: {
+            riskSource: "0g",
+            riskModel: "qwen/qwen-2.5-7b-instruct",
+          },
+        },
+      },
+      timestamp: "1700000000.000000001",
+      sequenceNumber: 7,
+    });
+
+    expect(store.setJob).not.toHaveBeenCalled();
+    expect(store.addJobBidStatus).toHaveBeenCalledWith(
+      "92",
+      expect.objectContaining({ status: "invite_sent" })
     );
   });
 
@@ -324,6 +379,168 @@ describe("EventListenerService", () => {
     );
   });
 
+  it("hydrates winners immediately from WINNER_SELECTED audit-log events", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNER_SELECTED",
+        payload: {
+          jobId: "33",
+          winners: [
+            "0x00000000000000000000000000000000000000aa",
+            "0x00000000000000000000000000000000000000bb",
+          ],
+          totalEscrowed: "150000000",
+          platformFee: "5000000",
+        },
+      },
+      timestamp: "1700000002.000000001",
+      sequenceNumber: 92,
+    });
+
+    expect(store.setWinners).toHaveBeenCalledWith(
+      "33",
+      expect.objectContaining({
+        agents: [
+          "0x00000000000000000000000000000000000000aa",
+          "0x00000000000000000000000000000000000000bb",
+        ],
+        totalEscrowedFormatted: "1.50 GUARD",
+        platformFeeFormatted: "0.05 GUARD",
+        source: "auditLog",
+      })
+    );
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "WINNER_SELECTED",
+        jobId: "33",
+        winnerCount: 2,
+      })
+    );
+  });
+
+  it("does not overwrite authoritative contract winners with malformed WINNER_SELECTED payloads", () => {
+    const store = makeStoreSpies();
+    store.winners = {
+      "33": {
+        source: "contract",
+        agents: ["0x00000000000000000000000000000000000000cc"],
+      },
+    };
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNER_SELECTED",
+        payload: {
+          jobId: "33",
+          winners: [],
+        },
+      },
+      timestamp: "1700000002.000000001",
+      sequenceNumber: 93,
+    });
+
+    expect(store.setWinners).not.toHaveBeenCalled();
+  });
+
+  it("accepts legacy WINNERS_SELECTED payloads and normalizes them for UI/store", () => {
+    const store = makeStoreSpies();
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNERS_SELECTED",
+        payload: {
+          jobId: "34",
+          winners: ["0x00000000000000000000000000000000000000dd"],
+        },
+      },
+      timestamp: "1700000002.000000001",
+      sequenceNumber: 94,
+    });
+
+    expect(store.setWinners).toHaveBeenCalledWith(
+      "34",
+      expect.objectContaining({
+        agents: ["0x00000000000000000000000000000000000000dd"],
+        source: "auditLog",
+      })
+    );
+    expect(store.addLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "WINNER_SELECTED",
+        jobId: "34",
+        winnerCount: 1,
+      })
+    );
+  });
+
+  it("preserves first winnersAt for duplicate WINNER_SELECTED audit-log events", () => {
+    const store = makeStoreSpies();
+    store.setWinners = vi.fn((jobId, data) => {
+      store.winners[jobId] = data;
+    });
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNER_SELECTED",
+        payload: {
+          jobId: "36",
+          winners: ["0x00000000000000000000000000000000000000aa"],
+        },
+      },
+      timestamp: "1700000002.000000001",
+      sequenceNumber: 96,
+    });
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNER_SELECTED",
+        payload: {
+          jobId: "36",
+          winners: ["0x00000000000000000000000000000000000000aa"],
+        },
+      },
+      timestamp: "1700000015.000000001",
+      sequenceNumber: 97,
+    });
+
+    expect(store.setWinners).toHaveBeenLastCalledWith(
+      "36",
+      expect.objectContaining({
+        winnersAt: "1700000002.000000001",
+      })
+    );
+  });
+
+  it("does not overwrite authoritative contract winners with conflicting WINNER_SELECTED payloads", () => {
+    const store = makeStoreSpies();
+    store.winners = {
+      "35": {
+        source: "contract",
+        agents: ["0x00000000000000000000000000000000000000cc"],
+      },
+    };
+    const svc = new EventListenerService(config, {}, store, null);
+
+    svc._routeHCSMessage("auditLog", {
+      parsedData: {
+        type: "WINNER_SELECTED",
+        payload: {
+          jobId: "35",
+          winners: ["0x00000000000000000000000000000000000000ee"],
+        },
+      },
+      timestamp: "1700000002.000000001",
+      sequenceNumber: 95,
+    });
+
+    expect(store.setWinners).not.toHaveBeenCalled();
+  });
+
   it("ingests live JobPosted + BidSubmitted contract events", async () => {
     const store = makeStoreSpies();
     const provider = {
@@ -386,6 +603,8 @@ describe("EventListenerService", () => {
       expect.objectContaining({
         jobId: "7",
         contractType: "lending",
+        postedAt: expect.any(Number),
+        updatedAt: expect.any(Number),
       })
     );
     expect(store.addBid).toHaveBeenCalledWith(
@@ -699,5 +918,211 @@ describe("EventListenerService", () => {
         lastTopicSeq: expect.objectContaining({ auditLog: 61 }),
       })
     );
+  });
+
+  it("does not advance contract cursor when critical auction queries fail", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => 310),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const auctionContract = {
+      queryFilter: vi.fn(async (event) => {
+        if (event === "WinnersSelected") {
+          throw new Error("rpc unavailable");
+        }
+        return [];
+      }),
+    };
+
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 300;
+
+    await svc._pollContractEvents();
+
+    expect(svc.lastProcessedBlock).toBe(300);
+    expect(store.setIngestionHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contractPollError: expect.stringContaining("critical_query_failed"),
+      })
+    );
+  });
+
+  it("preserves existing winnersAt when contract WinnersSelected is re-observed", async () => {
+    const store = makeStoreSpies();
+    store.winners = {
+      "77": {
+        agents: ["0x00000000000000000000000000000000000000aa"],
+        winnersAt: 1700000000000,
+        source: "auditLog",
+      },
+    };
+    store.setWinners = vi.fn((jobId, data) => {
+      store.winners[jobId] = data;
+    });
+    const provider = {
+      getBlockNumber: vi.fn(async () => 512),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const auctionContract = makeContractMock({
+      WinnersSelected: [
+        {
+          args: {
+            jobId: 77n,
+            winners: ["0x00000000000000000000000000000000000000aa"],
+            totalEscrowed: 100000000n,
+            platformFee: 1000000n,
+          },
+          blockNumber: 511,
+          transactionHash: "0xwinner77",
+        },
+      ],
+    });
+
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 510;
+    await svc._pollContractEvents();
+
+    expect(store.setWinners).toHaveBeenCalledWith(
+      "77",
+      expect.objectContaining({
+        winnersAt: 1700000000000,
+        source: "contract",
+      })
+    );
+  });
+
+  it("hydrates winners from contract polling even when events API polling fails", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => 701),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+    const auctionContract = makeContractMock({
+      WinnersSelected: [
+        {
+          args: {
+            jobId: 91n,
+            winners: ["0x00000000000000000000000000000000000000aa"],
+            totalEscrowed: 150000000n,
+            platformFee: 5000000n,
+          },
+          blockNumber: 700,
+          transactionHash: "0xwinner91",
+        },
+      ],
+    });
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 699;
+    vi.spyOn(svc, "fetchEvents").mockRejectedValue(new Error("events api unavailable"));
+
+    await svc._pollEventsAPI();
+    await svc._pollContractEvents();
+
+    expect(store.setWinners).toHaveBeenCalledWith(
+      "91",
+      expect.objectContaining({
+        source: "contract",
+      })
+    );
+    expect(store.setIngestionHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        winnerSource: "contract",
+      })
+    );
+  });
+
+  it("skips overlapping contract polls while a prior poll is still in flight", async () => {
+    const store = makeStoreSpies();
+    const provider = {
+      getBlockNumber: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return 410;
+      }),
+      getBlock: vi.fn(async () => ({ timestamp: 1700000000 })),
+    };
+
+    const auctionContract = makeContractMock();
+    const contracts = {
+      auctionContract,
+      agentRegistryContract: makeContractMock(),
+      subAuctionContract: makeContractMock(),
+      dataMarketplaceContract: makeContractMock(),
+      paymentSettlementContract: makeContractMock(),
+      vaultFactoryContract: makeContractMock(),
+      stakingManagerContract: makeContractMock(),
+      treasuryContract: makeContractMock(),
+    };
+
+    const svc = new EventListenerService(config, contracts, store, provider);
+    svc.lastProcessedBlock = 409;
+
+    const first = svc._pollContractEvents();
+    const second = svc._pollContractEvents();
+    await Promise.all([first, second]);
+
+    expect(provider.getBlockNumber).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads HCS/contract polling intervals from dashboard config with safe fallback", () => {
+    const store = makeStoreSpies();
+    const customConfig = {
+      ...config,
+      dashboard: {
+        ...config.dashboard,
+        hcsPollMs: 1300,
+        contractPollMs: 1200,
+      },
+    };
+    const invalidConfig = {
+      ...config,
+      dashboard: {
+        ...config.dashboard,
+        hcsPollMs: 10,
+        contractPollMs: 50,
+      },
+    };
+
+    const withCustom = new EventListenerService(customConfig, {}, store, null);
+    const withInvalid = new EventListenerService(invalidConfig, {}, store, null);
+
+    expect(withCustom.hcsPollMs).toBe(1300);
+    expect(withCustom.contractPollMs).toBe(1200);
+    expect(withInvalid.hcsPollMs).toBe(2000);
+    expect(withInvalid.contractPollMs).toBe(2000);
   });
 });

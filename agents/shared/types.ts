@@ -39,16 +39,7 @@ export interface ContractDiscoveryEvent extends HCSMessage {
   };
 }
 
-export type ContractType =
-  | "lending"      // Lending / borrowing protocols (Aave, Compound, MakerDAO)
-  | "dex"          // Decentralised exchanges (Uniswap, Curve, SushiSwap)
-  | "staking"      // Staking & liquid-staking (Lido, Rocket Pool)
-  | "bridge"       // Cross-chain bridges (Hop, Stargate, Across)
-  | "vault"        // Yield aggregators / vaults (Yearn, Beefy)
-  | "derivatives"  // Perpetuals, options, futures (GMX, dYdX, Synthetix)
-  | "oracle"       // Price oracles (Chainlink, Pyth, Band)
-  | "governance"   // DAO governance (Governor Bravo, OpenZeppelin Governor)
-  | "nft";         // NFT tokens / marketplaces (ERC-721, ERC-1155)
+export type ContractType = "lending" | "dex" | "staking" | "bridge" | "vault";
 
 // ============================================================
 // AgentComms Topic Messages
@@ -114,9 +105,16 @@ export interface SubResultDeliveredEvent extends HCSMessage {
 export type AuditLogType =
   | "AUCTION_CREATED"
   | "BID_SUBMITTED"
+  | "BID_DEDUPED"
   | "BID_SKIPPED"
+  | "BID_QUEUE_DROPPED"
+  | "BID_LATE_DROP"
   | "BID_SUBMISSION_FAILED"
   | "AUCTION_INVITE_SUMMARY"
+  | "JOB_CREATE_DEFERRED"
+  | "JOB_CREATE_RETRYING"
+  | "JOB_CREATE_ABORTED"
+  | "WINNER_SELECTION_SUMMARY"
   | "LLM_PROVIDER_READY"
   | "LLM_PROVIDER_UNHEALTHY"
   | "LLM_INFERENCE_STARTED"

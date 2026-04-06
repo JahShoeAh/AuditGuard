@@ -105,6 +105,35 @@ function checkScannerOptionalDependencies() {
   );
 }
 
+function checkScannerClassifierAbiDirectory() {
+  const { classifierMode } = resolveScannerClassifierMode();
+  if (!classifierMode) return;
+
+  const repoRoot = path.join(__dirname, "..");
+  const override = String(process.env.SCANNER_EVMDECODER_ABI_DIR || "").trim();
+  const candidates = [
+    override || null,
+    path.join(repoRoot, "packages", "sdk", "abis"),
+    path.join(process.cwd(), "packages", "sdk", "abis"),
+    path.join(process.cwd(), "abis"),
+  ].filter(Boolean);
+
+  const resolved = candidates.find((candidate) => fs.existsSync(candidate));
+  if (resolved) {
+    info(`scanner classifier ABI directory resolved: ${resolved}`);
+    return;
+  }
+
+  fail(
+    "scanner classifier pipeline enabled but no evmdecoder ABI directory was found",
+    [
+      `Checked: ${candidates.join(", ")}`,
+      "Set SCANNER_EVMDECODER_ABI_DIR to a readable ABI folder",
+      "Or disable classifier pipeline temporarily with SCANNER_CLASSIFIER_PIPELINE=false",
+    ]
+  );
+}
+
 function checkScheduledEnrichmentTooling() {
   const { strictLive, demoMode, testMode } = resolveScannerClassifierMode();
   if (!strictLive || demoMode || testMode) return;
@@ -533,6 +562,7 @@ async function main() {
   checkScannerEcdsaCredential();
   await checkAccountKeyPairIntegrity();
   checkScannerOptionalDependencies();
+  checkScannerClassifierAbiDirectory();
   checkScheduledEnrichmentTooling();
   await checkBrokerRuntimeLoadability();
   const { strictLiveZgRequired } = checkZgRequiredEnv();

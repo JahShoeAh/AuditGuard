@@ -9,10 +9,43 @@ export interface RiskInferenceResult {
   latencyMs: number;
 }
 
+interface ZgInferenceCallResult {
+  content: string;
+  model: string;
+}
+
 let broker: any = null;
 let brokerReady = false;
 let zgHealthy = !!(process.env.ZG_PRIVATE_KEY?.trim() && process.env.ZG_PROVIDER_ADDRESS?.trim());
 let healthCheckTimer: NodeJS.Timeout | null = null;
+let loggedModelOverride = false;
+let loggedClaudeHaikuOverride = false;
+
+const CANONICAL_MODEL_ALIASES: Record<string, string> = {
+  "qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+  "qwen/qwen-2.5-7b-instruct": "qwen/qwen-2.5-7b-instruct",
+};
+
+function canonicalizeModelId(model: string): string {
+  const raw = String(model ?? "").trim();
+  if (!raw) return "";
+  const normalized = raw.toLowerCase();
+  return CANONICAL_MODEL_ALIASES[normalized] ?? raw;
+}
+
+function modelsEquivalent(a: string, b: string): boolean {
+  const aa = canonicalizeModelId(a).toLowerCase();
+  const bb = canonicalizeModelId(b).toLowerCase();
+  return aa.length > 0 && aa === bb;
+}
+
+function extractSupportedModelFromHttpError(body: string): string | null {
+  const singleQuoted = /only\s+'([^']+)'/i.exec(body);
+  if (singleQuoted?.[1]) return canonicalizeModelId(singleQuoted[1]);
+  const doubleQuoted = /only\s+"([^"]+)"/i.exec(body);
+  if (doubleQuoted?.[1]) return canonicalizeModelId(doubleQuoted[1]);
+  return null;
+}
 
 function getZgPrivateKey(): string {
   return (process.env.ZG_PRIVATE_KEY ?? "").trim();
@@ -27,11 +60,46 @@ export function getZgRpcUrl(): string {
 }
 
 export function getZgModel(): string {
-  return (process.env.ZG_MODEL ?? "qwen-2.5-7b-instruct").trim();
+  return canonicalizeModelId(process.env.ZG_MODEL ?? "qwen/qwen-2.5-7b-instruct");
 }
 
 function getZgTimeoutMs(): number {
   return Number(process.env.ZG_RISK_TIMEOUT_MS ?? 30_000);
+}
+
+function resolveClaudeHaikuModel(log?: { warn: (msg: string) => void }): string {
+  const fallback = "claude-haiku-4-5-20251001";
+  const configured = String(
+    process.env.CLAUDE_HAIKU_MODEL ??
+    process.env.CLAUDE_RISK_MODEL ??
+    fallback
+  ).trim();
+  const normalized = configured.toLowerCase();
+  const retiredHaikuModels = new Set([
+    "claude-3-5-haiku-latest",
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+  ]);
+  if (retiredHaikuModels.has(normalized)) {
+    if (!loggedClaudeHaikuOverride && log) {
+      log.warn(
+        `Claude model override: configured '${configured}' is retired. ` +
+        `Forcing '${fallback}'.`
+      );
+      loggedClaudeHaikuOverride = true;
+    }
+    return fallback;
+  }
+  if (normalized.includes("haiku")) return configured;
+
+  if (!loggedClaudeHaikuOverride && log) {
+    log.warn(
+      `Claude model override: configured '${configured}' is not Haiku. ` +
+      `Forcing '${fallback}' for lower-cost inference.`
+    );
+    loggedClaudeHaikuOverride = true;
+  }
+  return fallback;
 }
 
 async function initZgBroker(): Promise<void> {
@@ -72,16 +140,35 @@ async function initZgBroker(): Promise<void> {
   }
 }
 
+function resolveRiskInferenceModel(metaModelRaw: string, log?: { warn: (msg: string) => void }): string {
+  const providerModel = canonicalizeModelId(metaModelRaw);
+  const configuredModel = canonicalizeModelId(getZgModel());
+  if (!providerModel) return configuredModel;
+  if (!configuredModel) return providerModel;
+  if (modelsEquivalent(configuredModel, providerModel)) {
+    return providerModel;
+  }
+  if (!loggedModelOverride && log) {
+    log.warn(
+      `0g model override: configured '${configuredModel}' mismatches provider '${providerModel}'. ` +
+      "Using provider model to avoid invalid-model throttling."
+    );
+    loggedModelOverride = true;
+  }
+  return providerModel;
+}
+
 async function callZgInference(
-  messages: { role: "system" | "user"; content: string }[]
-): Promise<string> {
+  messages: { role: "system" | "user"; content: string }[],
+  log?: { warn: (msg: string) => void }
+): Promise<ZgInferenceCallResult> {
   if (!broker || !brokerReady) throw new Error("0g broker not ready");
 
   const providerAddress = getZgProviderAddress();
   const { endpoint, model: metaModel } =
     await broker.inference.getServiceMetadata(providerAddress);
 
-  const model = getZgModel() || metaModel;
+  let model = resolveRiskInferenceModel(metaModel, log);
   const content = messages.map((m) => m.content).join("\n");
   const headers = await broker.inference.getRequestHeaders(
     providerAddress,
@@ -93,43 +180,56 @@ async function callZgInference(
   const timeout = setTimeout(() => controller.abort(), getZgTimeoutMs());
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify({
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.2,
+          max_tokens: 1024,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const hintedModel =
+          res.status === 400 ? extractSupportedModelFromHttpError(body) : null;
+        if (attempt === 1 && hintedModel && !modelsEquivalent(model, hintedModel)) {
+          model = hintedModel;
+          continue;
+        }
+        throw new Error(`0g returned ${res.status}: ${body.slice(0, 200)}`);
+      }
+
+      const data: any = await res.json();
+      const responseContent = data?.choices?.[0]?.message?.content;
+      if (!responseContent) throw new Error("0g returned empty content");
+
+      const chatId =
+        res.headers.get("ZG-Res-Key") || res.headers.get("zg-res-key");
+      if (data.usage) {
+        await broker.inference
+          .processResponse(providerAddress, chatId, JSON.stringify(data.usage))
+          .catch(() => {});
+      }
+
+      return {
+        content: responseContent,
         model,
-        messages,
-        temperature: 0.2,
-        max_tokens: 1024,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`0g returned ${res.status}: ${body.slice(0, 200)}`);
+      };
     }
-
-    const data: any = await res.json();
-    const responseContent = data?.choices?.[0]?.message?.content;
-    if (!responseContent) throw new Error("0g returned empty content");
-
-    const chatId =
-      res.headers.get("ZG-Res-Key") || res.headers.get("zg-res-key");
-    if (data.usage) {
-      await broker.inference
-        .processResponse(providerAddress, chatId, JSON.stringify(data.usage))
-        .catch(() => {});
-    }
-
-    return responseContent;
+    throw new Error("0g model retry exhausted");
   } finally {
     clearTimeout(timeout);
   }
 }
 
 async function callClaudeInference(
-  messages: { role: "system" | "user"; content: string }[]
+  messages: { role: "system" | "user"; content: string }[],
+  log?: { warn: (msg: string) => void }
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
@@ -143,7 +243,7 @@ async function callClaudeInference(
     .map((m) => ({ role: "user" as const, content: m.content }));
 
   const response = await client.messages.create({
-    model: process.env.CLAUDE_RISK_MODEL ?? "claude-sonnet-4-20250514",
+    model: resolveClaudeHaikuModel(log),
     max_tokens: 1024,
     system: systemMsg,
     messages: userMsgs,
@@ -198,7 +298,7 @@ export function startZgHealthCheckLoop(log: {
           method: "POST",
           headers: { "Content-Type": "application/json", ...headers },
           body: JSON.stringify({
-            model,
+            model: resolveRiskInferenceModel(model, log),
             messages: [{ role: "user", content: "health-check" }],
             temperature: 0,
             max_tokens: 16,
@@ -242,14 +342,14 @@ export async function assessRisk(
       await initZgBroker();
 
       if (brokerReady) {
-        const raw = await callZgInference(messages);
-        const risk = parseRiskResponse(raw);
+        const inference = await callZgInference(messages, log);
+        const risk = parseRiskResponse(inference.content);
 
         if (risk) {
           return {
             risk,
             source: "0g",
-            model: getZgModel(),
+            model: inference.model,
             latencyMs: Date.now() - start,
           };
         }
@@ -262,7 +362,7 @@ export async function assessRisk(
   }
 
   try {
-    const raw = await callClaudeInference(messages);
+    const raw = await callClaudeInference(messages, log);
     const risk = parseRiskResponse(raw);
 
     if (!risk) {
@@ -272,7 +372,7 @@ export async function assessRisk(
     return {
       risk,
       source: "claude",
-      model: process.env.CLAUDE_RISK_MODEL ?? "claude-sonnet-4-20250514",
+      model: resolveClaudeHaikuModel(log),
       latencyMs: Date.now() - start,
     };
   } catch (err) {
@@ -288,5 +388,7 @@ export function _resetRiskInference(): void {
   broker = null;
   brokerReady = false;
   zgHealthy = true;
+  loggedModelOverride = false;
+  loggedClaudeHaikuOverride = false;
   stopZgHealthCheckLoop();
 }

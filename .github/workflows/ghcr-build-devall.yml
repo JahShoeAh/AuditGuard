@@ -1,0 +1,141 @@
+name: Build and Push DevAll Image to GHCR
+
+on:
+  push:
+    branches:
+      - main
+      - integration
+      - db
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute Image Name
+        id: vars
+        shell: bash
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-devall" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.devall
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-ec2:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload docker-compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          source: "docker-compose.prod.yml"
+          target: "/tmp/"
+          overwrite: true
+
+      - name: Upload EC2 deploy script
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          source: "scripts/ec2/run-devall-container.sh"
+          target: "/tmp/"
+          strip_components: 2
+          overwrite: true
+
+      - name: Upload PostgreSQL schema
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          source: "orchestrator/src/schema.sql"
+          target: "/tmp/"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy latest backend image on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            IMAGE="${{ needs.build-and-push.outputs.image }}:sha-${{ github.sha }}"
+            ENV_FILE="${{ secrets.EC2_ENV_FILE }}"
+            GHCR_USER="${{ secrets.GHCR_USERNAME }}"
+            GHCR_PAT="${{ secrets.GHCR_READ_TOKEN }}"
+            DEPLOY_DIR="${HOME}/auditguard-deploy"
+
+            if [ -z "${ENV_FILE}" ]; then
+              ENV_FILE="/opt/auditguard/.env"
+            fi
+            if [ ! -f "${ENV_FILE}" ]; then
+              echo "Missing env file at ${ENV_FILE}" >&2
+              exit 1
+            fi
+
+            mkdir -p "${DEPLOY_DIR}"
+            cp /tmp/docker-compose.prod.yml "${DEPLOY_DIR}/docker-compose.prod.yml"
+            cp /tmp/run-devall-container.sh "${DEPLOY_DIR}/run-devall-container.sh"
+            cp /tmp/schema.sql "${DEPLOY_DIR}/schema.sql"
+            chmod +x "${DEPLOY_DIR}/run-devall-container.sh"
+
+            echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+            IMAGE="${IMAGE}" \
+            ENV_FILE="${ENV_FILE}" \
+            COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.prod.yml" \
+            SCHEMA_FILE="${DEPLOY_DIR}/schema.sql" \
+            LEGACY_CONTAINER_NAME="${{ secrets.EC2_CONTAINER_NAME }}" \
+            "${DEPLOY_DIR}/run-devall-container.sh"

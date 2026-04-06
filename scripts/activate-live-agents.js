@@ -25,6 +25,7 @@ const {
 const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 const SDK_CONFIG_PATH = path.join(__dirname, "..", "packages", "sdk", "config.json");
 const AGENT_REGISTRY_ABI_PATH = path.join(__dirname, "..", "packages", "sdk", "abis", "AgentRegistry.json");
+const AUDIT_AUCTION_ABI_PATH = path.join(__dirname, "..", "packages", "sdk", "abis", "AuditAuction.json");
 const HTS_PRECOMPILE_ADDRESS = "0x0000000000000000000000000000000000000167";
 const HTS_PRECOMPILE_ABI = ["function associateToken(address account, address token) external returns (int64)"];
 const GUARD_DECIMALS = 8;
@@ -268,6 +269,16 @@ function loadAgentRegistryAbi() {
   return raw.abi || raw;
 }
 
+function loadAuctionAbi() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(AUDIT_AUCTION_ABI_PATH, "utf8"));
+    return raw.abi || raw;
+  } catch {
+    // Minimal ABI sufficient for associateGuardToken
+    return ["function associateGuardToken() external"];
+  }
+}
+
 async function withTimeout(promise, timeoutMs, label) {
   let timer = null;
   try {
@@ -318,6 +329,15 @@ function isNetworkLikeError(reason) {
     normalized.includes("econnreset") ||
     normalized.includes("etimedout") ||
     normalized.includes("429")
+  );
+}
+
+function isInsufficientPayerBalanceError(reason) {
+  const normalized = String(reason || "").toLowerCase();
+  return (
+    normalized.includes("insufficient_payer_balance") ||
+    normalized.includes("insufficient funds for transfer") ||
+    normalized.includes("failed precheck with status insufficient_payer_balance")
   );
 }
 
@@ -415,6 +435,19 @@ async function resolveRegistryIdViaMirror(agentRegistryAddress) {
   return null;
 }
 
+async function resolveEoaAccountIdViaMirror(evmAddress) {
+  const base = (process.env.HEDERA_MIRROR_NODE_URL || DEFAULT_MIRROR_BASE_URL).replace(/\/+$/, "");
+  const target = String(evmAddress || "").toLowerCase();
+  if (!target) return null;
+  try {
+    const payload = await withFetchTimeout(`${base}/api/v1/accounts/${target}`, MIRROR_TIMEOUT_MS);
+    if (payload?.account) return String(payload.account);
+  } catch {
+    // mirror lookup is best effort
+  }
+  return null;
+}
+
 async function inspectAccountTokenRelation(client, accountIdLike, tokenId) {
   try {
     const accountId = AccountId.fromString(String(accountIdLike));
@@ -481,28 +514,32 @@ async function probeRegistryGuardTransfer(client, tokenId, operatorId, operatorK
 }
 
 async function ensureRegistryHbar(client, operatorId, operatorKey, registryAccountIdRaw, minHbar = MIN_REGISTRY_HBAR) {
-  const registryAccountId = AccountId.fromString(registryAccountIdRaw);
+  return ensureAccountHbar(client, operatorId, operatorKey, registryAccountIdRaw, minHbar, "Registry");
+}
+
+async function ensureAccountHbar(client, operatorId, operatorKey, accountIdRaw, minHbar, label = "Account") {
+  const accountId = AccountId.fromString(accountIdRaw);
   const bal = await withTimeout(
-    new AccountBalanceQuery().setAccountId(registryAccountId).execute(client),
+    new AccountBalanceQuery().setAccountId(accountId).execute(client),
     RPC_TIMEOUT_MS,
-    `registry HBAR balance query (${registryAccountIdRaw})`
+    `${label} HBAR balance query (${accountIdRaw})`
   );
   const currentTinybars = BigInt(bal?.hbars?.toTinybars?.().toString?.() ?? "0");
   const minTinybars = BigInt(Math.floor(Number(minHbar) * 1e8));
   if (currentTinybars >= minTinybars) {
-    console.log(`• Registry HBAR balance OK (${Number(currentTinybars) / 1e8} HBAR)`);
+    console.log(`• ${label} HBAR balance OK (${Number(currentTinybars) / 1e8} HBAR)`);
     return;
   }
   const topupTinybars = minTinybars - currentTinybars;
   const tx = await new TransferTransaction()
     .addHbarTransfer(operatorId, Hbar.fromTinybars(-topupTinybars))
-    .addHbarTransfer(registryAccountId, Hbar.fromTinybars(topupTinybars))
+    .addHbarTransfer(accountId, Hbar.fromTinybars(topupTinybars))
     .freezeWith(client);
   const signed = await tx.sign(operatorKey);
   const submit = await signed.execute(client);
   const receipt = await submit.getReceipt(client);
   console.log(
-    `✓ Registry HBAR topped up by ${(Number(topupTinybars) / 1e8).toFixed(4)} HBAR (status=${String(receipt.status)})`
+    `✓ ${label} HBAR topped up by ${(Number(topupTinybars) / 1e8).toFixed(4)} HBAR (status=${String(receipt.status)})`
   );
 }
 
@@ -720,6 +757,11 @@ function toSafeTokenTransferAmount(amountWei) {
   return Number(amountWei);
 }
 
+function formatStageError(stage, err) {
+  const reason = err instanceof Error ? err.message : String(err);
+  return `stage=${stage}:${reason}`;
+}
+
 async function transferGuardResilient({
   guardTokenContract,
   targetEvmAddress,
@@ -793,13 +835,37 @@ async function transferGuardResilient({
     }
 
     const transferAmount = toSafeTokenTransferAmount(amountWei);
-    const tx = await new TransferTransaction()
-      .addTokenTransfer(tokenId, operatorId, -transferAmount)
-      .addTokenTransfer(targetAccountId, transferAmount)
-      .freezeWith(hederaClient);
-    const signed = await tx.sign(operatorKey);
-    const submit = await signed.execute(hederaClient);
-    const receipt = await submit.getReceipt(hederaClient);
+    let tx;
+    try {
+      tx = await new TransferTransaction()
+        .addTokenTransfer(tokenId, operatorId, -transferAmount)
+        .addTokenTransfer(tokenId, targetAccountId, transferAmount)
+        .freezeWith(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("construct_hapi_transfer", err));
+    }
+
+    let signed;
+    try {
+      signed = await tx.sign(operatorKey);
+    } catch (err) {
+      throw new Error(formatStageError("sign_hapi_transfer", err));
+    }
+
+    let submit;
+    try {
+      submit = await signed.execute(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("execute_hapi_transfer", err));
+    }
+
+    let receipt;
+    try {
+      receipt = await submit.getReceipt(hederaClient);
+    } catch (err) {
+      throw new Error(formatStageError("receipt_hapi_transfer", err));
+    }
+
     const statusText = String(receipt.status);
     if (statusText !== "SUCCESS") {
       throw new Error(`HAPI transfer failed with status ${statusText}`);
@@ -881,16 +947,35 @@ async function ensureAgentHbarMinimum(client, operatorId, operatorKey, agentAcco
   }
 
   const sendTinybars = Math.max(1, Math.ceil(deficit * 1e8));
-  const tx = await new TransferTransaction()
-    .addHbarTransfer(operatorId, Hbar.fromTinybars(-sendTinybars))
-    .addHbarTransfer(agentAccountId, Hbar.fromTinybars(sendTinybars))
-    .freezeWith(client);
-  const signed = await tx.sign(operatorKey);
-  const submit = await signed.execute(client);
-  const receipt = await submit.getReceipt(client);
-  console.log(
-    `    ✓ ${label}: HBAR top-up +${(sendTinybars / 1e8).toFixed(4)} (status=${String(receipt.status)})`
-  );
+  const sendHbar = sendTinybars / 1e8;
+  const submitTopup = async () => {
+    const tx = await new TransferTransaction()
+      .addHbarTransfer(operatorId, Hbar.fromTinybars(-sendTinybars))
+      .addHbarTransfer(agentAccountId, Hbar.fromTinybars(sendTinybars))
+      .freezeWith(client);
+    const signed = await tx.sign(operatorKey);
+    const submit = await signed.execute(client);
+    const receipt = await submit.getReceipt(client);
+    console.log(
+      `    ✓ ${label}: HBAR top-up +${sendHbar.toFixed(4)} (status=${String(receipt.status)})`
+    );
+  };
+
+  try {
+    await submitTopup();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (!isInsufficientPayerBalanceError(reason)) {
+      throw err;
+    }
+    const operatorTarget = Math.max(OPERATOR_HBAR_TARGET, MIN_ACTIVATION_PAYER_HBAR, sendHbar + 0.25);
+    console.log(
+      `    ⚠ ${label}: operator payer is too low for HBAR top-up; ` +
+      `attempting operator auto-top-up to ${operatorTarget.toFixed(4)} HBAR and retrying`
+    );
+    await maybeTopupOperatorHbar(operatorId, operatorTarget);
+    await submitTopup();
+  }
   return await getHbarBalance(client, agentAccountId, `${label} payer post-topup`);
 }
 
@@ -988,14 +1073,21 @@ async function main() {
 
   try {
     let operatorHbar = await getHbarBalance(hederaClient, operatorId, "operator preflight");
-    if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
-      await maybeTopupOperatorHbar(operatorId, MIN_ACTIVATION_PAYER_HBAR);
+    const targetOperatorHbar = Math.max(MIN_ACTIVATION_PAYER_HBAR, OPERATOR_HBAR_TARGET);
+    if (operatorHbar < targetOperatorHbar) {
+      await maybeTopupOperatorHbar(operatorId, targetOperatorHbar);
       operatorHbar = await getHbarBalance(hederaClient, operatorId, "operator after auto-topup");
-      if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
-        throw new Error(
-          `operator payer HBAR too low (${operatorHbar.toFixed(4)} < ${MIN_ACTIVATION_PAYER_HBAR.toFixed(4)})`
-        );
-      }
+    }
+    if (operatorHbar < MIN_ACTIVATION_PAYER_HBAR) {
+      throw new Error(
+        `operator payer HBAR too low (${operatorHbar.toFixed(4)} < ${MIN_ACTIVATION_PAYER_HBAR.toFixed(4)})`
+      );
+    }
+    if (operatorHbar < targetOperatorHbar) {
+      console.log(
+        `⚠ Operator payer HBAR below target (${operatorHbar.toFixed(4)} < ${targetOperatorHbar.toFixed(4)}). ` +
+        "Activation can proceed, but payer may deplete during registry/agent writes."
+      );
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1106,6 +1198,29 @@ async function main() {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`⚠ Registry HBAR pre-funding check failed: ${msg}`);
     }
+  }
+
+  // Ensure the owner signer has enough HBAR to pay EVM gas for associateGuardToken().
+  // "Insufficient funds for transfer" from hashio occurs when the calling wallet has
+  // near-zero HBAR and cannot cover the gas-denominated fee.
+  try {
+    let ownerAccountIdForTopup = ownerSigner.accountId;
+    if (!ownerAccountIdForTopup) {
+      ownerAccountIdForTopup = await resolveEoaAccountIdViaMirror(ownerSigner.wallet.address);
+    }
+    if (ownerAccountIdForTopup) {
+      await ensureAccountHbar(
+        hederaClient, operatorId, operatorKey,
+        ownerAccountIdForTopup, MIN_ACTIVATION_PAYER_HBAR, "Owner signer"
+      );
+    } else {
+      console.log(
+        `⚠ Owner signer Hedera account ID not resolvable (evm=${ownerSigner.wallet.address}); ` +
+        `HBAR pre-funding skipped — set AGENT_REGISTRY_OWNER_ACCOUNT_ID to avoid this`
+      );
+    }
+  } catch (err) {
+    console.log(`⚠ Owner signer HBAR pre-funding failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // AgentRegistry.registerAgent() uses HTS.transferToken(..., to=AgentRegistry).
@@ -1304,6 +1419,28 @@ async function main() {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.log(`⚠ DataMarketplace registry sync failed: ${msg}`);
+  }
+
+  // Associate AuditAuction with GUARD token so agents can call approve(auctionAddress, amount).
+  // On Hedera, HTS approve() requires the spender to be associated with the token.
+  const auctionAddress = sdk?.contracts?.auctionContract?.evmAddress ?? sdk?.contracts?.auction?.evmAddress;
+  if (auctionAddress && ethers.isAddress(auctionAddress)) {
+    try {
+      const auctionContract = new ethers.Contract(auctionAddress, loadAuctionAbi(), ownerSigner.wallet);
+      const auctionTx = await auctionContract.associateGuardToken();
+      await auctionTx.wait();
+      console.log(`✓ AuditAuction: GUARD token associated (${auctionAddress})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const normalized = msg.toLowerCase();
+      if (normalized.includes("already associated") || normalized.includes("token_already_associated_to_account")) {
+        console.log(`• AuditAuction: GUARD token already associated`);
+      } else {
+        console.log(`⚠ AuditAuction.associateGuardToken failed: ${msg}`);
+      }
+    }
+  } else {
+    console.log("⚠ AuditAuction address not found in SDK config — skipping GUARD association");
   }
 
   for (const spec of AGENTS) {

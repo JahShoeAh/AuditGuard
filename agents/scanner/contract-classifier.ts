@@ -1,6 +1,8 @@
 import { EvmDecoder } from "evmdecoder";
-import type { ContractInfo } from "evmdecoder";
-import { resolveEvmAddress } from "./hedera-address.js";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 
 export interface ClassificationResult {
   evmType: string;
@@ -11,16 +13,60 @@ export interface ClassificationResult {
   proxyTarget: string | null;
 }
 
-export type DefiCategory =
-  | "lending"      // Lending / borrowing (Aave, Compound, MakerDAO)
-  | "dex"          // Decentralised exchanges (Uniswap, Curve)
-  | "staking"      // Staking & liquid-staking (Lido, Rocket Pool)
-  | "bridge"       // Cross-chain bridges (Hop, Stargate)
-  | "vault"        // Yield aggregators / vaults (Yearn, Beefy)
-  | "derivatives"  // Perpetuals, options, futures (GMX, dYdX, Synthetix)
-  | "oracle"       // Price oracles (Chainlink, Pyth)
-  | "governance"   // DAO governance (Governor Bravo, OpenZeppelin Governor)
-  | "nft";         // NFT tokens / marketplaces (ERC-721, ERC-1155)
+export type DefiCategory = "lending" | "dex" | "staking" | "bridge" | "vault" | "nft";
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Convert Hedera contract ID to EVM address.
+ * Hedera contract IDs (0.0.X format) automatically map to EVM addresses.
+ * Formula: EVM address is the 20-byte representation of the contract shard.realm.num
+ * @param contractId Hedera contract ID like "0.0.7946509"
+ * @returns EVM address like "0x00000000..."
+ */
+function hederaContractIdToEvmAddress(contractId: string): string {
+  const parts = contractId.split(".");
+  if (parts.length !== 3) {
+    throw new Error(`Invalid Hedera contract ID format: ${contractId}`);
+  }
+
+  const shard = BigInt(parts[0]);
+  const realm = BigInt(parts[1]);
+  const num = BigInt(parts[2]);
+
+  // Combine into 64-bit value: (shard << 40) | (realm << 24) | num
+  const combined = (shard << BigInt(40)) | (realm << BigInt(24)) | num;
+
+  // Convert to 20-byte hex (padded)
+  const hex = combined.toString(16).padStart(40, "0");
+  return "0x" + hex;
+}
+
+/**
+ * Normalize contract address: accept either EVM format (0xXXX) or Hedera format (0.0.X)
+ * and always return EVM format for evmdecoder.
+ * @param address Either EVM address or Hedera contract ID
+ * @returns EVM address
+ */
+function normalizeContractAddress(address: string): string {
+  if (!address) {
+    throw new Error("Contract address cannot be empty");
+  }
+
+  // If already EVM-like format (starts with 0x), pass through.
+  // Decoder and RPC layer can still reject malformed addresses, but scanner
+  // tests and mock flows intentionally use synthetic addresses.
+  if (address.startsWith("0x")) {
+    return address.toLowerCase();
+  }
+
+  // If Hedera format (0.0.X), convert to EVM
+  if (address.includes(".")) {
+    return hederaContractIdToEvmAddress(address);
+  }
+
+  throw new Error(`Unknown address format: ${address}`);
+}
 
 let decoderInstance: EvmDecoder | null = null;
 let initPromise: Promise<void> | null = null;
@@ -33,11 +79,31 @@ function getRpcUrl(): string {
   );
 }
 
+function resolveAbiDirectory(): string {
+  const override = String(process.env.SCANNER_EVMDECODER_ABI_DIR || "").trim();
+  const candidates = [
+    override || null,
+    resolve(MODULE_DIR, "..", "..", "packages", "sdk", "abis"),
+    resolve(process.cwd(), "packages", "sdk", "abis"),
+    resolve(process.cwd(), "abis"),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `evmdecoder ABI directory not found; tried: ${candidates.join(", ")}. ` +
+    `Set SCANNER_EVMDECODER_ABI_DIR to a valid ABI folder.`
+  );
+}
+
 async function ensureDecoder(): Promise<EvmDecoder> {
   if (decoderInstance) return decoderInstance;
 
   if (!initPromise) {
     initPromise = (async () => {
+      const abiDirectory = resolveAbiDirectory();
       decoderInstance = new EvmDecoder({
         eth: {
           url: getRpcUrl(),
@@ -54,7 +120,7 @@ async function ensureDecoder(): Promise<EvmDecoder> {
           },
         },
         abi: {
-          directory: "./abis",
+          directory: abiDirectory,
           searchRecursive: true,
           fingerprintContracts: true,
           requireContractMatch: false,
@@ -80,16 +146,22 @@ async function ensureDecoder(): Promise<EvmDecoder> {
 export async function classifyContract(
   contractAddress: string
 ): Promise<ClassificationResult> {
-  // Normalise: accept both EVM (0x…) and Hedera entity IDs (0.0.N).
-  const evmAddress = resolveEvmAddress(contractAddress);
-
   const decoder = await ensureDecoder();
+
+  // Normalize address: convert Hedera format (0.0.X) to EVM format (0xXXX) if needed
+  let evmAddress: string;
+  try {
+    evmAddress = normalizeContractAddress(contractAddress);
+  } catch (err) {
+    throw new Error(`Failed to normalize contract address "${contractAddress}": ${err}`);
+  }
+
   const info = await decoder.contractInfo({ address: evmAddress });
 
   if (!info?.isContract) {
     return {
       evmType: "EOA",
-      defiCategory: "lending",
+      defiCategory: "vault",
       standards: [],
       isContract: false,
       contractName: null,
@@ -107,7 +179,7 @@ export async function classifyContract(
     proxyTarget = lastProxy?.target ?? null;
   }
 
-  const defiCategory = mapEvmTypeToDefiCategory(evmType, standards, info);
+  const defiCategory = mapEvmTypeToDefiCategory(evmType, standards);
 
   return {
     evmType,
@@ -119,119 +191,29 @@ export async function classifyContract(
   };
 }
 
-const FUNCTION_SELECTOR_HINTS: Record<string, DefiCategory> = {
-  // ── DEX ──────────────────────────────────────────────────────────────────
-  "0x38ed1739": "dex",   // swapExactTokensForTokens (Uniswap V2)
-  "0x7ff36ab5": "dex",   // swapExactETHForTokens   (Uniswap V2)
-  "0xe8e33700": "dex",   // addLiquidity             (Uniswap V2)
-  "0xbaa2abde": "dex",   // removeLiquidity          (Uniswap V2)
-  "0x128acb08": "dex",   // swap                     (Uniswap V3 pool)
-  "0x022c0d9f": "dex",   // swap                     (Uniswap V2 pair)
-  "0x3df02124": "dex",   // exchange                  (Curve)
-  "0xa6417ed6": "dex",   // exchange_underlying       (Curve)
-
-  // ── Lending ───────────────────────────────────────────────────────────────
-  "0xc5ebeaec": "lending",  // borrow     (Compound)
-  "0x0e752702": "lending",  // repayBorrow (Compound)
-  "0x573ade81": "lending",  // repay      (Aave V1)
-  "0xe9c714f2": "lending",  // liquidateBorrow (Compound)
-  "0xa0712d68": "lending",  // mint       (Compound cToken)
-  "0x69328dec": "lending",  // withdraw   (Aave)
-  "0xab9c4b5d": "lending",  // flashLoan  (Aave V1)
-
-  // ── Staking ───────────────────────────────────────────────────────────────
-  "0xa694fc3a": "staking",  // stake
-  "0x2e17de78": "staking",  // unstake
-  "0x5c19a95c": "staking",  // delegate   (vote-escrowed)
-  "0xb88d4fde": "staking",  // safeTransferFrom (liquid staking receipt)
-  "0x3d18b912": "staking",  // getReward  (Synthetix-style)
-
-  // ── Bridge ────────────────────────────────────────────────────────────────
-  "0x0f5287b0": "bridge",   // bridgeOut
-  "0x8b7bfd70": "bridge",   // sendToChain
-  "0xa44bbb15": "bridge",   // depositETH
-  "0x3805550f": "bridge",   // execute    (cross-chain message)
-
-  // ── Vault / Yield ─────────────────────────────────────────────────────────
-  "0xb6b55f25": "vault",    // deposit    (ERC-4626)
-  "0x2e1a7d4d": "vault",    // withdraw   (ERC-4626)
-  "0xba087652": "vault",    // redeem     (ERC-4626)
-  "0xef8b30f7": "vault",    // depositFor (Yearn-style)
-
-  // ── Derivatives ───────────────────────────────────────────────────────────
-  "0x09d68a6e": "derivatives",  // createOrder   (GMX-style)
-  "0xa6a47078": "derivatives",  // liquidatePosition
-  "0x44b81396": "derivatives",  // createPosition
-  "0xf2b9fdb8": "derivatives",  // openPosition
-  "0x96c144f0": "derivatives",  // increasePosition (GMX)
-
-  // ── Oracle ────────────────────────────────────────────────────────────────
-  "0x50d25bcd": "oracle",  // latestAnswer     (Chainlink AggregatorV3)
-  "0xfeaf968c": "oracle",  // latestRoundData  (Chainlink AggregatorV3)
-  "0x668a0f02": "oracle",  // latestRound      (Chainlink)
-  "0x9a6b3eff": "oracle",  // getPrice         (generic oracle)
-
-  // ── Governance ────────────────────────────────────────────────────────────
-  "0xfe0d94c1": "governance",  // execute      (Governor Bravo)
-  "0x160cbed7": "governance",  // propose      (Governor Bravo)
-  "0x15373e3d": "governance",  // castVoteWithReason
-  "0x56781388": "governance",  // castVote
-
-  // ── NFT ───────────────────────────────────────────────────────────────────
-  "0x6352211e": "nft",   // ownerOf         (ERC-721)
-  "0x42842e0e": "nft",   // safeTransferFrom (ERC-721)
-  "0x1249c58b": "nft",   // mint
-  "0x731133e9": "nft",   // mint (ERC-1155)
-};
-
 function mapEvmTypeToDefiCategory(
   evmType: string,
-  standards: string[],
-  info: any
+  standards: string[]
 ): DefiCategory {
   const typeLower = evmType.toLowerCase();
 
   // ── Standards-based fast paths ───────────────────────────────────────────
-  if (standards.includes("ERC3156")) return "lending";              // Flash-loan standard
-  if (standards.includes("ERC721") || standards.includes("ERC1155")) return "nft";
-  if (typeLower === "gnosissafe" || typeLower === "gnosis multisig") return "vault";
-  if (typeLower === "diamond") return "vault";                      // ERC-2535 multi-facet
+  // evmdecoder contractType.name values: GnosisSafe, GnosisMultisig, DiamondProxy,
+  //   Token (ERC20), NFT (ERC721), MultiToken (ERC1155), FlashLoan (ERC3156),
+  //   TokenPair (Uniswap-style LP), ContractRegistry (ERC1820), OffchainResolver (ERC3668)
+  if (standards.includes("ERC3156") || typeLower === "flashloan") return "lending";
+  if (standards.includes("ERC721") || standards.includes("ERC1155")
+      || typeLower === "nft" || typeLower === "multitoken") return "nft";
+  if (typeLower === "gnosissafe" || typeLower === "gnosismultisig") return "vault";
+  if (typeLower === "diamond" || typeLower === "diamondproxy") return "vault";  // ERC-2535
+  if (typeLower === "tokenpair") return "dex";  // Uniswap-style LP pair
 
-  // ── Function-selector heuristic ──────────────────────────────────────────
-  const bytecode: string | undefined = info?.bytecode;
-  if (bytecode && bytecode.length > 10) {
-    const selectorHits: Record<DefiCategory, number> = {
-      lending: 0,
-      dex: 0,
-      staking: 0,
-      bridge: 0,
-      vault: 0,
-      derivatives: 0,
-      oracle: 0,
-      governance: 0,
-      nft: 0,
-    };
+  // Note: function-selector heuristics require raw EVM bytecode. ContractInfo
+  // from evmdecoder does not expose a bytecode field, so selector-based
+  // classification cannot run here. Further bytecode-based refinement is
+  // performed upstream in the enrichment pipeline (source-retriever + risk-blender).
 
-    for (const [selector, category] of Object.entries(FUNCTION_SELECTOR_HINTS)) {
-      const selectorHex = selector.slice(2);
-      if (bytecode.includes(selectorHex)) {
-        selectorHits[category]++;
-      }
-    }
-
-    let bestCategory: DefiCategory = "lending";
-    let bestCount = 0;
-    for (const [cat, count] of Object.entries(selectorHits)) {
-      if (count > bestCount) {
-        bestCount = count;
-        bestCategory = cat as DefiCategory;
-      }
-    }
-
-    if (bestCount > 0) return bestCategory;
-  }
-
-  return "lending";
+  return "vault"; // conservative generic DeFi default for unrecognised contracts
 }
 
 export function _resetDecoder(): void {

@@ -1,12 +1,50 @@
 {
-  "generatedAt": "2026-02-20T08:28:13.337Z",
+  "generatedAt": "2026-02-20T23:40:55.788Z",
   "files": [
-    "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/backend.log",
-    "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/agents.log",
-    "/Users/parthdama/Desktop/AuditGuard/recon/test-logs/dashboard.log"
+    "recon/test-logs/live_now.log",
+    "recon/test-logs/orchestrator_live.log"
   ],
-  "totalEvents": 22,
-  "distinctJobs": 0,
-  "jobsWithMissingLinks": 0,
-  "jobs": []
+  "totalEvents": 16,
+  "distinctJobs": 5,
+  "jobsWithMissingLinks": 1,
+  "jobs": [
+    {
+      "jobId": "79",
+      "events": [
+        "JOB_CANCELLED"
+      ],
+      "missingLinks": []
+    },
+    {
+      "jobId": "208",
+      "events": [
+        "JOB_CANCELLED"
+      ],
+      "missingLinks": []
+    },
+    {
+      "jobId": "211",
+      "events": [
+        "JOB_CANCELLED"
+      ],
+      "missingLinks": []
+    },
+    {
+      "jobId": "257",
+      "events": [
+        "AUCTION_INVITE",
+        "JOB_CREATED"
+      ],
+      "missingLinks": [
+        "created_without_resolution"
+      ]
+    },
+    {
+      "jobId": "1771556905944",
+      "events": [
+        "AUCTION_INVITE"
+      ],
+      "missingLinks": []
+    }
+  ]
 }
