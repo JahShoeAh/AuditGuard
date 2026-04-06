@@ -4,6 +4,9 @@ import { eventsRouter } from "./routes/events.js";
 import { bidSkipsRouter } from "./routes/bid-skips.js";
 import { healthRouter } from "./routes/health.js";
 import { reportsRouter } from "./routes/reports.js";
+import { jobsRouter } from "./routes/jobs.js";
+import { schedulesRouter } from "./routes/schedules.js";
+import { vaultsRouter } from "./routes/vaults.js";
 import { initDb } from "./db.js";
 
 const PORT = parseInt(process.env.EVENTS_API_PORT || "4000", 10);
@@ -17,13 +20,16 @@ app.use("/api", healthRouter);
 app.use("/api", eventsRouter);
 app.use("/api", bidSkipsRouter);
 app.use("/api", reportsRouter);
+app.use("/api", jobsRouter);
+app.use("/api", schedulesRouter);
+app.use("/api", vaultsRouter);
 
 // 404 fallback
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
 });
 
-initDb();
+await initDb();
 
 app.listen(PORT, () => {
   console.log(`[events-api] listening on port ${PORT}`);

@@ -64,9 +64,28 @@ async function runJob(job) {
   const { runSlither } = require("./runners/slither");
   const { runAderyn } = require("./runners/aderyn");
   const { runSemgrep } = require("./runners/semgrep");
+  const { fetchSourceFromSourcify } = require("./sourcify");
 
   job.status = "running";
   job.startedAt = Date.now();
+
+  // ── Sourcify source fetch ─────────────────────────────────────────────────
+  // If no sourceDir was provided, attempt to download verified Solidity source
+  // from Sourcify.  This is a best-effort step: failures are logged and skipped.
+  let sourcifyTmpDir = null;
+  if (!job.sourceDir) {
+    try {
+      sourcifyTmpDir = await fetchSourceFromSourcify(job.contractAddress);
+      if (sourcifyTmpDir) {
+        job.sourceDir = sourcifyTmpDir;
+        console.log(`[static-analysis-service] Using Sourcify source at ${sourcifyTmpDir}`);
+      } else {
+        console.log(`[static-analysis-service] No verified source on Sourcify for ${job.contractAddress}`);
+      }
+    } catch (err) {
+      console.warn(`[static-analysis-service] Sourcify fetch failed: ${err.message}`);
+    }
+  }
 
   try {
     const allFindings = [];
@@ -126,6 +145,15 @@ async function runJob(job) {
     job.findings = [];
   } finally {
     job.finishedAt = Date.now();
+    // Clean up temp source directory created by Sourcify fetch
+    if (sourcifyTmpDir) {
+      const { rmSync } = require("fs");
+      try {
+        rmSync(sourcifyTmpDir, { recursive: true, force: true });
+      } catch {
+        // Non-fatal — temp dir will be cleaned by OS eventually
+      }
+    }
   }
 }
 

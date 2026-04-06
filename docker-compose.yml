@@ -5,9 +5,29 @@ networks:
     driver: bridge
 
 volumes:
-  events-data:
+  pg_data:
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: auditguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+      POSTGRES_DB: auditguard
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./orchestrator/src/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditguard -d auditguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - auditguard
+
   events-api:
     build:
       context: .
@@ -19,8 +39,10 @@ services:
     environment:
       - PORT=3001
       - NODE_ENV=production
-    volumes:
-      - events-data:/app/packages/events-api/data
+      - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 10s
@@ -40,6 +62,7 @@ services:
       - ALLOW_SHARED_PAYER=true
       - EVENTS_API_URL=http://events-api:3001
       - NODE_ENV=production
+      - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
     depends_on:
       events-api:
         condition: service_healthy
@@ -56,6 +79,7 @@ services:
       - ALLOW_SHARED_PAYER=true
       - EVENTS_API_URL=http://events-api:3001
       - NODE_ENV=production
+      - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
     depends_on:
       events-api:
         condition: service_healthy

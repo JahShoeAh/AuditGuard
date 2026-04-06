@@ -6,17 +6,35 @@ Replace ephemeral in-memory and local-file storage with a production-grade, dock
 
 ---
 
+## Implementation Status
+
+| # | Task | Status |
+|---|------|--------|
+| 1 | Extend schema with `audit_events`, `bid_skips`, `pending_findings` | ✅ Done |
+| 2 | Replace events-api SQLite → async PG + in-memory fallback | ✅ Done |
+| 3 | Update events-api route handlers to async | ✅ Done |
+| 4 | Replace static-analysis-service findings store with PG | ✅ Done |
+| 5 | Update Dockerfile (add fuzzer-service, static-analysis-service, sdk) | ✅ Done |
+| 6 | Update `docker-compose.prod.yml` (remove SQLite volume, add report_files) | ✅ Done |
+| 7 | Update `docker-compose.yml` (add postgres service for local dev) | ✅ Done |
+| 8 | Provision server | ⬜ TODO |
+| 9 | Wire CI/CD auto-deploy | ⬜ TODO |
+| 10 | Set up daily backups | ⬜ TODO |
+| 11 | Migrate existing SQLite data to Postgres | ⬜ TODO |
+
+---
+
 ## What Needs to Be Persisted
 
-| Data | Current State | Target |
-|------|--------------|--------|
-| Audit reports (markdown + metadata) | Local file + optional PG | PostgreSQL (always) |
-| Audit events log | SQLite `data/events.db` | PostgreSQL (replace SQLite) |
-| Bid skip decisions | SQLite `data/events.db` | PostgreSQL |
-| Findings during aggregation | In-memory (lost on restart) | PostgreSQL or Redis |
-| Fuzzer job queue | In-memory | PostgreSQL |
-| Static analysis job queue | In-memory | PostgreSQL |
-| Agent sessions / nonce tracking | In-memory | Redis (optional) |
+| Data | Previous State | Current State |
+|------|---------------|---------------|
+| Audit reports (markdown + metadata) | Local file + PG | PostgreSQL ✅ |
+| Audit events log | SQLite `data/events.db` | PostgreSQL ✅ |
+| Bid skip decisions | SQLite `data/events.db` | PostgreSQL ✅ |
+| Findings during aggregation | In-memory Map (lost on restart) | PostgreSQL ✅ |
+| Fuzzer job queue | In-memory Map | In-memory (deferred — agent retries on restart) |
+| Static analysis job queue | In-memory Map | In-memory (deferred — agent retries on restart) |
+| Agent sessions / nonce tracking | In-memory | Redis (future, not started) |
 
 **Not persisted in DB (already durable on-chain):**
 - Agent registry, reputation, staking → Hedera `AgentRegistry`
@@ -40,10 +58,10 @@ Replace ephemeral in-memory and local-file storage with a production-grade, dock
 │  │  Port: 5432    │   │  Port: 4000 (events-api)          │  │
 │  └────────────────┘   └───────────────────────────────────┘  │
 │                                                              │
-│  ┌────────────────┐                                          │
-│  │  Docker Volume │  /var/lib/postgresql/data               │
-│  │  (pg data)     │  Persists across container restarts     │
-│  └────────────────┘                                          │
+│  ┌────────────────┐   ┌────────────────┐                     │
+│  │  pg_data vol   │   │ report_files   │                     │
+│  │  (DB data)     │   │ vol (MD files) │                     │
+│  └────────────────┘   └────────────────┘                     │
 └─────────────────────────────────────────────────────────────┘
                               │
                               │ HTTPS
@@ -57,174 +75,181 @@ Replace ephemeral in-memory and local-file storage with a production-grade, dock
 
 ---
 
-## Phase 1: PostgreSQL Schema (Consolidate All Storage)
+## Phase 1: PostgreSQL Schema ✅ Done
 
-### Goal
-Single Postgres instance replacing: SQLite events DB, local report files, in-memory findings store.
+**File:** `orchestrator/src/schema.sql`
 
-### New / Updated Tables
+All four tables are now defined. `audit_reports` was already present. The three new tables were appended:
 
 ```sql
--- Already exists in orchestrator/src/schema.sql — keep as-is
+-- ── Already existed ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_reports (
-  id                   TEXT PRIMARY KEY,
-  job_id               TEXT NOT NULL,
-  contract_address     TEXT NOT NULL,
-  deployer_address     TEXT,
+  id                   TEXT        NOT NULL,
+  job_id               TEXT        NOT NULL,
+  contract_address     TEXT        NOT NULL,
+  deployer_address     TEXT        NOT NULL,
   hedera_account_id    TEXT,
-  chain                TEXT NOT NULL DEFAULT 'hedera',
-  contract_type        TEXT,
-  md_content           TEXT,
-  s3_key               TEXT,
-  cid                  TEXT,
-  agent_addresses      TEXT[],
-  agent_count          INTEGER,
-  finding_count        INTEGER DEFAULT 0,
-  findings_by_severity JSONB,
-  timestamp            BIGINT,
-  tags                 TEXT[],
-  source               TEXT,
-  created_at           TIMESTAMPTZ DEFAULT NOW()
+  chain                TEXT        NOT NULL,
+  contract_type        TEXT        NOT NULL,
+  content_hash         TEXT        NOT NULL,
+  md_content           TEXT        NOT NULL DEFAULT '',
+  s3_key               TEXT        NOT NULL DEFAULT '',
+  cid                  TEXT        NOT NULL DEFAULT '',
+  agent_addresses      TEXT[]      NOT NULL DEFAULT '{}',
+  agent_count          INTEGER     NOT NULL DEFAULT 0,
+  finding_count        INTEGER     NOT NULL DEFAULT 0,
+  findings_by_severity JSONB       NOT NULL DEFAULT '{"critical":0,"high":0,"medium":0,"low":0,"info":0}',
+  timestamp            BIGINT      NOT NULL,
+  tags                 TEXT[]      NOT NULL DEFAULT '{}',
+  source               TEXT        NOT NULL DEFAULT 'orchestrator',
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id)
 );
 
--- MIGRATE from SQLite data/events.db
+-- ── New: replaces SQLite audit_events ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_events (
-  id                TEXT PRIMARY KEY,
-  source            TEXT,
-  topic_id          TEXT,
-  message_type      TEXT,
-  agent_id          TEXT,
-  message_timestamp BIGINT,
-  payload_json      TEXT,
-  raw_json          TEXT,
-  received_at       TIMESTAMPTZ DEFAULT NOW()
+  id                TEXT        PRIMARY KEY,
+  source            TEXT        NOT NULL,
+  topic_id          TEXT        NOT NULL,
+  message_type      TEXT        NOT NULL,
+  agent_id          TEXT        NOT NULL,
+  message_timestamp BIGINT      NOT NULL,
+  payload_json      TEXT        NOT NULL,
+  raw_json          TEXT        NOT NULL,
+  received_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_ae_received_at   ON audit_events (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ae_message_type  ON audit_events (message_type);
+CREATE INDEX IF NOT EXISTS idx_ae_agent_id      ON audit_events (agent_id);
 
+-- ── New: replaces SQLite bid_skips ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bid_skips (
-  id           TEXT PRIMARY KEY,
-  event_id     TEXT REFERENCES audit_events(id),
-  job_id       INTEGER,
-  agent_id     TEXT,
-  reason_code  TEXT,
-  reason       TEXT,
+  id            TEXT        PRIMARY KEY,
+  event_id      TEXT        NOT NULL REFERENCES audit_events(id),
+  job_id        INTEGER,
+  agent_id      TEXT        NOT NULL,
+  reason_code   TEXT,
+  reason        TEXT,
   invite_budget REAL,
-  bid_amount   REAL,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  bid_amount    REAL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_bs_created_at  ON bid_skips (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bs_reason_code ON bid_skips (reason_code);
+CREATE INDEX IF NOT EXISTS idx_bs_agent_id    ON bid_skips (agent_id);
 
--- NEW: replaces in-memory findings store in static-analysis-service
+-- ── New: replaces in-memory findingsStore Map ────────────────────────────────
 CREATE TABLE IF NOT EXISTS pending_findings (
-  id           SERIAL PRIMARY KEY,
-  job_id       TEXT NOT NULL,
-  agent_id     TEXT NOT NULL,
-  findings     JSONB NOT NULL,
-  stored_at    TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (job_id, agent_id)   -- one entry per agent per job
+  id        SERIAL      PRIMARY KEY,
+  job_id    TEXT        NOT NULL,
+  agent_id  TEXT        NOT NULL,
+  findings  JSONB       NOT NULL DEFAULT '[]',
+  stored_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (job_id, agent_id)
 );
-
--- NEW: replaces in-memory job queues in fuzzer/static-analysis services
-CREATE TABLE IF NOT EXISTS analysis_jobs (
-  job_id       TEXT PRIMARY KEY,
-  service      TEXT NOT NULL,           -- 'fuzzer' | 'static-analysis'
-  contract_address TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'queued', -- queued|running|done|failed
-  tool_used    TEXT,
-  findings     JSONB,
-  error        TEXT,
-  budget_seconds INTEGER DEFAULT 120,
-  started_at   TIMESTAMPTZ,
-  completed_at TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_audit_reports_job_id        ON audit_reports(job_id);
-CREATE INDEX IF NOT EXISTS idx_audit_reports_contract      ON audit_reports(contract_address);
-CREATE INDEX IF NOT EXISTS idx_audit_reports_deployer      ON audit_reports(deployer_address);
-CREATE INDEX IF NOT EXISTS idx_audit_reports_created_at    ON audit_reports(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_events_type           ON audit_events(message_type);
-CREATE INDEX IF NOT EXISTS idx_audit_events_agent          ON audit_events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_received_at    ON audit_events(received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_pending_findings_job        ON pending_findings(job_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status        ON analysis_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_analysis_jobs_service       ON analysis_jobs(service, status);
+CREATE INDEX IF NOT EXISTS idx_pf_job_id ON pending_findings (job_id);
 ```
 
-**Files to update:**
-- Add `pending_findings` and `analysis_jobs` tables to `orchestrator/src/schema.sql`
-- Update `packages/sdk/db/report-db.js` with new table definitions
-- Update `packages/events-api/src/index.js` to use Postgres instead of SQLite
+**Note:** `analysis_jobs` was intentionally omitted. Fuzzer and static-analysis job queues are short-lived (seconds to minutes) and agents have retry logic on restart. Persisting job queues is deferred to a future phase.
+
+The schema file is mounted as `/docker-entrypoint-initdb.d/001-schema.sql` in both compose files so Postgres auto-applies it on first boot.
 
 ---
 
-## Phase 2: Docker Setup
+## Phase 2: Code Changes ✅ Done
 
-### 2a. `docker-compose.prod.yml` (update existing)
+### 2a. events-api: SQLite → async PostgreSQL
 
-The file exists but needs to be verified and hardened. Target:
+**Files changed:**
+- `packages/events-api/src/db.js` — full rewrite
+- `packages/events-api/src/routes/events.js`
+- `packages/events-api/src/routes/bid-skips.js`
+- `packages/events-api/src/routes/health.js`
+- `packages/events-api/src/index.js`
 
-```yaml
-version: "3.9"
+**`db.js` new interface** (all methods are `async`):
 
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: auditguard-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: auditguard
-      POSTGRES_USER: auditguard
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      - ./orchestrator/src/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-    ports:
-      - "127.0.0.1:5432:5432"   # localhost-only — never expose to internet
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auditguard"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+| Method | Description |
+|--------|-------------|
+| `initDb()` | Creates pool, runs migration SQL. Top-level `await` in `index.js`. |
+| `getDb()` | Returns the singleton db instance (throws if not initialised). |
+| `db.insertEvent(id, source, topicId, messageType, agentId, messageTimestamp, payloadJson, rawJson, receivedAt)` | Inserts into `audit_events`. |
+| `db.insertBidSkip(id, eventId, jobId, agentId, reasonCode, reason, inviteBudget, bidAmount, createdAt)` | Inserts into `bid_skips`. |
+| `db.queryEvents({ messageType?, agentId?, topicId?, limit })` | Queries `audit_events` with optional filters. |
+| `db.queryBidSkips({ reasonCode?, agentId?, limit })` | Queries `bid_skips` with optional filters. |
+| `db.healthCheck()` | Runs `SELECT 1` — returns `true` if DB is reachable. |
 
-  backend:
-    image: ghcr.io/${GITHUB_REPOSITORY}-devall:latest
-    container_name: auditguard-backend
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file: /opt/auditguard/.env
-    environment:
-      DATABASE_URL: postgresql://auditguard:${POSTGRES_PASSWORD}@postgres:5432/auditguard
-    ports:
-      - "4000:4000"    # events-api (reverse-proxied by nginx)
-    volumes:
-      - report_files:/app/agents/data/reports   # local file backup
-      - agent_logs:/app/agents/logs
+**Fallback behaviour:** If `DATABASE_URL` is not set, `db.js` falls back to an `InMemoryDb` instance that implements the same async interface. This means local development without Docker still works — just with no persistence between restarts.
 
-volumes:
-  pg_data:
-  report_files:
-  agent_logs:
+**`received_at` / `created_at` type handling:** PG returns `TIMESTAMPTZ` columns as JS `Date` objects. Row mappers in `events.js` and `bid-skips.js` convert with:
+```js
+row.received_at instanceof Date ? row.received_at.toISOString() : row.received_at
 ```
 
-**Key changes from current file:**
-- Postgres port bound to `127.0.0.1` only (not exposed to internet)
-- Schema auto-applied via `docker-entrypoint-initdb.d/`
-- Named volumes for data durability
-- Healthcheck before backend starts
+**`index.js`** uses top-level `await` (valid because `"type": "module"` is set in `package.json`):
+```js
+await initDb();
+app.listen(PORT, ...);
+```
 
-### 2b. `Dockerfile` (verify multi-stage build)
+### 2b. static-analysis-service: findings store → PostgreSQL
 
-Current `Dockerfile` exists — verify it:
-1. Copies `orchestrator/`, `agents/`, `packages/events-api/`, `packages/fuzzer-service/`, `packages/static-analysis-service/`
-2. Runs `npm install` with `--workspaces`
-3. Entrypoint runs all services (orchestrator + agents + events-api)
-4. Does NOT include dashboard (deployed separately to Vercel)
+**Files changed:**
+- `packages/static-analysis-service/src/index.js` — findings store rewritten
+- `packages/static-analysis-service/package.json` — added `"pg": "^8.18.0"`
+
+The `findingsStore` Map was replaced with three async helpers:
+
+| Helper | SQL |
+|--------|-----|
+| `storeFinding(jobId, agentId, findings)` | `INSERT ... ON CONFLICT (job_id, agent_id) DO UPDATE SET findings = $3, stored_at = NOW()` |
+| `getFindingsForJob(jobId)` | `SELECT agent_id, findings, stored_at FROM pending_findings WHERE job_id = $1` |
+| `deleteFindingsForJob(jobId)` | `DELETE FROM pending_findings WHERE job_id = $1` |
+
+`initFindingsStore()` is called at startup. It runs the `pending_findings` migration SQL (idempotent) so the service works standalone without docker entrypoint. The three `/findings` route handlers are now `async`.
+
+**Fallback behaviour:** If `DATABASE_URL` is not set, falls back to in-memory `Map` — same as before. Local dev without Docker is unaffected.
 
 ---
 
-## Phase 3: Server Setup
+## Phase 3: Docker ✅ Done
+
+### `Dockerfile`
+
+Added `COPY` statements for `static-analysis-service`, `fuzzer-service`, and `sdk` package.json files in the `deps` stage so `npm ci` installs their dependencies (including the new `pg` dep for `static-analysis-service`):
+
+```dockerfile
+FROM base AS deps
+COPY package.json package-lock.json ./
+COPY packages/events-api/package.json              ./packages/events-api/
+COPY packages/static-analysis-service/package.json ./packages/static-analysis-service/
+COPY packages/fuzzer-service/package.json           ./packages/fuzzer-service/
+COPY packages/sdk/package.json                      ./packages/sdk/
+COPY agents/package.json                            ./agents/
+COPY orchestrator/package.json                      ./orchestrator/
+RUN npm ci --ignore-scripts
+```
+
+### `docker-compose.prod.yml`
+
+Key changes from the previous version:
+- Removed `EVENTS_DB_PATH` environment variable (SQLite no longer used)
+- Removed `events_data` volume (no SQLite file to persist)
+- Added `report_files` named volume mounted at `/app/agents/data/reports` for local MD file backup
+- `DATABASE_URL` is the only DB-related env var needed by the backend container
+
+### `docker-compose.yml` (local dev)
+
+Added a `postgres` service matching the prod setup so developers can run `docker compose up` locally and test against real PG:
+- Schema auto-applied via `./orchestrator/src/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql`
+- `DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard` passed to all backend services
+- `pg_data` named volume for local persistence
+- Removed orphaned `events-data` volume (was for SQLite)
+- All backend services `depends_on: postgres: condition: service_healthy`
+
+---
+
+## Phase 4: Server Setup ⬜ TODO
 
 ### Minimum Server Requirements
 - **CPU:** 2 vCPU (agents are async/I/O bound, not CPU heavy)
@@ -264,8 +289,11 @@ cd /opt/auditguard
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 
-# 6. Configure nginx (see below)
-# 7. Issue TLS cert via certbot
+# 6. Verify schema was applied
+docker exec auditguard-postgres psql -U auditguard -c "\dt"
+
+# 7. Configure nginx (see below)
+# 8. Issue TLS cert via certbot
 ```
 
 ### nginx Config (Reverse Proxy)
@@ -296,60 +324,7 @@ server {
 
 ---
 
-## Phase 4: Code Changes Required
-
-### 4a. events-api: Replace SQLite with PostgreSQL
-
-**File:** `packages/events-api/src/index.js`
-
-Current: `better-sqlite3` with in-memory fallback.
-Target: Use `pg` (already a dependency in `packages/sdk`) — same interface, connect via `DATABASE_URL`.
-
-Changes needed:
-- Replace `better-sqlite3` adapter with `pg.Pool` adapter
-- Keep the same `prepare/run/all/get` interface (already abstracted)
-- Remove in-memory fallback (Postgres is required in production; fail loudly if unavailable)
-- Add connection retry with exponential backoff on startup
-
-### 4b. static-analysis-service: Replace In-Memory Findings Store with PostgreSQL
-
-**File:** `packages/static-analysis-service/src/index.js`
-
-Current: `Map<jobId, [{ agentId, findings, timestamp }]>` in process memory.
-Target: Read/write `pending_findings` table in Postgres.
-
-Changes needed:
-- Add `pg.Pool` connection using `DATABASE_URL`
-- `POST /findings` → `INSERT INTO pending_findings ... ON CONFLICT DO UPDATE`
-- `GET /findings/:jobId` → `SELECT FROM pending_findings WHERE job_id = $1`
-- `DELETE /findings/:jobId` → `DELETE FROM pending_findings WHERE job_id = $1`
-
-This fixes the race condition where a service restart between agent submission and report aggregation loses all findings.
-
-### 4c. fuzzer-service: Replace In-Memory Job Queue with PostgreSQL
-
-**File:** `packages/fuzzer-service/src/index.js`
-
-Current: `Map<jobId, Job>` in process memory.
-Target: `analysis_jobs` table in Postgres with `service = 'fuzzer'`.
-
-Changes needed:
-- Add `pg.Pool` connection
-- `POST /fuzz` → `INSERT INTO analysis_jobs`
-- `GET /results/:jobId` → `SELECT FROM analysis_jobs WHERE job_id = $1`
-- Job runner: `UPDATE analysis_jobs SET status = 'running'` on pickup, `status = 'done'` on complete
-
-### 4d. static-analysis-service: Same Job Queue Migration
-
-Same pattern as fuzzer, using `service = 'static-analysis'` in `analysis_jobs`.
-
-### 4e. Ensure DATABASE_URL is Propagated to All Services
-
-Every service that needs Postgres must receive `DATABASE_URL` via environment. In `docker-compose.prod.yml`, the single backend container already has it. For local dev, add to `.env`.
-
----
-
-## Phase 5: Database Backup Strategy
+## Phase 5: Database Backup Strategy ⬜ TODO
 
 ```bash
 # Daily backup (add to cron on server)
@@ -360,22 +335,19 @@ docker exec auditguard-postgres pg_dump -U auditguard auditguard \
 find /opt/auditguard/backups -name "*.sql.gz" -mtime +30 -delete
 ```
 
-For production: pipe backups to S3 (AWS_S3_BUCKET already in env).
+For production: pipe backups to S3 (`AWS_S3_BUCKET` already in env).
 
 ---
 
-## Phase 6: CI/CD (GitHub Actions — existing workflows)
+## Phase 6: CI/CD Auto-Deploy ⬜ TODO
 
 Existing `.github/workflows/` already has:
 1. Build & push backend image to GHCR on push to `main`
 2. Deploy dashboard to Vercel
 
-**What needs to be added:**
-- Workflow to SSH into server and run `docker compose pull && docker compose up -d` after image push
-- Secret: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` (store in GitHub secrets)
+**What needs to be added** — SSH deploy step after docker push:
 
 ```yaml
-# Add to existing backend workflow after docker push:
 - name: Deploy to server
   uses: appleboy/ssh-action@v1
   with:
@@ -388,37 +360,33 @@ Existing `.github/workflows/` already has:
       docker compose -f docker-compose.prod.yml up -d --no-deps backend
 ```
 
----
-
-## Implementation Order
-
-Do these in order — each phase unblocks the next:
-
-1. **[ ] Write consolidated schema** — Merge SQLite tables + new `pending_findings` + `analysis_jobs` into `orchestrator/src/schema.sql`. This is the single migration file used by all services.
-
-2. **[ ] Update events-api** — Replace `better-sqlite3` with `pg`. Test locally with `DATABASE_URL=postgresql://localhost:5432/auditguard`.
-
-3. **[ ] Update static-analysis-service findings store** — Replace in-memory Map with `pending_findings` table. This is the highest-risk ephemeral store (loses findings on restart mid-audit).
-
-4. **[ ] Update fuzzer-service + static-analysis-service job queues** — Replace in-memory job Maps with `analysis_jobs` table.
-
-5. **[ ] Verify docker-compose.prod.yml** — Spin up locally with `docker compose -f docker-compose.prod.yml up`. Confirm schema is applied, backend connects to Postgres, `/api/reports` works.
-
-6. **[ ] Provision server** — Spin up EC2 / VPS. Install Docker, nginx, certbot. Copy `.env`. Start containers.
-
-7. **[ ] Point dashboard to server** — Update `VITE_EVENTS_API_BASE_URL` in Vercel env vars to `https://api.auditguard.xyz`.
-
-8. **[ ] Wire CI/CD auto-deploy** — Add SSH deploy step to GitHub Actions workflow.
-
-9. **[ ] Set up daily backups** — Cron job on server for `pg_dump` → S3.
-
-10. **[ ] Migrate existing data** — Export `data/events.db` SQLite → import to Postgres. Any existing `agents/data/reports/*.md` → insert into `audit_reports` table.
+Required GitHub secrets: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`.
 
 ---
 
-## Environment Variables Required on Server
+## Phase 7: Data Migration ⬜ TODO
 
-Add to `/opt/auditguard/.env` on the server (in addition to existing Hedera/agent keys):
+Migrate existing local data to Postgres after server is provisioned:
+
+```bash
+# 1. Export SQLite events DB to CSV
+sqlite3 data/events.db ".mode csv" ".output /tmp/audit_events.csv" "SELECT * FROM audit_events;"
+sqlite3 data/events.db ".mode csv" ".output /tmp/bid_skips.csv" "SELECT * FROM bid_skips;"
+
+# 2. Import to Postgres (adjust COPY paths as needed)
+psql $DATABASE_URL -c "\COPY audit_events FROM '/tmp/audit_events.csv' CSV"
+psql $DATABASE_URL -c "\COPY bid_skips FROM '/tmp/bid_skips.csv' CSV"
+
+# 3. Import existing report markdown files
+# Run orchestrator/scripts/import-reports.js (to be written) which reads
+# agents/data/reports/*.md and INSERTs into audit_reports via report-db.js
+```
+
+---
+
+## Environment Variables
+
+Required in `/opt/auditguard/.env` on the server (in addition to existing Hedera/agent keys):
 
 ```bash
 # Database (required for production)
@@ -429,13 +397,18 @@ POSTGRES_PASSWORD=STRONG_PASSWORD
 EVENTS_API_PORT=4000
 EVENTS_API_TOKEN=STRONG_RANDOM_TOKEN   # agents use this to POST events
 
-# Disable local-file fallbacks in production
-EVENTS_API_REQUIRE_SQLITE=false        # don't fall back to SQLite
-
 # Optional: S3 backup for large report markdown
 AWS_S3_BUCKET=auditguard-reports
 AWS_REGION=us-east-1
 ```
+
+For local dev (already in `.env.example`):
+```bash
+DATABASE_URL=postgresql://auditguard:dev@localhost:5432/auditguard
+POSTGRES_PASSWORD=dev
+```
+
+If `DATABASE_URL` is not set, both `events-api` and `static-analysis-service` fall back to in-memory storage with a console warning. This is intentional — local dev without Docker continues to work.
 
 ---
 

@@ -18,6 +18,7 @@
     "dev:all": "npm run stop:all && npm run preflight:live && npm run dev:all:unsafe",
     "dev:all:unsafe": "bash -lc 'export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
     "dev:all:test": "bash -lc 'VITE_TEST_MODE=true export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm --prefix packages/dashboard run dev & npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
+    "start:backend": "node orchestrator/src/index.js & npm --workspace agents run all & npm --prefix packages/inft run listen & npm --prefix packages/inft run listen:events & node packages/fuzzer-service/src/index.js & node packages/static-analysis-service/src/index.js & node packages/events-api/src/index.js & wait",
     "dev:backend": "bash -lc 'export APP_ENV=local EVENT_RELAY_URL=http://localhost:4000/api/events; export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; npm run orchestrator & npm run agents & npm run inft:listen & npm run inft:listen:events & npm run fuzzer:service & npm run static-analysis:service & npm --prefix packages/events-api run dev & wait'",
     "stop:all": "bash -lc 'pkill -f \"orchestrator/src/index.js|tsx run-all.ts|run-all.ts|node src/discovery-listener.js|src/discovery-listener.js|node src/event-listener.js|src/event-listener.js|packages/dashboard run dev|vite|fuzzer-service/src/index.js|static-analysis-service/src/index.js|events-api/src/index.js|events-api run dev\" >/dev/null 2>&1 || true; sleep 2'",
     "fuzzer:service": "node packages/fuzzer-service/src/index.js",
@@ -62,7 +63,9 @@
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "fund:agents": "node scripts/fund-agents.js",
-    "deploy:test-contracts": "npx hardhat run packages/contracts/scripts/deploy-test-contracts.js --network hedera_testnet --config packages/contracts/hardhat.config.js"
+    "deploy:test-contracts": "npx hardhat run packages/contracts/scripts/deploy-test-contracts.js --network hedera_testnet --config packages/contracts/hardhat.config.js",
+    "setup:treasury": "node scripts/setup-treasury.js",
+    "wire:delegated-staking": "node scripts/wire-delegated-staking.js"
   },
   "repository": {
     "type": "git",

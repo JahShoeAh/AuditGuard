@@ -34,6 +34,7 @@ export class OrchestratorAgent {
     this.roster = opts.roster ?? new Roster(this.log);
     this.inft = opts.inft ?? new InftBridge();
     this.jobs = new Map(); // jobId(string) -> state
+    this.contractHealthNFTMinted = new Set(); // contractAddress(lowercase) — prevents duplicate mints
     this.enablePing = opts.enablePing ?? true;
     this.createAuditJobLock = Promise.resolve();
     this.minOperationalHbar = Number(process.env.ORCHESTRATOR_MIN_HBAR ?? "0.5");
@@ -784,6 +785,7 @@ export class OrchestratorAgent {
     this.subscribeAuditLog();
     this.subscribeContractEvents();
     this.subscribeSchedulerEvents();  // HSS audit triggers
+    this.subscribeVaultEvents();       // VaultFactory AutoAuditTriggered
     this.bootstrapWinnerSelectionFromActiveJobs().catch((err) => {
       this.log.warn(
         `[Orchestrator] startup winner re-arm failed: ` +
@@ -1294,6 +1296,28 @@ export class OrchestratorAgent {
       reputation: payload.reputation ?? 0,
       endpoint: payload.ucpEndpoint,
     });
+    // Push agent to events-api (fire-and-forget)
+    if (payload.evmAddress) {
+      this._postToEventsApi("agents", {
+        evmAddress: payload.evmAddress,
+        agentId: msg.agentId,
+        specializations: payload.specializations ?? ["any"],
+        reputation: payload.reputation ?? 0,
+        tier: payload.tier ?? "standard",
+        status: "active",
+        stakeGuard: payload.stake ?? 0,
+      }).catch((err) => this.log.warn(`[events-api] POST /agents failed for ${msg.agentId}: ${err instanceof Error ? err.message : String(err)}`));
+    }
+
+    // Mint Agent Profile iNFT (no-op if credentials not configured)
+    this.inft.mintAgentProfileNFT({
+      agentId: msg.agentId,
+      ucpEndpoint: payload.ucpEndpoint ?? "",
+      specializations: payload.specializations ?? ["any"],
+      tier: payload.tier ?? "COMMODITY",
+      stakedAmount: payload.stake ?? 0,
+      initialReputation: payload.reputation ?? 0,
+    }).catch((err) => this.log.warn(`[iNFT] mintAgentProfileNFT failed for ${msg.agentId}: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   handleBidSubmitted(msg) {
@@ -1709,6 +1733,27 @@ export class OrchestratorAgent {
       this.log.warn(`Failed to publish JOB_CREATED for ${contractAddress?.slice(0, 12)}: ${err}`);
     }
 
+    // Push job state to events-api (fire-and-forget)
+    this._postToEventsApi("jobs", {
+      jobId: String(jobId),
+      contractAddress,
+      deployerAddress: deployerAddress ?? "",
+      contractType: contractType ?? "unknown",
+      status: "open",
+      budgetGuard: budgetGuard ?? 0,
+    }).catch((err) => this.log.warn(`[events-api] POST /jobs failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`));
+
+    // Mint Audit Job iNFT (no-op if credentials not configured)
+    this.inft.mintAuditJobNFT({
+      contractAddress,
+      chain: "hedera-testnet",
+      contractType: contractType ?? "unknown",
+      initialRiskScore: riskScore ?? 0,
+      deployerAddress: deployerAddress ?? "",
+      discoveryTimestamp: now(),
+      jobId: Number(jobId),
+    }).catch((err) => this.log.warn(`[iNFT] mintAuditJobNFT failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`));
+
     // Avoid startup races where discoveries arrive before on-chain roster hydration
     // has populated active agents.
     await this.rosterBootstrapPromise.catch(() => { });
@@ -1823,8 +1868,13 @@ export class OrchestratorAgent {
       findingsHash,
       evmAddress,
       findingsCount = 0,
-      criticalCount = 0,
+      isMock = false,
     } = payload;
+    // Mock findings must not contribute to critical-finding bonuses or reputation score inflation.
+    const criticalCount = isMock ? 0 : (payload.criticalCount ?? 0);
+    if (isMock) {
+      this.log.info(`Findings from ${msg.agentId} are mock (fallback) — criticalCount zeroed for scoring`);
+    }
     this.log.info(`Findings submitted for job ${jobId}: ${findingsHash?.slice(0, 12)}…`);
 
     const key = this.normalizeJobId(jobId);
@@ -1895,6 +1945,19 @@ export class OrchestratorAgent {
     this.log.info(`Report published for job ${jobId} (hash ${String(reportHash).slice(0,16)}...)`);
     job.reportPublished = true;
     this.setJobByKey(key, job);
+
+    // Mint Contract Health iNFT on first successful audit of this contract address
+    const contractAddrLower = String(job.contractAddress ?? "").toLowerCase();
+    if (contractAddrLower && !this.contractHealthNFTMinted.has(contractAddrLower)) {
+      this.contractHealthNFTMinted.add(contractAddrLower);
+      this.inft.mintContractHealthNFT({
+        contractAddress: job.contractAddress ?? "",
+        chain: "hedera-testnet",
+        contractType: job.contractType ?? "unknown",
+        deployer: job.deployerAddress ?? "",
+        initialRiskScore: job.riskScore ?? 50,
+      }).catch((err) => this.log.warn(`[iNFT] mintContractHealthNFT failed for ${job.contractAddress}: ${err instanceof Error ? err.message : String(err)}`));
+    }
 
     // Persist report to S3 + PostgreSQL
     generateAndStoreReport(key, job, job.findings ?? [])
@@ -3129,7 +3192,69 @@ export class OrchestratorAgent {
     } catch (err) {
       this.log.warn(`Contract event subscription failed: ${err.message}`);
     }
+
+    // ── Slash relay: StakingManager → DelegatedStaking ───────────────────────
+    // StakingManager deployed before setDelegatedStaking() was added to its ABI,
+    // so it cannot auto-propagate slashes. The orchestrator bridges the gap by
+    // listening for finalized slash events and calling DelegatedStaking.propagateSlash.
+    this._pendingSlashes = new Map(); // slashId(string) → { agent, slashBps }
+    try {
+      if (!this.contracts.stakingManager || !this.contracts.delegatedStaking) {
+        this.log.info("StakingManager or DelegatedStaking not configured — slash relay disabled");
+        return;
+      }
+
+      // Track slashes as they are initiated (before appeal window)
+      this.contracts.stakingManager.on(
+        "SlashInitiated",
+        (slashId, agent, _reason, _slashedAmount, slashBasisPoints) => {
+          const key = slashId.toString();
+          this._pendingSlashes.set(key, {
+            agent: String(agent),
+            slashBps: Number(slashBasisPoints),
+          });
+          this.log.info(`[SlashRelay] Tracking SlashInitiated id=${key} agent=${agent} bps=${slashBasisPoints}`);
+        }
+      );
+
+      // Appeal denied — slash is confirmed; propagate to delegators
+      this.contracts.stakingManager.on("AppealDenied", (slashId) => {
+        this._finalizeSlash(slashId.toString(), "AppealDenied");
+      });
+
+      // Appeal window expired with no appeal — slash is final; propagate to delegators
+      this.contracts.stakingManager.on("AppealExpired", (slashId) => {
+        this._finalizeSlash(slashId.toString(), "AppealExpired");
+      });
+
+      this.log.info("Listening for StakingManager slash events (relay to DelegatedStaking)");
+    } catch (err) {
+      this.log.warn(`Slash relay subscription failed: ${err.message}`);
+    }
   }
+
+  async _finalizeSlash(slashIdStr, trigger) {
+    const pending = this._pendingSlashes?.get(slashIdStr);
+    if (!pending) {
+      this.log.warn(`[SlashRelay] ${trigger} for unknown slashId ${slashIdStr} — skipping`);
+      return;
+    }
+    this._pendingSlashes.delete(slashIdStr);
+    const { agent, slashBps } = pending;
+    this.log.info(`[SlashRelay] ${trigger} slashId=${slashIdStr} — propagating to DelegatedStaking agent=${agent} bps=${slashBps}`);
+    try {
+      const tx = await this.contracts.propagateDelegatedSlash(agent, slashBps);
+      if (tx?.wait) await tx.wait();
+      this.log.info(`[SlashRelay] DelegatedStaking.propagateSlash confirmed for agent=${agent}`);
+      await this.hcs.publishAuditLog({
+        type: "SLASH_PROPAGATED",
+        agentId: "orchestrator",
+        timestamp: now(),
+        payload: { slashId: slashIdStr, agent, slashBps, trigger },
+      }).catch(() => {});
+    } catch (err) {
+      this.log.error(`[SlashRelay] propagateSlash failed for agent=${agent}: ${err.message}`);
+    }
 
   scheduledEnrichmentQueueKey(contractAddress, scheduleAddress) {
     return `${String(contractAddress || "").toLowerCase()}::${String(scheduleAddress || "").toLowerCase()}`;
@@ -3274,6 +3399,40 @@ export class OrchestratorAgent {
       }
 
       this.contracts.auditScheduler.on(
+        "AuditScheduled",
+        async (contractAddress, owner, scheduleAddress, nextAuditDue, mode, intervalSeconds) => {
+          const addr = String(contractAddress);
+          this.log.info(
+            `HSS AuditScheduled for ${addr.slice(0, 12)}… ` +
+            `(mode=${Number(mode)}, interval=${Number(intervalSeconds)}s)`
+          );
+          await this.hcs.publishAuditLog({
+            type: "HSS_AUDIT_SCHEDULED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              contractAddress: addr,
+              owner: String(owner),
+              scheduleAddress: String(scheduleAddress),
+              nextAuditDue: Number(nextAuditDue),
+              mode: Number(mode),
+              intervalSeconds: Number(intervalSeconds),
+            },
+          }).catch(() => {});
+          // Persist to events-api
+          this._postToEventsApi("schedules", {
+            contractAddress: addr,
+            owner: String(owner),
+            scheduleAddress: String(scheduleAddress),
+            nextAuditDue: Number(nextAuditDue),
+            mode: Number(mode),
+            intervalSeconds: Number(intervalSeconds),
+            active: true,
+          }).catch((e) => this.log.warn(`[eventsApi] POST /schedules failed: ${e.message}`));
+        }
+      );
+
+      this.contracts.auditScheduler.on(
         "AuditTriggered",
         async (contractAddress, scheduleAddress, triggeredAt, timesTriggered) => {
           const addr = String(contractAddress);
@@ -3341,6 +3500,105 @@ export class OrchestratorAgent {
       this.log.info("Listening for on-chain AuditTriggered events (HSS)");
     } catch (err) {
       this.log.warn(`AuditScheduler event subscription failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Subscribe to VaultFactory events.
+   * VaultCreated — records the vault in events-api.
+   * AutoAuditTriggered — fires a synthetic CONTRACT_DISCOVERED to kick off a new audit job.
+   */
+  subscribeVaultEvents() {
+    try {
+      if (!this.contracts.vaultFactory?.on) {
+        this.log.info("VaultFactory not configured — vault events disabled");
+        return;
+      }
+
+      this.contracts.vaultFactory.on(
+        "VaultCreated",
+        async (contractAddress, vaultAddress, creator, contractChain) => {
+          const addr = String(contractAddress);
+          this.log.info(
+            `VaultCreated for ${addr.slice(0, 12)}… vault=${String(vaultAddress).slice(0, 12)}…`
+          );
+          await this.hcs.publishAuditLog({
+            type: "VAULT_CREATED",
+            agentId: "orchestrator",
+            timestamp: now(),
+            payload: {
+              contractAddress: addr,
+              vaultAddress: String(vaultAddress),
+              creator: String(creator),
+              contractChain: String(contractChain),
+            },
+          }).catch(() => {});
+          this._postToEventsApi("vaults", {
+            contractAddress: addr,
+            vaultAddress: String(vaultAddress),
+            creator: String(creator),
+            contractChain: String(contractChain),
+            active: true,
+          }).catch((e) => this.log.warn(`[eventsApi] POST /vaults failed: ${e.message}`));
+        }
+      );
+
+      this.contracts.vaultFactory.on(
+        "AutoAuditTriggered",
+        async (contractAddress, vaultAddress, reason) => {
+          const addr = String(contractAddress);
+          this.log.info(
+            `AutoAuditTriggered for ${addr.slice(0, 12)}… reason=${reason}`
+          );
+          // Synthetic discovery — routes through the normal handleDiscovery pipeline
+          const syntheticMsg = {
+            type: "CONTRACT_DISCOVERED",
+            agentId: "vault-factory",
+            timestamp: now(),
+            payload: {
+              contractAddress: addr,
+              contractType: "unknown",
+              budget: CONFIG.payments.totalGuard,
+              riskScore: 50,
+              estimatedLOC: 1000,
+              deployerAddress: String(vaultAddress),
+              triggeredBy: "auto_audit",
+              autoAuditReason: String(reason),
+            },
+          };
+          await this.handleDiscovery(syntheticMsg).catch((err) =>
+            this.log.warn(
+              `AutoAuditTriggered discovery failed for ${addr.slice(0, 12)}…: ` +
+              `${err instanceof Error ? err.message : String(err)}`
+            )
+          );
+        }
+      );
+
+      this.log.info("Listening for VaultCreated and AutoAuditTriggered events (VaultFactory)");
+    } catch (err) {
+      this.log.warn(`VaultFactory event subscription failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Fire-and-forget POST to the events-api.
+   * @param {string} resource e.g. "schedules", "vaults"
+   * @param {object} body
+   */
+  async _postToEventsApi(resource, body) {
+    const base = process.env.EVENTS_API_URL ?? "http://localhost:4000";
+    const token = process.env.EVENTS_API_INGEST_TOKEN ?? "";
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${base}/api/${resource}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${res.status}: ${text.slice(0, 120)}`);
     }
   }
 

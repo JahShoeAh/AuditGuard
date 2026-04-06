@@ -77,6 +77,12 @@ export const CONFIG = {
     agentRegistry: sdk?.contracts?.agentRegistry?.evmAddress ?? "0xe86218b5Bf5C21CA7a69cba04C5be0D3c2Be2303",
     budgetVault: sdk?.contracts?.budgetVault?.evmAddress ?? "0x68780A12b36f3ed04CEF937EFc38b593683c5fCd",
     auditScheduler: sdk?.contracts?.auditScheduler?.evmAddress ?? "",  // set after deploy:audit-scheduler
+    treasury: sdk?.contracts?.treasury?.evmAddress ?? "",
+    stakingManager: sdk?.contracts?.stakingManager?.evmAddress ?? "",
+    delegatedStaking: sdk?.contracts?.delegatedStaking?.evmAddress ?? "",
+    guardExchange: sdk?.contracts?.guardExchange?.evmAddress ?? "",
+    hbarPool: sdk?.contracts?.hbarPool?.evmAddress ?? "",
+    vaultFactory: sdk?.contracts?.vaultFactory?.evmAddress ?? "",
   },
   guardToken: {
     decimals: 8,

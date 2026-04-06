@@ -3,11 +3,10 @@ import { getDb } from "../db.js";
 
 export const healthRouter = Router();
 
-healthRouter.get("/health", (_req, res) => {
+healthRouter.get("/health", async (_req, res) => {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT 1 AS ok").get();
-    const isHealthy = row?.ok === 1;
+    const isHealthy = await db.healthCheck();
 
     return res.status(isHealthy ? 200 : 500).json({
       data: {

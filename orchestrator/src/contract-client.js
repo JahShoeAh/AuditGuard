@@ -142,6 +142,96 @@ export class ContractClient {
       this.auditScheduler = null;
       log.warn(`AuditScheduler init failed (ABI missing?): ${err.message}`);
     }
+
+    // Treasury — optional; used for fee observability and authorized-source setup
+    try {
+      if (CONFIG.contracts.treasury) {
+        const treasuryAddress = assertAddress(CONFIG.contracts.treasury, "treasury");
+        this.treasury = new ethers.Contract(treasuryAddress, loadABI("Treasury"), wallet);
+        log.info(`Treasury connected at ${treasuryAddress}`);
+      } else {
+        this.treasury = null;
+        log.info("Treasury address not configured — fee observability disabled");
+      }
+    } catch (err) {
+      this.treasury = null;
+      log.warn(`Treasury init failed: ${err.message}`);
+    }
+
+    // StakingManager — optional; used for slash event relay to DelegatedStaking
+    try {
+      if (CONFIG.contracts.stakingManager) {
+        const smAddress = assertAddress(CONFIG.contracts.stakingManager, "stakingManager");
+        this.stakingManager = new ethers.Contract(smAddress, loadABI("StakingManager"), wallet);
+        log.info(`StakingManager connected at ${smAddress}`);
+      } else {
+        this.stakingManager = null;
+        log.info("StakingManager address not configured — slash relay disabled");
+      }
+    } catch (err) {
+      this.stakingManager = null;
+      log.warn(`StakingManager init failed: ${err.message}`);
+    }
+
+    // DelegatedStaking — optional; receives propagated slashes from StakingManager events
+    try {
+      if (CONFIG.contracts.delegatedStaking) {
+        const dsAddress = assertAddress(CONFIG.contracts.delegatedStaking, "delegatedStaking");
+        this.delegatedStaking = new ethers.Contract(dsAddress, loadABI("DelegatedStaking"), wallet);
+        log.info(`DelegatedStaking connected at ${dsAddress}`);
+      } else {
+        this.delegatedStaking = null;
+        log.info("DelegatedStaking address not configured — delegated slash relay disabled");
+      }
+    } catch (err) {
+      this.delegatedStaking = null;
+      log.warn(`DelegatedStaking init failed: ${err.message}`);
+    }
+
+    // GuardExchange — optional; AMM for HBAR ↔ GUARD swaps
+    try {
+      if (CONFIG.contracts.guardExchange) {
+        const gxAddress = assertAddress(CONFIG.contracts.guardExchange, "guardExchange");
+        this.guardExchange = new ethers.Contract(gxAddress, loadABI("GuardExchange"), wallet);
+        log.info(`GuardExchange connected at ${gxAddress}`);
+      } else {
+        this.guardExchange = null;
+        log.info("GuardExchange address not configured — AMM swap disabled");
+      }
+    } catch (err) {
+      this.guardExchange = null;
+      log.warn(`GuardExchange init failed: ${err.message}`);
+    }
+
+    // HbarPool — optional; fixed-rate HBAR↔GUARD converter
+    try {
+      if (CONFIG.contracts.hbarPool) {
+        const hpAddress = assertAddress(CONFIG.contracts.hbarPool, "hbarPool");
+        this.hbarPool = new ethers.Contract(hpAddress, loadABI("HbarPool"), wallet);
+        log.info(`HbarPool connected at ${hpAddress}`);
+      } else {
+        this.hbarPool = null;
+        log.info("HbarPool address not configured — fixed-rate swap disabled");
+      }
+    } catch (err) {
+      this.hbarPool = null;
+      log.warn(`HbarPool init failed: ${err.message}`);
+    }
+
+    // VaultFactory — optional; registry for audit budget vaults
+    try {
+      if (CONFIG.contracts.vaultFactory) {
+        const vfAddress = assertAddress(CONFIG.contracts.vaultFactory, "vaultFactory");
+        this.vaultFactory = new ethers.Contract(vfAddress, loadABI("VaultFactory"), wallet);
+        log.info(`VaultFactory connected at ${vfAddress}`);
+      } else {
+        this.vaultFactory = null;
+        log.info("VaultFactory address not configured — vault registry disabled");
+      }
+    } catch (err) {
+      this.vaultFactory = null;
+      log.warn(`VaultFactory init failed: ${err.message}`);
+    }
   }
 
   static fromOperatorKey(hexKey) {
@@ -271,6 +361,172 @@ export class ContractClient {
     return this._enqueueWriteWithPriority(
       async () => this.paymentSettlement.settleJob(jobId, payments, reportAgent),
       "normal"
+    );
+  }
+
+  async propagateDelegatedSlash(agentAddress, slashBps) {
+    if (!this.delegatedStaking) {
+      log.warn("propagateDelegatedSlash: DelegatedStaking not connected — skipping");
+      return null;
+    }
+    return this._enqueueWrite(
+      async () => this.delegatedStaking.propagateSlash(agentAddress, slashBps)
+    );
+  }
+
+  /**
+   * One-time setup: authorize msg.sender (orchestrator) as a Treasury fee source.
+   * Call via the setup-treasury.js script, not at runtime.
+   */
+  async addTreasuryAuthorizedSource(sourceAddress) {
+    if (!this.treasury) throw new Error("Treasury not connected");
+    return this._enqueueWrite(
+      async () => this.treasury.addAuthorizedSource(sourceAddress)
+    );
+  }
+
+  /**
+   * One-time setup: tell DelegatedStaking who its StakingManager is (the EOA or
+   * forwarding contract that is authorized to call propagateSlash).
+   * Call via the wire-delegated-staking.js script.
+   */
+  async setDelegatedStakingStakingManager(stakingManagerAddress) {
+    if (!this.delegatedStaking) throw new Error("DelegatedStaking not connected");
+    return this._enqueueWrite(
+      async () => this.delegatedStaking.setStakingManager(stakingManagerAddress)
+    );
+  }
+
+  /**
+   * One-time setup: tell StakingManager about DelegatedStaking so it can auto-
+   * propagate slashes (only works if the deployed StakingManager supports
+   * setDelegatedStaking — otherwise use the orchestrator relay instead).
+   */
+  async setStakingManagerDelegatedStaking(delegatedStakingAddress) {
+    if (!this.stakingManager) throw new Error("StakingManager not connected");
+    return this._enqueueWrite(
+      async () => this.stakingManager.setDelegatedStaking(delegatedStakingAddress)
+    );
+  }
+
+  /**
+   * Subscribe to SlashInitiated events on StakingManager.
+   * cb(slashId, agent, slashBasisPoints) — slashId and agent are indexed.
+   */
+  onSlashInitiated(cb) {
+    if (!this.stakingManager) return;
+    this.stakingManager.on("SlashInitiated", (slashId, agent, reason, slashedAmount, slashBasisPoints, evidenceHash, jobId, event) => {
+      cb(slashId, agent, Number(slashBasisPoints), event);
+    });
+  }
+
+  /**
+   * Subscribe to AppealDenied events on StakingManager.
+   * cb(slashId) — slash is confirmed, delegators should be slashed.
+   */
+  onAppealDenied(cb) {
+    if (!this.stakingManager) return;
+    this.stakingManager.on("AppealDenied", (slashId, ...rest) => cb(slashId));
+  }
+
+  /**
+   * Subscribe to AppealExpired events on StakingManager.
+   * cb(slashId) — appeal window elapsed with no appeal; slash is final.
+   */
+  onAppealExpired(cb) {
+    if (!this.stakingManager) return;
+    this.stakingManager.on("AppealExpired", (slashId, ...rest) => cb(slashId));
+  }
+
+  // ── GuardExchange ──────────────────────────────────────────────────────────
+
+  /** Returns [hbarReserve, guardReserve] from the AMM (bigint pair). */
+  async getExchangeReserves() {
+    if (!this.guardExchange) return null;
+    const [hbar, guard] = await this.guardExchange.getReserves();
+    return { hbarReserve: hbar, guardReserve: guard };
+  }
+
+  /** Returns hbar-per-guard rate (bigint, scaled 1e8). */
+  async getExchangeRate() {
+    if (!this.guardExchange) return null;
+    return this.guardExchange.getRate();
+  }
+
+  /** Buy GUARD with HBAR. minGuardOut is bigint (8 decimals). value is HBAR in wei. */
+  async buyGuard(minGuardOut, hbarValueWei) {
+    if (!this.guardExchange) throw new Error("GuardExchange not configured");
+    return this._enqueueWrite(() =>
+      this.guardExchange.buyGuard(minGuardOut, { value: hbarValueWei })
+    );
+  }
+
+  /** Sell GUARD for HBAR. guardIn and minHbarOut are bigint (8 decimals). */
+  async sellGuard(guardIn, minHbarOut) {
+    if (!this.guardExchange) throw new Error("GuardExchange not configured");
+    return this._enqueueWrite(() =>
+      this.guardExchange.sellGuard(guardIn, minHbarOut)
+    );
+  }
+
+  // ── HbarPool ───────────────────────────────────────────────────────────────
+
+  /** Returns [hbarReserve, guardReserve] from the fixed-rate pool (bigint pair). */
+  async getHbarPoolReserves() {
+    if (!this.hbarPool) return null;
+    const [hbar, guard] = await this.hbarPool.getReserves();
+    return { hbarReserve: hbar, guardReserve: guard };
+  }
+
+  /** Buy GUARD with HBAR via fixed-rate pool. hbarValueWei is HBAR in wei. */
+  async hbarToGuard(hbarValueWei) {
+    if (!this.hbarPool) throw new Error("HbarPool not configured");
+    return this._enqueueWrite(() =>
+      this.hbarPool.hbarToGuard({ value: hbarValueWei })
+    );
+  }
+
+  // ── VaultFactory ──────────────────────────────────────────────────────────
+
+  /** Returns the vault address for a contract, or ZeroAddress if none. */
+  async getVaultFor(contractAddress) {
+    if (!this.vaultFactory) return null;
+    return this.vaultFactory.getVaultFor(contractAddress);
+  }
+
+  /** Returns all vault addresses registered in VaultFactory. */
+  async getAllVaults() {
+    if (!this.vaultFactory) return [];
+    return this.vaultFactory.getAllVaults();
+  }
+
+  /** Returns vaults whose re-audit interval has elapsed. */
+  async getVaultsNeedingReaudit() {
+    if (!this.vaultFactory) return [];
+    return this.vaultFactory.getVaultsNeedingReaudit();
+  }
+
+  /** Creates a new audit budget vault for a contract. config is AuditVault.VaultConfig. */
+  async createVault(contractAddress, contractChain, config) {
+    if (!this.vaultFactory) throw new Error("VaultFactory not configured");
+    return this._enqueueWrite(() =>
+      this.vaultFactory.createVault(contractAddress, contractChain, config)
+    );
+  }
+
+  /** Subscribe to VaultCreated events. cb(contractAddress, vaultAddress, creator, contractChain) */
+  onVaultCreated(cb) {
+    if (!this.vaultFactory?.on) return;
+    this.vaultFactory.on("VaultCreated", (contractAddress, vault, creator, contractChain, event) =>
+      cb(contractAddress, vault, creator, contractChain, event)
+    );
+  }
+
+  /** Subscribe to AutoAuditTriggered events. cb(contractAddress, vaultAddress, reason) */
+  onAutoAuditTriggered(cb) {
+    if (!this.vaultFactory?.on) return;
+    this.vaultFactory.on("AutoAuditTriggered", (contractAddress, vault, reason, event) =>
+      cb(contractAddress, vault, reason, event)
     );
   }
 

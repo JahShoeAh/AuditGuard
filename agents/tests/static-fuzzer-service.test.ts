@@ -608,8 +608,11 @@ describe("Fuzzer Agent — generateFindings()", () => {
     const { generateFindings } = await import("../fuzzer/index.js");
     const withData = generateFindings("dex", true);
     const withoutData = generateFindings("dex", false);
-    expect(withData[0].description).toContain("optimized with external data");
-    expect(withoutData[0].description).not.toContain("optimized");
+    expect(withData[0].description).toContain("external data");
+    expect(withoutData[0].description).not.toContain("external data");
+    // All mock-generated findings must carry the isMock flag
+    expect(withData.every((f) => f.isMock === true)).toBe(true);
+    expect(withoutData.every((f) => f.isMock === true)).toBe(true);
   });
 
   it("finding IDs use FZ- prefix (not SA-)", async () => {

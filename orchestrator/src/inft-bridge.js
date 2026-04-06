@@ -60,6 +60,54 @@ export class InftBridge {
       return false;
     }
   }
+
+  /**
+   * Mint an Audit Job iNFT on contract discovery.
+   * @param {object} opts - Discovery event fields
+   * @returns {Promise<{serialNumber: number, metadata: object}|null>}
+   */
+  async mintAuditJobNFT(opts) {
+    const svc = this.ensureService();
+    if (!svc) return null;
+    try {
+      return await svc.mintAuditJobINFT(opts);
+    } catch (err) {
+      console.warn(`[inft] mintAuditJobINFT failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Mint an Agent Profile iNFT on agent registration.
+   * @param {object} registration
+   * @returns {Promise<{serialNumber: number, metadata: object}|null>}
+   */
+  async mintAgentProfileNFT(registration) {
+    const svc = this.ensureService();
+    if (!svc) return null;
+    try {
+      return await svc.mintAgentProfileINFT(registration);
+    } catch (err) {
+      console.warn(`[inft] mintAgentProfileINFT failed for ${registration.agentId}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Mint a Contract Health iNFT on first successful audit of a contract.
+   * @param {object} contractInfo
+   * @returns {Promise<{serialNumber: number, metadata: object}|null>}
+   */
+  async mintContractHealthNFT(contractInfo) {
+    const svc = this.ensureService();
+    if (!svc) return null;
+    try {
+      return await svc.mintContractHealthINFT(contractInfo);
+    } catch (err) {
+      console.warn(`[inft] mintContractHealthINFT failed for ${contractInfo.contractAddress}: ${err.message}`);
+      return null;
+    }
+  }
 }
 
 function safeParseMap(json) {

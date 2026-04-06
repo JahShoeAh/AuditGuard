@@ -1,15 +1,6 @@
 name: Deploy Dashboard to Vercel
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "packages/dashboard/**"
-      - "packages/sdk/**"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/deploy-dashboard-vercel.yml"
   workflow_dispatch:
 
 permissions:

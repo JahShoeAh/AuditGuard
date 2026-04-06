@@ -7,28 +7,51 @@ WORKDIR /app
 LABEL org.opencontainers.image.source="https://github.com/JahShoeAh/AuditGuard"
 LABEL org.opencontainers.image.description="AuditGuard backend runtime (orchestrator + agents + iNFT listeners + events API)"
 
-# Use dumb-init for proper signal forwarding/shutdown of all child processes.
+# dumb-init: proper signal forwarding and child-process reaping.
+# python3/pip/make/g++: required for native npm addons and analysis tools.
+# curl: used by solc-select to download compiler binaries.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init python3 make g++ \
+  && apt-get install -y --no-install-recommends \
+       dumb-init python3 python3-pip python3-venv make g++ curl \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace manifests first for better layer caching.
-COPY package.json package-lock.json ./
-COPY agents/package.json agents/package.json
-COPY orchestrator/package.json orchestrator/package.json
-COPY packages/dashboard/package.json packages/dashboard/package.json
-COPY packages/inft/package.json packages/inft/package.json
-COPY packages/events-api/package.json packages/events-api/package.json
+# Install Solidity analysis tools in an isolated venv so they don't clash with
+# system Python packages.  slither-analyzer and semgrep cover the two primary
+# analysis runners.  solc-select installs the solc binary that slither needs.
+RUN python3 -m venv /opt/analysis-tools \
+  && /opt/analysis-tools/bin/pip install --no-cache-dir \
+       slither-analyzer==0.11.3 \
+       solc-select \
+       semgrep \
+  && /opt/analysis-tools/bin/solc-select install 0.8.24 \
+  && /opt/analysis-tools/bin/solc-select use 0.8.24
 
-# Install all workspace dependencies.
+# Make the venv tools available on PATH for all subsequent commands / entrypoint.
+ENV PATH="/opt/analysis-tools/bin:${PATH}"
+
+# Copy workspace manifests first so dependency installation is cached
+# independently of source changes.
+COPY package.json package-lock.json ./
+COPY agents/package.json                            agents/package.json
+COPY orchestrator/package.json                      orchestrator/package.json
+COPY packages/inft/package.json                     packages/inft/package.json
+COPY packages/events-api/package.json               packages/events-api/package.json
+COPY packages/static-analysis-service/package.json  packages/static-analysis-service/package.json
+COPY packages/fuzzer-service/package.json            packages/fuzzer-service/package.json
+COPY packages/sdk/package.json                      packages/sdk/package.json
+
+# Install all workspace dependencies including devDependencies.
+# NODE_ENV must NOT be production here — agents require tsx (a devDependency)
+# at runtime for TypeScript execution.
 RUN npm ci --workspaces --include-workspace-root
 
-# Copy full source after dependency install.
+# Copy full source after dependency install (layer order keeps npm ci cached).
 COPY . .
 
-ENV NODE_ENV=development
+# Set production runtime environment after deps are installed.
+ENV NODE_ENV=production
 
 EXPOSE 4000
 
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["npm", "run", "dev:backend"]
+CMD ["npm", "run", "start:backend"]

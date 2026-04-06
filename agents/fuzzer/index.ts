@@ -1,6 +1,7 @@
 import {
   HCSClient,
   ContractClient,
+  ListingCategory,
   CONFIG,
   computeLiveBid,
   ensureBidCollateralBalance,
@@ -245,10 +246,11 @@ export function generateFindings(contractType: ContractType, hasExternalData: bo
       id: `FZ-${String(i + 1).padStart(3, "0")}`,
       severity: randomSeveritySkewedHigh(),
       title: randomFindingTitle(contractType),
-      description: `Fuzz testing finding${hasExternalData ? " (optimized with external data)" : ""}`,
+      description: `Fuzz testing finding (simulated — no fuzz tool available)${hasExternalData ? " [used external data]" : ""}`,
       confidence: randomFloat(0.7, 0.98),
       agentId: AGENT_ID,
       timestamp: Date.now(),
+      isMock: true,
     });
   }
 
@@ -1144,10 +1146,15 @@ async function simulateAuditCycle(
   log.info(`Running fuzz testing... (budget ${auditTime}s${hasExternalData ? " — optimized" : ""})`);
 
   const findings = await runFuzzOrFallback(contractAddress, contractType, hasExternalData, auditTime);
-  const criticalCount = findings.filter((f) => f.severity === "critical").length;
+
+  // Detect whether all findings are from the mock fallback generator.
+  // Mock findings must not inflate reputation scores — severity counts are zeroed
+  // in the HCS message so the orchestrator doesn't award critical bonuses.
+  const isMock = findings.length > 0 && findings.every((f) => f.isMock === true);
+  const criticalCount = isMock ? 0 : findings.filter((f) => f.severity === "critical").length;
 
   log.info(
-    `Testing complete: ${findings.length} findings [C:${criticalCount}]`
+    `Testing complete: ${findings.length} findings [C:${criticalCount}]${isMock ? " [MOCK — no fuzz tool installed]" : ""}`
   );
 
   // Store findings so the report agent can build a real report
@@ -1165,15 +1172,90 @@ async function simulateAuditCycle(
       deployerAddress,
       findingsHash,
       findingsCount: findings.length,
+      // Severity counts are zeroed when mock — prevents unearned critical bonuses
       criticalCount,
-      highCount: findings.filter((f) => f.severity === "high").length,
-      mediumCount: findings.filter((f) => f.severity === "medium").length,
-      lowCount: findings.filter((f) => f.severity === "low").length,
+      highCount: isMock ? 0 : findings.filter((f) => f.severity === "high").length,
+      mediumCount: isMock ? 0 : findings.filter((f) => f.severity === "medium").length,
+      lowCount: isMock ? 0 : findings.filter((f) => f.severity === "low").length,
+      isMock,
       evmAddress,
     },
   });
 
   log.info(`Findings submitted. Hash: ${findingsHash.slice(0, 16)}...`);
+
+  // ── Sell fuzz report on DataMarketplace for 0.5 GUARD ──
+  const reportPrice = ethers.parseUnits("0.5", 8);
+  let parentJobId: bigint;
+  try {
+    parentJobId = parseChainUint(jobId);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    log.warn(`Invalid jobId for listing: ${error}`);
+    if (STRICT_LIVE && !DEMO_MODE) {
+      await hcs.publishAuditLog({
+        type: "LISTING_CREATE_FAILED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { jobId: String(jobId), contractAddress, strictLive: true, error },
+      });
+      return;
+    }
+    parentJobId = BigInt(0);
+  }
+  let listingId: string | null = null;
+  try {
+    const tx = await contracts.createListing(
+      parentJobId,
+      `Fuzz report: ${contractType}`,
+      `Fuzz testing report for ${contractAddress.slice(0, 12)}...`,
+      ListingCategory.SCAN_REPORT,
+      reportPrice,
+      findingsHash,
+    );
+    const receipt = await tx.wait();
+    if (receipt?.logs) {
+      for (const logEntry of receipt.logs) {
+        try {
+          const parsed = contracts.dataMarketplace.interface.parseLog(logEntry);
+          if (parsed?.name === "DataListed") {
+            listingId = String(parsed.args.listingId);
+            break;
+          }
+        } catch {
+          // Ignore unrelated logs.
+        }
+      }
+    }
+    log.info("Fuzz report listed on DataMarketplace for 0.5 GUARD");
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    log.warn(`DataMarketplace listing failed: ${error}`);
+    if (STRICT_LIVE && !DEMO_MODE) {
+      await hcs.publishAuditLog({
+        type: "LISTING_CREATE_FAILED",
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        payload: { jobId: String(jobId), contractAddress, strictLive: true, error },
+      });
+      return;
+    }
+  }
+
+  if (!listingId) return;
+
+  await hcs.publishAgentComms({
+    type: "DATA_LISTING_CREATED",
+    agentId: AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      listingId,
+      category: "SCAN_REPORT",
+      price: 0.5,
+      description: `Fuzz testing report for ${contractType} contract`,
+      jobId,
+    },
+  });
 }
 
 if (!process.env.VITEST) {

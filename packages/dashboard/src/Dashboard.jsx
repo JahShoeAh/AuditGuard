@@ -19,6 +19,8 @@ import TreasuryEconomics from './components/TreasuryEconomics';
 import StoryMode from './components/StoryMode';
 import CompetitionHeatmap from './components/CompetitionHeatmap';
 import AuditSchedules from './components/AuditSchedules';
+import VaultPanel from './components/VaultPanel';
+import ExchangeWidget from './components/ExchangeWidget';
 
 function ErrorBanner({ message }) {
   return (
@@ -168,10 +170,43 @@ function ContractsTab() {
   );
 }
 
+const SCHEDULES_SUB_TABS = [
+  { key: 'schedules', label: 'Schedules', icon: '⏱' },
+  { key: 'vaults',    label: 'Vaults',    icon: '🏦' },
+  { key: 'exchange',  label: 'Exchange',  icon: '⚡' },
+];
+
 function SchedulesTab() {
+  const [subTab, setSubTab] = useState('schedules');
+
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-auto">
-      <AuditSchedules />
+    <div className="h-full flex flex-col min-h-0">
+      <div className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-gray-800 bg-gray-950">
+        {SCHEDULES_SUB_TABS.map((tab) => {
+          const isActive = subTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setSubTab(tab.key)}
+              className={[
+                'flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-bold font-mono uppercase tracking-wider transition-colors',
+                isActive
+                  ? 'bg-gray-800 text-cyan-300 border border-gray-700'
+                  : 'text-gray-500 hover:text-gray-300',
+              ].join(' ')}
+            >
+              <span className="text-[10px]">{tab.icon}</span>
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-auto">
+        {subTab === 'schedules' && <AuditSchedules />}
+        {subTab === 'vaults'    && <VaultPanel />}
+        {subTab === 'exchange'  && <ExchangeWidget />}
+      </div>
     </div>
   );
 }

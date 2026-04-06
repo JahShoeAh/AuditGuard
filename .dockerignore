@@ -15,6 +15,16 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Dashboard is deployed separately to Vercel — not needed in backend image
+packages/dashboard
+
+# Test fixtures and local runtime data — not needed in image
+agents/tests
+agents/data
+
+# Deployment and utility scripts — not needed at runtime
+scripts
+
 # Exclude unused packages
 packages/cloudflare-api
 docs

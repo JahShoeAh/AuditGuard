@@ -345,8 +345,11 @@ describe("Fuzzer Agent", () => {
             const { generateFindings } = await import("../fuzzer/index.js");
             const withData = generateFindings("dex", true);
             const withoutData = generateFindings("dex", false);
-            expect(withData[0].description).toContain("optimized with external data");
-            expect(withoutData[0].description).not.toContain("optimized");
+            expect(withData[0].description).toContain("external data");
+            expect(withoutData[0].description).not.toContain("external data");
+            // Mock flag must be set on all generated findings
+            expect(withData.every((f) => f.isMock === true)).toBe(true);
+            expect(withoutData.every((f) => f.isMock === true)).toBe(true);
         });
 
         it("skews toward higher severity", async () => {

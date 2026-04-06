@@ -54,12 +54,12 @@ const mapAuditEventRow = (row) => ({
   messageTimestamp: row.message_timestamp,
   payload: safeParseRecord(row.payload_json),
   rawMessage: safeParseMessage(row.raw_json),
-  receivedAt: row.received_at,
+  receivedAt: row.received_at instanceof Date ? row.received_at.toISOString() : row.received_at,
 });
 
 // ── POST /api/events ─────────────────────────────────────────────────
 
-eventsRouter.post("/events", requireAuth, (req, res) => {
+eventsRouter.post("/events", requireAuth, async (req, res) => {
   const parsed = parseEventIngestRequest(req.body);
   if (!parsed) {
     return res.status(400).json({
@@ -73,12 +73,7 @@ eventsRouter.post("/events", requireAuth, (req, res) => {
     const eventId = crypto.randomUUID();
     const nowIso = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO audit_events (
-        id, source, topic_id, message_type, agent_id,
-        message_timestamp, payload_json, raw_json, received_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+    await db.insertEvent(
       eventId,
       parsed.source,
       parsed.topicId,
@@ -100,12 +95,7 @@ eventsRouter.post("/events", requireAuth, (req, res) => {
       bidSkipId = crypto.randomUUID();
       const skipNow = new Date().toISOString();
 
-      db.prepare(
-        `INSERT INTO bid_skips (
-          id, event_id, job_id, agent_id, reason_code,
-          reason, invite_budget, bid_amount, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
+      await db.insertBidSkip(
         bidSkipId,
         eventId,
         bidSkip.jobId,
@@ -128,7 +118,7 @@ eventsRouter.post("/events", requireAuth, (req, res) => {
 
 // ── GET /api/events ──────────────────────────────────────────────────
 
-eventsRouter.get("/events", (req, res) => {
+eventsRouter.get("/events", async (req, res) => {
   const limit = parseLimit(req.query.limit, 100, 1000);
   const messageType = req.query.type?.trim() || undefined;
   const agentId = req.query.agentId?.trim() || undefined;
@@ -136,36 +126,7 @@ eventsRouter.get("/events", (req, res) => {
 
   try {
     const db = getDb();
-    const clauses = [];
-    const params = [];
-
-    if (messageType) {
-      clauses.push("message_type = ?");
-      params.push(messageType);
-    }
-    if (agentId) {
-      clauses.push("agent_id = ?");
-      params.push(agentId);
-    }
-    if (topicId) {
-      clauses.push("topic_id = ?");
-      params.push(topicId);
-    }
-
-    let sql = `
-      SELECT id, source, topic_id, message_type, agent_id,
-             message_timestamp, payload_json, raw_json, received_at
-      FROM audit_events
-    `;
-
-    if (clauses.length > 0) {
-      sql += ` WHERE ${clauses.join(" AND ")}`;
-    }
-
-    sql += " ORDER BY received_at DESC LIMIT ?";
-    params.push(limit);
-
-    const rows = db.prepare(sql).all(...params);
+    const rows = await db.queryEvents({ messageType, agentId, topicId, limit });
     const events = rows.map(mapAuditEventRow);
 
     return res.json({ data: { events } });

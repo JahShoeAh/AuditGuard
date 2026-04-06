@@ -26,9 +26,8 @@ services:
       - ${ENV_FILE:-/opt/auditguard/.env}
     environment:
       DATABASE_URL: postgresql://auditguard:${POSTGRES_PASSWORD}@postgres:5432/auditguard
-      EVENTS_DB_PATH: /app/data/events.db
     volumes:
-      - events_data:/app/data
+      - report_files:/app/agents/data/reports
     ports:
       - "4000:4000"
     depends_on:
@@ -37,4 +36,4 @@ services:
 
 volumes:
   pg_data:
-  events_data:
+  report_files:
