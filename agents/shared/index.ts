@@ -45,3 +45,6 @@ export {
   stopPeriodicDump,
 } from "./metrics.js";
 export type { InfraMetrics, AggregateMetrics } from "./metrics.js";
+
+export { postFindingsToStore, getFindingsFromStore, deleteFindingsFromStore } from "./findings-store-client.js";
+export type { StoredFinding } from "./findings-store-client.js";

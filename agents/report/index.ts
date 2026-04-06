@@ -6,6 +6,8 @@ import {
   createAgentWallet,
   randomFloat,
   hashOf,
+  getFindingsFromStore,
+  deleteFindingsFromStore,
 } from "../shared/index.js";
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
@@ -336,17 +338,32 @@ async function aggregateAndPublish(
     },
   });
 
-  // --- Generate, upload, and list real audit report ---
-  const agentFindings = job.submissions as any[];
-  const allFindings: ReportFinding[] = agentFindings.flatMap((af: any) =>
-    (af?.findings || af?.results || af?.payload?.findings || af?.payload?.results || []).map((f: any) => ({
-      severity: String(f?.severity || f?.level || "MEDIUM").toUpperCase(),
-      title: f?.title || f?.name || "Unnamed Finding",
-      description: f?.description || f?.details || "",
-      location: f?.location || f?.function || undefined,
-      recommendation: f?.recommendation || f?.fix || undefined,
-    }))
-  );
+  // --- Fetch real findings from the findings store, then generate report ---
+  // Agents POST findings to the static-analysis-service after completing analysis.
+  // This bridges the cross-process gap (each agent is a separate child process).
+  let allFindings: ReportFinding[] = [];
+  try {
+    const storeEntries = await getFindingsFromStore(jobId);
+    if (storeEntries.length > 0) {
+      allFindings = storeEntries.flatMap(({ agentId: srcAgentId, findings }) =>
+        findings.map((f: any) => ({
+          severity: String(f?.severity || "MEDIUM").toUpperCase(),
+          title: f?.title || "Unnamed Finding",
+          description: f?.description || "",
+          location: f?.location || undefined,
+          recommendation: f?.recommendation || undefined,
+        }))
+      );
+      log.info(`[ReportAgent] Fetched ${allFindings.length} findings from store (${storeEntries.length} agents)`);
+      // Clean up store after fetching
+      await deleteFindingsFromStore(jobId);
+    } else {
+      log.warn(`[ReportAgent] No findings in store for job ${jobId} — report will show counts only`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`[ReportAgent] Could not fetch findings from store: ${msg} — report will show counts only`);
+  }
 
   const jobMeta = job as any;
   const firstPayload = (job.submissions[0] as any)?.payload ?? {};

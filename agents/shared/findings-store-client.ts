@@ -1,0 +1,85 @@
+/**
+ * Client for the findings store built into the static-analysis-service.
+ *
+ * Agents call postFindingsToStore() after completing analysis so the
+ * report agent can retrieve real findings when building the IPFS report.
+ *
+ * The store lives at STATIC_ANALYSIS_SERVICE_URL (default: http://localhost:4002).
+ * All calls are fire-and-forget with a 5s timeout — a failure is logged but
+ * never blocks the audit cycle.
+ */
+
+const FINDINGS_STORE_URL =
+  process.env.STATIC_ANALYSIS_SERVICE_URL ?? "http://localhost:4002";
+
+export interface StoredFinding {
+  id: string;
+  severity: string;
+  title: string;
+  description: string;
+  confidence?: number;
+  agentId?: string;
+  timestamp?: number;
+  location?: string;
+  recommendation?: string;
+}
+
+/**
+ * POST findings to the store. Safe — never throws.
+ */
+export async function postFindingsToStore(
+  jobId: string,
+  agentId: string,
+  findings: StoredFinding[],
+  log: { warn: (msg: string) => void; info: (msg: string) => void },
+): Promise<void> {
+  try {
+    const res = await fetch(`${FINDINGS_STORE_URL}/findings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId, agentId, findings }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { stored: number };
+      log.info(`[findings-store] Stored ${data.stored} findings for report`);
+    } else {
+      log.warn(`[findings-store] Store returned ${res.status} — report will show counts only`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`[findings-store] Could not reach store (${msg}) — report will show counts only`);
+  }
+}
+
+/**
+ * GET all findings for a job. Returns empty array if unavailable.
+ */
+export async function getFindingsFromStore(
+  jobId: string,
+): Promise<{ agentId: string; findings: StoredFinding[]; timestamp: number }[]> {
+  try {
+    const res = await fetch(`${FINDINGS_STORE_URL}/findings/${jobId}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { agents: { agentId: string; findings: StoredFinding[]; timestamp: number }[] };
+    return data.agents ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * DELETE findings for a job (cleanup after report is published).
+ */
+export async function deleteFindingsFromStore(jobId: string): Promise<void> {
+  try {
+    await fetch(`${FINDINGS_STORE_URL}/findings/${jobId}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    // Best-effort cleanup — ignore errors
+  }
+}

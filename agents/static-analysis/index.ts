@@ -18,6 +18,7 @@ import {
   randomFindingTitle,
   hashOf,
   sleep,
+  postFindingsToStore,
 } from "../shared/index.js";
 import type {
   ContractDiscoveryEvent,
@@ -36,6 +37,7 @@ const SPECIALIZATIONS: ContractType[] = ["lending", "vault", "staking"];
 const BASE_REPUTATION = 75;
 const WINNER_WAIT_MS = DEMO_MODE ? 15 * 1000 : 30 * 1000;
 const GUARD_DECIMALS = 8;
+const STATIC_ANALYSIS_SERVICE_URL = process.env.STATIC_ANALYSIS_SERVICE_URL ?? "http://localhost:4002";
 
 const log = createAgentLogger(AGENT_ID, "static_analysis");
 
@@ -132,6 +134,80 @@ export function generateFindings(contractType: ContractType, loc: number): Findi
   }
 
   return findings;
+}
+
+// ---- Real Static Analysis via Service ----
+
+/**
+ * Submit a static analysis job to the static-analysis-service and poll for results.
+ * Falls back to generateFindings() if the service is unavailable or returns no findings.
+ */
+export async function runStaticAnalysisOrFallback(
+  contractAddress: string,
+  contractType: ContractType,
+  loc: number,
+  budgetSeconds: number,
+  sourceDir?: string,
+): Promise<Finding[]> {
+  try {
+    const submitRes = await fetch(`${STATIC_ANALYSIS_SERVICE_URL}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contractAddress,
+        sourceDir: sourceDir ?? null,
+        chainForkUrl: process.env.HEDERA_JSON_RPC_URL,
+        budgetSeconds,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!submitRes.ok) {
+      throw new Error(`Static analysis service returned ${submitRes.status}`);
+    }
+
+    const { jobId } = (await submitRes.json()) as { jobId: string };
+    log.info(`Static analysis service job submitted: ${jobId} (budget ${budgetSeconds}s)`);
+
+    // Poll until done or deadline
+    const deadline = Date.now() + (budgetSeconds + 30) * 1000;
+    while (Date.now() < deadline) {
+      await sleep(8_000);
+      const pollRes = await fetch(`${STATIC_ANALYSIS_SERVICE_URL}/results/${jobId}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!pollRes.ok) continue;
+
+      const result = (await pollRes.json()) as {
+        status: string;
+        findings: Finding[];
+        toolUsed: string | null;
+        elapsed: number;
+      };
+
+      if (result.status === "done" || result.status === "failed") {
+        if (result.findings.length > 0) {
+          log.info(
+            `Static analysis service complete (tools=${result.toolUsed}, elapsed=${result.elapsed}s): ` +
+            `${result.findings.length} findings`
+          );
+          return result.findings;
+        }
+        // Service ran but found nothing (no tool installed or no source) — use mock
+        log.info(
+          `Static analysis service returned 0 findings (tools=${result.toolUsed ?? "none"}) — using mock fallback`
+        );
+        return generateFindings(contractType, loc);
+      }
+    }
+
+    log.warn("Static analysis service timed out — using mock fallback");
+    return generateFindings(contractType, loc);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`Static analysis service unavailable (${msg}) — using mock fallback`);
+    return generateFindings(contractType, loc);
+  }
 }
 
 export interface InviteResolutionInput {
@@ -781,15 +857,23 @@ async function simulateAuditCycle(
   evmAddress: string
 ) {
   const auditTime = DEMO_MODE ? randomInt(10, 30) : randomInt(30, 120);
-  log.info(`Running static analysis... (${auditTime}s)`);
-  await sleep(auditTime * 1000);
+  log.info(`Running static analysis... (budget ${auditTime}s)`);
 
-  const findings = generateFindings(contractType, loc);
+  const findings = await runStaticAnalysisOrFallback(
+    contractAddress,
+    contractType,
+    loc,
+    auditTime,
+    process.env.SOURCE_DIR ?? undefined,
+  );
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
 
   log.info(
     `Analysis complete: ${findings.length} findings [C:${criticalCount}]`
   );
+
+  // Store findings so the report agent can build a real report
+  await postFindingsToStore(jobId, AGENT_ID, findings, log);
 
   // Submit findings hash to report agent via HCS
   const findingsHash = hashOf(findings);

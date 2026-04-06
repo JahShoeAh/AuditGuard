@@ -17,6 +17,7 @@ import {
   randomFindingTitle,
   hashOf,
   sleep,
+  postFindingsToStore,
 } from "../shared/index.js";
 import type {
   ContractDiscoveryEvent,
@@ -952,6 +953,9 @@ async function simulateAuditCycle(
   log.info(
     `Testing complete: ${findings.length} findings [C:${criticalCount}]`
   );
+
+  // Store findings so the report agent can build a real report
+  await postFindingsToStore(jobId, AGENT_ID, findings, log);
 
   const findingsHash = hashOf(findings);
 
