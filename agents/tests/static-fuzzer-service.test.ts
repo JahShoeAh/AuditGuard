@@ -523,14 +523,14 @@ describe("Fuzzer Agent — calculateBid()", () => {
 
   it("applies 15% specialization discount for dex", async () => {
     const { calculateBid } = await import("../fuzzer/index.js");
-    const general = calculateBid(5000, "lending", 50);
+    const general = calculateBid(5000, "unknown", 50);
     const special = calculateBid(5000, "dex", 50);
     expect(special!.amount).toBeCloseTo(general!.amount * 0.85, 1);
   });
 
   it("applies 15% specialization discount for bridge", async () => {
     const { calculateBid } = await import("../fuzzer/index.js");
-    const general = calculateBid(5000, "lending", 50);
+    const general = calculateBid(5000, "unknown", 50);
     const special = calculateBid(5000, "bridge", 50);
     expect(special!.amount).toBeCloseTo(general!.amount * 0.85, 1);
   });
