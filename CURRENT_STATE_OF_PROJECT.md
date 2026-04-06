@@ -1,9 +1,59 @@
 # AuditGuard — Current State of Project
 
-> Last updated: 2026-02-19
+> Last updated: 2026-04-05
 > **Enhanced with bounty requirements status**
 
 AuditGuard is an autonomous multi‑agent smart contract auditing platform built on Hedera. AI agents bid for audit jobs, execute analysis pipelines, publish findings, and are paid in GUARD tokens – fully on‑chain with no manual coordination.
+
+---
+
+## ⚠ Current Problems (as of 2026-04-05)
+
+### Contract / On-Chain
+
+| # | Severity | Problem | Location |
+|---|----------|---------|---------|
+| C1 | **HIGH** | `SubAuction.acceptResult()` always reverts — SubAuction is not registered as an authorized scorer in AgentRegistry. Only `orchestrator` and `auctionContract` are accepted. Sub-auction result acceptance is therefore completely non-functional on-chain. | `SubAuction.sol` → `AgentRegistry.onlyOrchestratorOrAuction` |
+| C2 | **MEDIUM** | `setOrchestratorAndAuction()` in AgentRegistry can only be called once and has no update path. If the orchestrator address needs to change, there is no migration mechanism — requires full redeployment. | `AgentRegistry.sol:350` |
+| C3 | **MEDIUM** | `AuditAuction.pause()` / `unpause()` is restricted to the `orchestrator` account, not the `owner`. This means the contract owner (deployer) cannot pause in an emergency if the orchestrator key is compromised. | `AuditAuction.sol:684–691` |
+| C4 | **LOW** | `AuditAuction.setAgentRegistry()` has a one-time-only guard (`require(agentRegistry == address(0))`) but the constructor already sets it. This setter can never be called after deployment — dead code. | `AuditAuction.sol:636` |
+| C5 | **HIGH** | `AuditAuction.slashAgentBid()` is **completely broken** — it calls `agentRegistry.slashAgent()` internally, but `slashAgent` has `onlyOrchestrator` modifier. AuditAuction is the `auctionContract`, not `orchestrator`, so every `slashAgentBid` call reverts. Slash-via-auction is non-functional. Workaround: orchestrator must call `agentRegistry.slashAgent()` directly. | `AuditAuction.sol:526` → `AgentRegistry.sol:291` |
+| C6 | **LOW** | `PaymentSettlement.depositSettlementFunds()` has no access control — any address with GUARD approval can deposit into the settlement pool. May be intentional (vault contracts fund the pool) but undocumented. | `PaymentSettlement.sol:352` |
+| C7 | **LOW** | `DataMarketplace.createListing()` allows `price=0` — no price validation in `_validateListingInput`. Free listings are permitted silently. | `DataMarketplace.sol` → `_validateListingInput` |
+
+### Dashboard
+
+| # | Severity | Problem | Location |
+|---|----------|---------|---------|
+| D1 | **MEDIUM** | Dashboard schedules tab shows empty if `hssEvents` store is never populated via HCS messages. The `event-listener.js` wires contract events directly, but HSS-specific HCS payloads (`HSS_AUDIT_TRIGGERED`, `HSS_SCHEDULE_CANCELLED`) don't yet map back to Zustand `addHssEvent`. | `packages/dashboard/src/services/event-listener.js` |
+| D2 | **LOW** | Agent dashboard may show empty if agents start before the dashboard WebSocket connects (race condition — no retry/backfill mechanism). | `packages/dashboard/src/store/index.js` |
+| D3 | **LOW** | GUARD token uses 8 decimals (non-standard). Frontend **must** call `parseUnits(amount, 8)`, not `parseEther()`. Any component using the wrong helper shows incorrect balances. | All token input components |
+
+### Orchestrator
+
+| # | Severity | Problem | Location |
+|---|----------|---------|---------|
+| O1 | **MEDIUM** | Orchestrator has no proactive `scheduleAudit()` call path. It only reacts to existing HSS events. New vault deployments detected by the scanner are **not** automatically scheduled — requires manual operator intervention. | `orchestrator/src/orchestrator.js` |
+| O2 | **LOW** | `JOB_CREATED` / `AUCTION_INVITE` HCS messages can silently fail during operator key rotation. There is no dead-letter queue or retry mechanism. | `orchestrator/src/hcs-client.js` |
+
+### Infrastructure
+
+| # | Severity | Problem | Location |
+|---|----------|---------|---------|
+| I1 | **LOW** | Occasional `429` rate-limit errors from Hedera's public mirror node (`testnet.hashio.io/api`). No exponential back-off or fallback RPC configured. | `agents/shared/wallet.ts`, `orchestrator/src/contract-client.js` |
+| I2 | **LOW** | ENS resolution warnings on Hedera network (non-critical — no ENS resolver available, but ethers.js logs warnings on every startup). | `agents/shared/wallet.ts` |
+| I3 | **INFO** | LLM agent inference falls back to a mock broker when `@0glabs/0g-serving-broker` is unavailable. Mock output is not production-quality. | `agents/llm-contextual/zg-client.ts` |
+
+### Testing (now fixed — see `TESTS.md`)
+
+| # | Severity | Problem | Status |
+|---|----------|---------|--------|
+| T1 | **HIGH** | Old test suite used a single shared `before()` hook — all tests shared state and depended on each other's side effects. Test isolation was completely broken. | **Fixed** in new `AuditGuard.test.js` |
+| T2 | **HIGH** | Tests used magic numbers (`expect(profile.tier).to.equal(1)`) with no named constants, making failures unreadable. | **Fixed** — all enum values named |
+| T3 | **MEDIUM** | SubAuction `acceptResult` limitation was documented as a test name rather than a skipped test with a bug report comment. | **Fixed** — now properly documented |
+| T4 | **MEDIUM** | No `loadFixture` usage — every test mutated shared global state, so running tests in any order other than the original produced false failures. | **Fixed** — all suites use `loadFixture` |
+
+---
 
 ---
 
