@@ -526,7 +526,15 @@ export class OrchestratorAgent {
       this.contracts.auction?.getJob?.bind(this.contracts.auction);
     if (typeof getActiveJobs !== "function" || typeof getJob !== "function") return;
 
-    const activeJobIds = await getActiveJobs();
+    let activeJobIds;
+    try {
+      activeJobIds = await getActiveJobs();
+    } catch (err) {
+      this.log.warn(
+        `[Orchestrator] bootstrapWinnerSelection: getActiveJobs failed (${err instanceof Error ? err.message : String(err)}) — falling back to local job map`
+      );
+      activeJobIds = [...this.jobs.keys()];
+    }
     if (!Array.isArray(activeJobIds) || activeJobIds.length === 0) return;
     const nowSec = Math.floor(Date.now() / 1000);
     let scheduled = 0;
@@ -2546,10 +2554,9 @@ export class OrchestratorAgent {
       activeJobIds = await getActiveJobs();
     } catch (err) {
       this.log.warn(
-        `[Orchestrator] Active job reconcile skipped: failed to read getActiveJobs: ` +
-        `${err instanceof Error ? err.message : String(err)}`
+        `[Orchestrator] getActiveJobs failed (${err instanceof Error ? err.message : String(err)}) — falling back to local job map for reconcile`
       );
-      return;
+      activeJobIds = [...this.jobs.keys()];
     }
 
     const nowSec = Math.floor(Date.now() / 1000);

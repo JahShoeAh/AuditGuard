@@ -136,69 +136,11 @@ The core pipeline is working end-to-end on Hedera testnet. Infrastructure is fun
 
 ---
 
-## Incomplete Feature Detail
+## Known Limitations
 
-### P0 — StakingManager ↔ DelegatedStaking
-- `StakingManager.propagateSlash()` calls `IDelegatedStaking.propagateSlash()` (line 577) wrapped in a try/catch — fails silently
-- Root cause: StakingManager was deployed before `setDelegatedStaking()` setter existed in the ABI
-- DelegatedStaking deployed in a later phase but StakingManager can never be pointed at it
-- **Options:** (A) upgrade StakingManager via proxy, (B) deploy mediator wrapper, (C) manual EOA relay
-
-### P0 — Static Analysis Service Runners
-- `packages/static-analysis-service/src/runners/` has `slither.js`, `aderyn.js`, `semgrep.js` — implementation is minimal
-- Service expects `sourceDir` to be passed in — never fetches source from Etherscan/Sourcify automatically
-- Without tools installed + source available, all static analysis is mock data
-- Static analysis agent falls back to `generateFindings()` when service returns empty
-
-### P0 — Treasury Contract
-- Deployed at `0xC4736e92fbd50663b0C1bd68d7Bf6cdC1FC04D9e`
-- Never instantiated in `orchestrator/src/contract-client.js`
-- `config.json` `day3` section defines slash rates and fee splits that never flow to the contract
-- Payment settlement bypasses treasury entirely
-
-### P0 — Events API Schema Gap
-- Current tables: `audit_reports`, `audit_events`, `bid_skips`, `pending_findings`
-- Missing tables: `jobs`, `agents`, `staking_events`, `slash_events`, `schedules`
-- Dashboard falls back to querying HCS and on-chain RPC directly because the API doesn't cache agent/job state
-
-### P1 — Report Agent → PostgreSQL
-- Reports written to `agents/data/reports/<jobId>.md` (filesystem)
-- `report_files` Docker volume mounts this directory — survives container restart
-- But reports are not inserted into `audit_reports` table by the report agent itself (only orchestrator inserts via `report-db.js` after settlement)
-- Dashboard can't retrieve a report until orchestrator settlement runs
-
-### P1 — iNFT Mint Triggers
-- `inft-bridge.js` only exposes `updateReputation()` and `markJobCompleted()`
-- No calls to `mintAuditJobNFT()` when `createAuditJob()` succeeds
-- No calls to `mintAgentProfileINFT()` when `AgentRegistered` event fires
-- No calls to `mintContractHealthNFT()` on first successful audit of a contract
-- `AGENT_SERIALS_JSON` and `JOB_SERIALS_JSON` env vars must be populated manually
-
-### P1 — DataMarketplace Fuzzer Listings
-- Static analysis agent calls `createListing()` after findings submission ✅
-- Fuzzer agent subscribes to `DATA_LISTING_CREATED` but never calls `createListing()` ❌
-- Dashboard `ReportMarketplace.jsx` pulls from `/api/marketplace/listings` (PG cache) — no on-chain reconciliation
-
-### P2 — AuditScheduler UI + Routes
-- Contract loaded in orchestrator, `AuditTriggered` event is listened to
-- No events-api routes: `POST /scheduler/schedule`, `GET /scheduler/schedules/:contract`
-- No dashboard UI for contract owners to create/manage schedules
-- Vault creation flow has no hook into scheduler
-
-### P2 — GuardExchange + HbarPool
-- GuardExchange: `0xD6133Edab4D08D2a66f604217B36E342bc4338B7` — `buyGuard()`, `sellGuard()` implemented
-- HbarPool: `0x9102Dc653a0F148B5a8FFbc6a9b2247E596c9CD5` — `hbarToGuard()`, `guardToHbar()` implemented
-- Zero references in ContractClient, orchestrator, agents, or dashboard
-
-### P2 — VaultFactory
-- Deployed at `0xf8EdB1F55894F6b196245f4a46bDe9e4fb04a750`
-- In config.json; never called anywhere
-- Intended to let contract owners create escrow vaults for audit budgets
-
-### P3 — Fuzzer Mock Findings
-- `generateFindings()` in `agents/fuzzer/index.ts` creates synthetic findings with random severity
-- No metadata flag distinguishing real fuzzer output from mock
-- Mock findings affect reputation scoring in `PaymentSettlement`
+### One-time setup scripts must run once on the live server
+- `npm run wire:delegated-staking` — points StakingManager at DelegatedStaking
+- `npm run setup:treasury` — wires Treasury fee splits
 
 ---
 

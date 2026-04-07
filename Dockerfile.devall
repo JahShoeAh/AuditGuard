@@ -16,13 +16,19 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Solidity analysis tools in an isolated venv so they don't clash with
-# system Python packages.  slither-analyzer and semgrep cover the two primary
-# analysis runners.  solc-select installs the solc binary that slither needs.
+# system Python packages.
+#   slither-analyzer  — static analysis (used by static-analysis-service)
+#   semgrep           — pattern-based analysis (used by static-analysis-service)
+#   solc-select       — installs the solc binary that slither needs
+#   mythril           — symbolic execution fuzzer (used by fuzzer-service via `myth` CLI)
+#                       Pinned z3-solver is shared and compatible with both slither and mythril.
 RUN python3 -m venv /opt/analysis-tools \
   && /opt/analysis-tools/bin/pip install --no-cache-dir \
        slither-analyzer==0.11.3 \
        solc-select \
        semgrep \
+       "z3-solver>=4.12.1,<4.13.0" \
+       mythril \
   && /opt/analysis-tools/bin/solc-select install 0.8.24 \
   && /opt/analysis-tools/bin/solc-select use 0.8.24
 
