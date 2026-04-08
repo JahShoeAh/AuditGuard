@@ -9,6 +9,7 @@ export {
 export type { PaymentItem, ListingDetails, AuctionDetails } from "./contract-client.js";
 export {
   computeLiveBid,
+  computeScoutedBid,
   isRetriableBidFailure,
   normalizeBidFailureReasonCode,
 } from "./bid-policy.js";
@@ -23,6 +24,7 @@ export {
 export type {
   StrategyBid,
   BidPolicy,
+  RebidPolicy,
   ComputedLiveBid,
   BidSkipDecision,
 } from "./bid-policy.js";

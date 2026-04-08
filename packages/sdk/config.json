@@ -16,20 +16,20 @@
       "evmAddress": "0x97Bb8ac0f6075496b85068bd7C4e7549aab95899"
     },
     "auctionContract": {
-      "id": "0.0.8d186e672026fe39fe3265f9737d8884b4a18604",
-      "evmAddress": "0x8D186E672026FE39FE3265f9737D8884B4A18604"
+      "id": "0.0.8547739",
+      "evmAddress": "0xbCe2fde4cf1F6d9fde62ed33Cc3E4B1e7C1F4F87"
     },
     "subAuction": {
-      "id": "0.0.7977479",
-      "evmAddress": "0x9180cc0FE26C48B76C2Ae742b0DFE21f7A0C7d08"
+      "id": "0.0.8547793",
+      "evmAddress": "0xc17775beF3784055080d1d2a5b7e13dDa56176f0"
     },
     "dataMarketplace": {
       "id": "0.0.8000928",
       "evmAddress": "0xeB85dCAD49cee215EDF9244A4006439DAdEF8e7e"
     },
     "paymentSettlement": {
-      "id": "0.0.7977485",
-      "evmAddress": "0x191c385DF72E110d1D8Db3f65a149E014516BfDA"
+      "id": "0.0.8547795",
+      "evmAddress": "0x026C5C7403fe1d379BF83DFabeD8F304fa7eE91b"
     },
     "vaultFactory": {
       "id": "0.0.7977489",
@@ -86,7 +86,29 @@
       "deployer": "0x80e6576E69ad55E9AA75FBc627555762F52040F2"
     }
   ],
-  "seededAgents": {},
+  "seededAgents": {
+    "scanner-001": {
+      "evmAddress": "0x67a82602623d061022FC56661989859c514b8623"
+    },
+    "static-analysis-047": {
+      "evmAddress": "0x4E76026B870bE6B981dba5b67EfbaFA99DDd982C"
+    },
+    "fuzzer-012": {
+      "evmAddress": "0xf28cFD8e2D14B9A7e74658ACab633eAe1cb16502"
+    },
+    "llm-contextual-003": {
+      "evmAddress": "0x8Fa8Aa2b692A2F1F9402cCaDf2BD5da6c772A905"
+    },
+    "dependency-analyzer-008": {
+      "evmAddress": "0x9d62dc53Df81120bF69Ed80C8007f2175B5f2255"
+    },
+    "report-aggregator-001": {
+      "evmAddress": "0xC5B2E47A1a53D6664EF37049BC89AA755eFC6798"
+    },
+    "alert-sentinel-001": {
+      "evmAddress": "0x7E96EB3e11cc76145255fCFB45e126AF6a6f3511"
+    }
+  },
   "demoVault": {
     "contractAddress": "0x000000000000000000000000000000000000dEaD",
     "budget": 0,

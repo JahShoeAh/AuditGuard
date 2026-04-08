@@ -85,6 +85,7 @@ export const CONFIG = {
     vaultFactory: sdk?.contracts?.vaultFactory?.evmAddress ?? "",
   },
   guardToken: {
+    address: sdk?.guardTokenEvmAddress ?? "0x000000000000000000000000000000000079b9d9",
     decimals: 8,
   },
   // Data marketplace auto-buy
@@ -96,7 +97,7 @@ export const CONFIG = {
   subAuction: {
     paymentGuard: 3,          // pay 3 GUARD to dependency agent
     slaSeconds: 15 * 60,      // 15 min SLA
-    auctionDurationSeconds: 5 * 60,
+    auctionDurationSeconds: getPositiveIntEnv("ORCHESTRATOR_SUB_AUCTION_DURATION_SECONDS", 5 * 60),
   },
   payments: {
     baseGuard: 10,            // legacy single-settlement fallback

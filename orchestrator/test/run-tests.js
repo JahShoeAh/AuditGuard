@@ -45,6 +45,8 @@ function makeMocks(opts = {}) {
   const paymentSettlement = {
     settleJob: async () => {},
     isJobSettled: async () => settledOnChain,
+    calculateSettlementPreview: async () => ({ totalDisbursed: 1000n }),
+    depositSettlementFunds: async () => {},
   };
 
   const hcs = {
@@ -99,6 +101,10 @@ function makeMocks(opts = {}) {
     createSubAuction: async (...args) => subAuction.createSubAuction(...args),
     acceptSubResult: async (...args) => subAuction.acceptResult(...args),
     settleJob: async (...args) => paymentSettlement.settleJob(...args),
+    calculateSettlementPreview: async (...args) => paymentSettlement.calculateSettlementPreview(...args),
+    getGuardBalance: async () => BigInt(1e15),
+    ensureGuardAllowance: async () => null,
+    depositSettlementFunds: async (...args) => paymentSettlement.depositSettlementFunds(...args),
     agentRegistry: {
       isActiveAgent: async () => {
         if (activeCheckThrows) throw new Error("transient rpc failure");
@@ -246,7 +252,9 @@ async function testDiscoveryNotBlockedByStaleRehydratedJob() {
 
 async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
   const previousRetries = process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
+  const previousFilterActive = process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE;
   process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = "1";
+  process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE = "true";
   try {
     const log = mockLog();
     const roster = new Roster(log);
@@ -281,6 +289,8 @@ async function testInviteFilterFailClosedOnUnavailableActiveCheck() {
   } finally {
     if (previousRetries == null) delete process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES;
     else process.env.ORCHESTRATOR_ACTIVE_CHECK_RETRIES = previousRetries;
+    if (previousFilterActive == null) delete process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE;
+    else process.env.ORCHESTRATOR_FILTER_INVITES_ONCHAIN_ACTIVE = previousFilterActive;
   }
 }
 

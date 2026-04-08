@@ -53,7 +53,7 @@ describe("buildAuctionRows", () => {
       },
       bids: {},
       winners: {
-        "2": { agents: ["0xabc"], winnersAt: (nowSec * 1000) - 21_000 },
+        "2": { agents: ["0xabc"], winnersAt: (nowSec * 1000) - 601_000 },
       },
       activeJobIds: [2n],
       useMockEvents: false,
@@ -95,7 +95,7 @@ describe("buildAuctionRows", () => {
       },
       bids: {},
       winners: {
-        "52": { agents: ["0xabc"], winnersAt: (nowSec * 1000) - 25_000 },
+        "52": { agents: ["0xabc"], winnersAt: (nowSec * 1000) - 601_000 },
       },
       activeJobIds: [],
       useMockEvents: false,
@@ -322,7 +322,7 @@ describe("buildAuctionRows", () => {
           contractType: "vault",
           auctionDeadline: nowSec - 30,
           terminalStatus: "completed",
-          endedAt: (nowSec * 1000) - 22_000,
+          endedAt: (nowSec * 1000) - 601_000,
         },
       },
       bids: {},

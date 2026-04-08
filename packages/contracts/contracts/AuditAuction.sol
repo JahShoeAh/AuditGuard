@@ -134,6 +134,16 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
         uint256 estimatedCompletionTime
     );
 
+    /// @notice Emitted when an agent lowers their existing bid during an open auction.
+    event BidUpdated(
+        uint256 indexed jobId,
+        address indexed agent,
+        uint256 oldBidAmount,
+        uint256 newBidAmount,
+        uint256 collateralLocked,
+        uint256 reputationAtBid
+    );
+
     /// @notice Emitted when winning bids are selected and auction moves to execution.
     event WinnersSelected(uint256 indexed jobId, address[] winners, uint256 totalEscrowed, uint256 platformFee);
 
@@ -163,6 +173,10 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
 
     /// @notice Emitted when the AuditScheduler contract is registered.
     event AuditSchedulerSet(address indexed auditScheduler);
+
+    /// @notice Emitted when an AgentRegistry call fails (e.g. contract not yet authorized in registry).
+    /// @dev Non-fatal: payment / slash still proceeds. Orchestrator should handle reputation update off-chain.
+    event RegistryCallFailed(uint256 indexed jobId, address indexed agent, string reason);
 
     /// @dev Restricts execution to the configured orchestrator.
     modifier onlyOrchestrator() {
@@ -305,6 +319,60 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
             specialization,
             estimatedCompletionTime
         );
+    }
+
+    /// @notice Lower an existing bid during an open auction.
+    /// @dev Only the original bidding agent can call this. The new bid amount must be
+    ///      strictly lower than the current amount (reverse auction — lower wins on price).
+    ///      Collateral may be adjusted: surplus is refunded, deficit is charged. The bid
+    ///      timestamp is refreshed so the orchestrator can observe the update time.
+    /// @param jobId Job to update bid for.
+    /// @param newBidAmount New (lower) bid amount in GUARD wei.
+    /// @param newCollateralAmount New collateral in GUARD wei (>= MIN_BID_COLLATERAL).
+    /// @param newEstimatedCompletionTime Updated ETA in seconds (0 = keep existing).
+    function updateBid(
+        uint256 jobId,
+        uint256 newBidAmount,
+        uint256 newCollateralAmount,
+        uint256 newEstimatedCompletionTime
+    ) external nonReentrant whenNotPaused {
+        AuditJob storage job = jobs[jobId];
+        require(job.jobId != 0, "AuditAuction: job does not exist");
+        require(job.status == JobStatus.AUCTION_OPEN, "AuditAuction: job not open");
+        require(block.timestamp < job.auctionDeadline, "AuditAuction: auction expired");
+        require(hasAgentBid[jobId][msg.sender], "AuditAuction: no existing bid");
+        require(newCollateralAmount >= MIN_BID_COLLATERAL, "AuditAuction: collateral below minimum");
+        require(newBidAmount <= job.budgetAvailable, "AuditAuction: bid exceeds budget");
+
+        (bool found, uint256 idx) = _findBidIndex(jobId, msg.sender);
+        require(found, "AuditAuction: bid not found");
+
+        AgentBid storage existingBid = _jobBids[jobId][idx];
+        require(existingBid.status == BidStatus.PENDING, "AuditAuction: bid already settled");
+        require(newBidAmount < existingBid.bidAmount, "AuditAuction: new bid must be lower");
+
+        uint256 oldBidAmount = existingBid.bidAmount;
+        uint256 oldCollateral = existingBid.collateralLocked;
+
+        // Settle collateral difference before mutating state.
+        if (newCollateralAmount > oldCollateral) {
+            _transferGuard(msg.sender, address(this), newCollateralAmount - oldCollateral);
+        } else if (newCollateralAmount < oldCollateral) {
+            _transferGuard(address(this), msg.sender, oldCollateral - newCollateralAmount);
+        }
+
+        // Refresh reputation snapshot at update time.
+        uint256 reputationAtUpdate = IAgentRegistry(agentRegistry).getAgentReputation(msg.sender);
+
+        existingBid.bidAmount = newBidAmount;
+        existingBid.collateralLocked = newCollateralAmount;
+        existingBid.reputationAtBid = reputationAtUpdate;
+        existingBid.timestamp = block.timestamp;
+        if (newEstimatedCompletionTime > 0) {
+            existingBid.estimatedCompletionTime = newEstimatedCompletionTime;
+        }
+
+        emit BidUpdated(jobId, msg.sender, oldBidAmount, newBidAmount, newCollateralAmount, reputationAtUpdate);
     }
 
     /// @notice Calculates transparent bid score for ranking (0..10000+ with tier bonus).
@@ -475,7 +543,13 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
         isWinnerPaid[jobId][agent] = true;
         paidWinnerCount[jobId] += 1;
 
-        IAgentRegistry(agentRegistry).recordJobCompletion(agent, validFindings, falsePos, falseNeg);
+        try IAgentRegistry(agentRegistry).recordJobCompletion(agent, validFindings, falsePos, falseNeg) {
+            // metrics updated
+        } catch Error(string memory reason) {
+            emit RegistryCallFailed(jobId, agent, reason);
+        } catch {
+            emit RegistryCallFailed(jobId, agent, "unknown");
+        }
 
         emit EscrowReleased(jobId, agent, payment, bonus, collateralReturned);
     }
@@ -523,7 +597,13 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
             _transferGuard(address(this), agent, remainder);
         }
 
-        IAgentRegistry(agentRegistry).slashAgent(agent, slashBasisPoints);
+        try IAgentRegistry(agentRegistry).slashAgent(agent, slashBasisPoints) {
+            // registry stake slashed
+        } catch Error(string memory reason) {
+            emit RegistryCallFailed(jobId, agent, reason);
+        } catch {
+            emit RegistryCallFailed(jobId, agent, "unknown");
+        }
 
         emit AgentSlashed(jobId, agent, slashedAmount, slashBasisPoints);
     }

@@ -24,6 +24,7 @@ export function buildAuctionRows({
   bids,
   winners,
   activeJobIds,
+  activeJobsQueryFailed = false,
   useMockEvents,
   nowSec = Math.floor(Date.now() / 1000),
 }) {
@@ -36,11 +37,14 @@ export function buildAuctionRows({
   const WINNER_PENDING_GRACE_MS = Number.isFinite(winnerPendingGraceRaw)
     ? Math.max(0, winnerPendingGraceRaw)
     : 20_000;
-  const winnerSelectedTtlRaw = Number(import.meta.env.VITE_WINNER_SELECTED_TTL_MS || 20_000);
+  const winnerSelectedTtlRaw = Number(import.meta.env.VITE_WINNER_SELECTED_TTL_MS || 600_000);
   const WINNER_SELECTED_TTL_MS = Number.isFinite(winnerSelectedTtlRaw)
     ? Math.max(0, winnerSelectedTtlRaw)
-    : 20_000;
+    : 600_000;
   const CLOSED_WITH_BIDS_GRACE_MS = Math.max(WINNER_PENDING_GRACE_MS, 120_000);
+  // When getActiveJobs() is broken (e.g., 600+ active jobs overflow), fall back to a
+  // generous window so expired auctions stay visible until winners are confirmed.
+  const INACTIVE_FALLBACK_GRACE_MS = Math.max(CLOSED_WITH_BIDS_GRACE_MS, 600_000);
   const nowMs = nowSec * 1000;
 
   // Start from store's activeJobs (populated by events or mock)
@@ -92,9 +96,8 @@ export function buildAuctionRows({
     if (winnerData) {
       // Winners should remain visible briefly after selection, then disappear.
       const winnerTsMs = normalizeTimestampMs(winnerData.winnersAt)
-        ?? normalizeTimestampMs(job.endedAt);
-      // Guard gate: if winner timestamp is unavailable, fail closed to avoid indefinite cards.
-      if (winnerTsMs == null) return false;
+        ?? normalizeTimestampMs(job.endedAt)
+        ?? nowMs;  // Fail open: if timestamp unknown, treat as just-selected
       return (nowMs - winnerTsMs) <= WINNER_SELECTED_TTL_MS;
     }
 
@@ -116,6 +119,9 @@ export function buildAuctionRows({
         const elapsedMs = nowMs - deadlineMs;
         // Guard gate: if bids were observed, allow a longer hydration window for winner propagation.
         if (hasObservedBids && elapsedMs <= CLOSED_WITH_BIDS_GRACE_MS) return true;
+        // When getActiveJobs() is known to have failed (e.g., 600+ active jobs overflow),
+        // keep expired jobs visible for a longer window so cards don't vanish before winners.
+        if (activeJobsQueryFailed && elapsedMs <= INACTIVE_FALLBACK_GRACE_MS) return true;
         // Guard gate: keep just-expired auctions visible briefly so winner hydration
         // from event pipelines cannot race with card removal.
         return elapsedMs <= WINNER_PENDING_GRACE_MS;
@@ -182,7 +188,7 @@ export function useAuctionData() {
   const activeJobsPollMs = Number(import.meta.env.VITE_ACTIVE_JOBS_POLL_MS || 3_000);
 
   // Poll for active job IDs from the contract (live mode only)
-  const { data: activeJobIds } = useContractRead(
+  const { data: activeJobIds, isError: activeJobsQueryFailed } = useContractRead(
     useMockEvents ? null : auctionContract,
     'getActiveJobs',
     [],
@@ -213,10 +219,11 @@ export function useAuctionData() {
       bids,
       winners,
       activeJobIds: normalizedActiveJobIds,
+      activeJobsQueryFailed: !!activeJobsQueryFailed,
       useMockEvents,
       nowSec,
     });
-  }, [activeJobs, bids, winners, normalizedActiveJobIds, useMockEvents, nowSec]);
+  }, [activeJobs, bids, winners, normalizedActiveJobIds, activeJobsQueryFailed, useMockEvents, nowSec]);
 
   return {
     auctions,

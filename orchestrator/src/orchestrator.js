@@ -1457,6 +1457,15 @@ export class OrchestratorAgent {
       });
       return;
     }
+    // Minimum risk gate — skip low-risk contracts to conserve HBAR
+    const minRisk = Number(process.env.ORCHESTRATOR_MIN_RISK_SCORE ?? 0);
+    if (minRisk > 0 && Number(riskScore ?? 0) < minRisk) {
+      this.log.info(
+        `Discovery skipped: risk ${riskScore} < ORCHESTRATOR_MIN_RISK_SCORE ${minRisk} for ${String(contractAddress).slice(0, 12)}…`
+      );
+      return;
+    }
+
     this.markDiscoverySeen(contractAddress);
 
     let jobId = "";
@@ -2247,8 +2256,46 @@ export class OrchestratorAgent {
       return;
     }
 
+    // Compute exact GUARD needed via preview (accounts for platform fee).
+    let totalDisbursed;
+    try {
+      const preview = await this.contracts.calculateSettlementPreview(
+        this.toChainJobId(jobId),
+        payments,
+        reportAgent
+      );
+      totalDisbursed = preview.totalDisbursed;
+    } catch (err) {
+      this.log.warn(`Settlement skipped for job ${jobId}: preview failed — ${err}`);
+      return;
+    }
+
+    if (!totalDisbursed || totalDisbursed === 0n) {
+      this.log.warn(`Settlement skipped for job ${jobId}: zero totalDisbursed`);
+      return;
+    }
+
+    // Guard balance check before attempting on-chain operations.
+    try {
+      const guardBalance = await this.contracts.getGuardBalance(this.orchestratorAddress);
+      if (guardBalance < totalDisbursed) {
+        this.log.warn(
+          `Settlement skipped for job ${jobId}: insufficient GUARD ` +
+          `(have ${guardBalance}, need ${totalDisbursed})`
+        );
+        return;
+      }
+    } catch (err) {
+      this.log.warn(`Settlement: GUARD balance check failed for job ${jobId}: ${err}`);
+      // Proceed anyway — the settleJob call itself will revert if underfunded.
+    }
+
     try {
       await this.ensureOrchestratorOperationalHbar("settle_job", { force: true });
+      // Approve PaymentSettlement to pull GUARD from the orchestrator wallet,
+      // then deposit the exact settlement amount into the contract.
+      await this.contracts.ensureGuardAllowance(CONFIG.contracts.paymentSettlement, totalDisbursed);
+      await this.contracts.depositSettlementFunds(totalDisbursed);
       await this.contracts.settleJob(
         this.toChainJobId(jobId),
         payments,
@@ -3262,6 +3309,7 @@ export class OrchestratorAgent {
     } catch (err) {
       this.log.error(`[SlashRelay] propagateSlash failed for agent=${agent}: ${err.message}`);
     }
+  }
 
   scheduledEnrichmentQueueKey(contractAddress, scheduleAddress) {
     return `${String(contractAddress || "").toLowerCase()}::${String(scheduleAddress || "").toLowerCase()}`;

@@ -21,3 +21,4 @@ agents/dist/
 packages/events-api/data/events.db
 packages/events-api/data/events.db-shm
 packages/events-api/data/events.db-wal
+/agents/data

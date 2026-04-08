@@ -4,6 +4,7 @@ import {
   ListingCategory,
   CONFIG,
   computeLiveBid,
+  computeScoutedBid,
   ensureBidCollateralBalance,
   getBidCollateralTopUpConfig,
   ensureOperationalHbar,
@@ -65,8 +66,14 @@ let totalWins = 0;
 const PRICING_ALPHA = 0.3; // EMA smoothing factor
 const bidInFlightJobs = new Set<string>();
 const bidSubmittedJobs = new Set<string>();
+// Lowest competitor bid observed per job during the scouting window.
+const competitorBids = new Map<string, number>();
 const BID_DEADLINE_SAFETY_MARGIN_MS = Number(process.env.BID_DEADLINE_SAFETY_MARGIN_MS ?? "15000");
 const BID_SUBMIT_TIMEOUT_MS = Number(process.env.BID_SUBMIT_TIMEOUT_MS ?? "20000");
+const MAX_BID_FRACTION_OF_BUDGET = Math.max(
+  0,
+  Math.min(1, Number(process.env.MAX_BID_FRACTION_OF_BUDGET ?? "0.25"))
+);
 
 type BidQueueTask = {
   jobId: string;
@@ -600,10 +607,10 @@ async function main() {
       });
       return;
     }
-    const finalBid = computed.bid;
+    let finalBid = computed.bid;
     log.info(
-      `AUCTION_INVITE for job #${jobId} — bidding ${finalBid.amount} GUARD ` +
-      `(collateral ${finalBid.collateral} GUARD)`
+      `AUCTION_INVITE for job #${jobId} — initial bid ${finalBid.amount} GUARD ` +
+      `(random scouting window, floor ${(MAX_BID_FRACTION_OF_BUDGET * 100).toFixed(0)}% of budget)`
     );
 
     const strictLiveBid = STRICT_LIVE && !DEMO_MODE;
@@ -770,10 +777,37 @@ async function main() {
             alreadyBidOnChain = await contracts.hasAgentBid(jobId, wallet.evmAddress);
             if (alreadyBidOnChain) return;
 
-            // Add jitter to avoid race conditions between competing agents.
-            const jitter = randomInt(1000, 5000);
-            log.info(`Waiting ${jitter}ms jitter before bidding...`);
-            await sleep(jitter);
+            // Dynamic scouting window: random(0, deadline/2 - safety_margin).
+            {
+              const snap = await getBidWindowSnapshot(contracts, jobKey, deadlineHintSec);
+              if (snap.reasonCode !== "ok") return;
+              const maxScoutMs = Math.max(
+                0,
+                Math.floor(snap.remainingMs / 2) - BID_DEADLINE_SAFETY_MARGIN_MS
+              );
+              const scoutMs = maxScoutMs > 0 ? randomInt(0, maxScoutMs) : 0;
+              if (scoutMs > 0) {
+                log.info(`Scouting for ${(scoutMs / 1000).toFixed(1)}s (${(snap.remainingMs / 1000).toFixed(0)}s remaining)...`);
+                await sleep(scoutMs);
+              }
+            }
+
+            // Recompute bid using any competitor data collected during the window.
+            const lowestCompetitorBid = competitorBids.get(jobKey) ?? null;
+            const scoutedResult = computeScoutedBid(bid, budget, lowestCompetitorBid, {
+              ...CONFIG.bidPolicy,
+              minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard),
+              maxBidFractionOfBudget: MAX_BID_FRACTION_OF_BUDGET,
+            });
+            if (scoutedResult.bid) {
+              if (lowestCompetitorBid != null) {
+                log.info(
+                  `Scouted: adjusted bid ${finalBid.amount} → ${scoutedResult.bid.amount} GUARD ` +
+                  `(competitor low: ${lowestCompetitorBid} GUARD)`
+                );
+              }
+              finalBid = scoutedResult.bid;
+            }
 
             const maxAttempts = 3;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -982,6 +1016,7 @@ async function main() {
 
     pendingJobs.delete(jobKey);
     bidSubmittedJobs.delete(jobKey);
+    competitorBids.delete(jobKey);
 
     if (!isWinner) {
       log.info(`LOST auction for job #${jobKey}; cleared local bid state`);
@@ -1009,8 +1044,24 @@ async function main() {
     const jobKey = jobId.toString();
     const clearedPending = pendingJobs.delete(jobKey);
     const clearedSubmittedBid = bidSubmittedJobs.delete(jobKey);
+    competitorBids.delete(jobKey);
     if (clearedPending || clearedSubmittedBid) {
       log.info(`Job #${jobKey} cancelled on-chain; cleared local bid state`);
+    }
+  });
+
+  // Observe competitor bids during the scouting window.
+  hcs.subscribeAuditLog((msg: HCSMessage) => {
+    if (msg.type !== "BID_SUBMITTED" || msg.agentId === AGENT_ID) return;
+    const { jobId, bidAmount } = (msg as any).payload ?? {};
+    const jobKey = String(jobId ?? "");
+    if (!bidInFlightJobs.has(jobKey) && !bidSubmittedJobs.has(jobKey)) return;
+    const amount = Number(bidAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const current = competitorBids.get(jobKey);
+    if (current == null || amount < current) {
+      competitorBids.set(jobKey, amount);
+      log.info(`Scouted competitor bid for job #${jobKey}: ${amount} GUARD (from ${msg.agentId})`);
     }
   });
 

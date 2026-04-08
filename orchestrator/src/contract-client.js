@@ -16,6 +16,12 @@ const ABI_DIR = join(__dirname, "..", "..", "packages", "sdk", "abis");
 const DEFAULT_HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
 const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 
+const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+
 function loadABI(name) {
   const p = join(ABI_DIR, `${name}.json`);
   const raw = JSON.parse(readFileSync(p, "utf-8"));
@@ -112,6 +118,7 @@ export class ContractClient {
     this.subAuction = new ethers.Contract(subAuctionAddress, loadABI("SubAuction"), wallet);
     this.dataMarketplace = new ethers.Contract(dataMarketplaceAddress, loadABI("DataMarketplace"), wallet);
     this.paymentSettlement = new ethers.Contract(paymentSettlementAddress, loadABI("PaymentSettlement"), wallet);
+    this.guardToken = new ethers.Contract(assertAddress(CONFIG.guardToken.address, "guardToken"), ERC20_ABI, wallet);
     this.agentRegistry = new ethers.Contract(agentRegistryAddress, loadABI("AgentRegistry"), wallet);
     this.budgetVault = new ethers.Contract(budgetVaultAddress, loadABI("AuditBudgetVault"), wallet);
     this.fastWinnerPathEnabled = (process.env.ORCHESTRATOR_FAST_WINNER_PATH_ENABLED ?? "false") === "true";
@@ -362,6 +369,48 @@ export class ContractClient {
       async () => this.paymentSettlement.settleJob(jobId, payments, reportAgent),
       "normal"
     );
+  }
+
+  async getGuardBalance(address) {
+    return this.guardToken.balanceOf(address);
+  }
+
+  async getGuardAllowance(owner, spender) {
+    return this.guardToken.allowance(owner, spender);
+  }
+
+  /**
+   * Ensures the orchestrator wallet has approved `spender` to spend at least
+   * `minRequired` GUARD. If the existing allowance is sufficient, returns null.
+   * Otherwise submits an approve tx and waits for receipt.
+   *
+   * Hedera HTS ERC-20 frequently rejects MaxUint256 approvals; cap at int64 max
+   * while leaving enough headroom for multiple settlements.
+   */
+  async ensureGuardAllowance(spender, minRequired) {
+    const current = await this.getGuardAllowance(this.walletAddress, spender);
+    if (current >= minRequired) return null;
+    const INT64_MAX = (1n << 63n) - 1n;
+    const desired = minRequired * 100n;
+    const capped = desired > INT64_MAX ? INT64_MAX : desired;
+    const tx = await this._enqueueWrite(() => this.guardToken.approve(spender, capped));
+    return tx.wait();
+  }
+
+  /**
+   * Transfers `amount` GUARD from the orchestrator wallet into the PaymentSettlement
+   * contract so that settleJob() can disburse to recipients.
+   * Requires ensureGuardAllowance to have been called first.
+   */
+  async depositSettlementFunds(amount) {
+    const tx = await this._enqueueWrite(
+      () => this.paymentSettlement.depositSettlementFunds(amount)
+    );
+    return tx.wait();
+  }
+
+  async calculateSettlementPreview(jobId, payments, reportAgent) {
+    return this.paymentSettlement.calculateSettlementPreview(jobId, payments, reportAgent);
   }
 
   async propagateDelegatedSlash(agentAddress, slashBps) {

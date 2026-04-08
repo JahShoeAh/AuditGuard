@@ -16,7 +16,7 @@ const EVENTS_API_BASE_URL = (
 const HCS_POLL_MS = 2_000;       // balanced-fast default for HCS topics
 const CONTRACT_POLL_MS = 2_000;  // balanced-fast default for on-chain events
 const MIN_POLL_MS = 500;
-const DEFAULT_SOURCE_MODE = 'onchain_strict';
+const DEFAULT_SOURCE_MODE = 'live';
 const DEFAULT_HCS_REPLAY_MODE = 'from_now';
 const EVENT_FETCH_LIMIT = 500;
 
@@ -756,7 +756,7 @@ export class EventListenerService {
     let displayEntry = entry;
     let skipDisplayEntry = false;
     if (parsedData.type === 'BID_SUBMITTED') {
-      const agentName = payload.agentId ?? 'unknown';
+      const agentName = parsedData.agentId ?? payload.agentId ?? 'unknown';
       const bidAmount = parseDisplayBidAmount(payload.bidAmount);
       if (!bidAmount) {
         this._addLogEntry({
@@ -927,7 +927,7 @@ export class EventListenerService {
       if (!strictOnchain) {
         this.store.addBid(jobId, {
           agent: payload.evmAddress ?? payload.agentAddress ?? payload.agentId,
-          agentName: payload.agentId ?? 'unknown',
+          agentName: parsedData.agentId ?? payload.agentId ?? 'unknown',
           bidAmount: bidAmount.value,
           bidFormatted: bidAmount.formatted,
           collateralLocked: payload.collateral ?? 0,
@@ -1280,8 +1280,9 @@ export class EventListenerService {
       const currentBlock = await this.provider.getBlockNumber();
 
       if (this.lastProcessedBlock === null) {
-        // Strict mode starts from the current block to avoid replaying stale auctions.
-        const backfillBlocks = this.sourceMode === 'onchain_strict' ? 0 : 100;
+        // Strict mode backtracks 300 blocks (~10 min on Hedera testnet) so
+        // auctions created before the dashboard loaded are still visible.
+        const backfillBlocks = this.sourceMode === 'onchain_strict' ? 300 : 100;
         this.lastProcessedBlock = this.onlyTestDiscoveries
           ? currentBlock
           : Math.max(0, currentBlock - backfillBlocks);

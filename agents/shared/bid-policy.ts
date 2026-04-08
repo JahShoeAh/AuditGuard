@@ -94,6 +94,88 @@ export function computeLiveBid(
   };
 }
 
+/**
+ * Extends BidPolicy with a configurable floor expressed as a fraction of the job
+ * budget. Agents will not bid below `inviteBudget × maxBidFractionOfBudget` even
+ * when undercutting competitors.
+ *
+ * NOTE: AuditAuction only allows one bid per agent per job. "Competitive bidding"
+ * is therefore implemented as a scouting window — the agent observes competitor
+ * bids on the HCS auditLog topic before submitting its single on-chain bid.
+ */
+export interface RebidPolicy extends BidPolicy {
+  /**
+   * Floor bid as a fraction of job budget (e.g. 0.25 = 25%).
+   * Configurable per-agent via the MAX_BID_FRACTION_OF_BUDGET env var.
+   */
+  maxBidFractionOfBudget: number;
+}
+
+/**
+ * Compute the optimal bid after a scouting window.
+ *
+ * If lowestCompetitorBid is provided and lower than the strategy bid, this
+ * undercuts that value by 5 %, clamped to floor = budget × maxBidFractionOfBudget.
+ * When no competitor data is available, the result is identical to computeLiveBid.
+ */
+export function computeScoutedBid(
+  strategyBid: StrategyBid,
+  inviteBudget: unknown,
+  lowestCompetitorBid: number | null,
+  policy: RebidPolicy
+): { bid?: ComputedLiveBid; skip?: BidSkipDecision } {
+  const normalizedBudget = safeBudget(inviteBudget);
+
+  // Start from the policy-capped base bid (budget cap + collateral floor).
+  const base = computeLiveBid(strategyBid, inviteBudget, policy);
+  if (base.skip || !base.bid) return base;
+
+  let amount = base.bid.amount;
+
+  // Floor: budget × fraction, or 0 when budget is unknown.
+  const floorFraction = Math.max(0, Math.min(1, policy.maxBidFractionOfBudget));
+  const floor =
+    normalizedBudget != null && normalizedBudget > 0
+      ? roundGuard(normalizedBudget * floorFraction)
+      : 0;
+
+  // Undercut lowest observed competitor if they beat us.
+  if (
+    lowestCompetitorBid != null &&
+    lowestCompetitorBid > 0 &&
+    lowestCompetitorBid < amount
+  ) {
+    const undercutAmount = roundGuard(lowestCompetitorBid * 0.95);
+    amount = floor > 0 ? Math.max(floor, undercutAmount) : Math.max(0.01, undercutAmount);
+  }
+
+  if (amount <= 0) {
+    return {
+      skip: {
+        shouldSkip: true,
+        reasonCode: "invalid_bid_amount",
+        reason: "Computed scouted bid amount is not positive",
+      },
+    };
+  }
+
+  const minCollateral = roundGuard(
+    safeGuard(policy.minCollateralGuard) + safeGuard(policy.collateralBufferGuard)
+  );
+  const collateral = Math.max(base.bid.collateral, minCollateral);
+
+  return {
+    bid: {
+      amount,
+      collateral,
+      estimatedTimeSec: base.bid.estimatedTimeSec,
+      amountWei: parseUnits(amount.toFixed(2), 8),
+      collateralWei: parseUnits(collateral.toFixed(2), 8),
+      inviteBudget: normalizedBudget,
+    },
+  };
+}
+
 export function normalizeBidFailureReasonCode(error: unknown): string {
   const message = String(error ?? "").toLowerCase();
 

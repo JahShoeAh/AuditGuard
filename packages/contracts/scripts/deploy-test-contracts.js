@@ -1,31 +1,36 @@
+/**
+ * deploy-test-contracts.js
+ * Deploys InsecureToken, VulnerableGovernance, InsecureMarketplace via Hardhat.
+ * Use this for local Hardhat network. For Hedera testnet use deploy-test-contracts-direct.js.
+ */
 const hre = require("hardhat");
 
 async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log(`Deployer: ${deployer.address}`);
 
-  const Vault1 = await hre.ethers.getContractFactory("VulnerableVault1", deployer);
-  const vault1 = await Vault1.deploy();
-  await vault1.waitForDeployment();
-  console.log(`VulnerableVault1 deployed: ${vault1.target}`);
+  const Token = await hre.ethers.getContractFactory("InsecureToken", deployer);
+  const token = await Token.deploy(hre.ethers.parseEther("1000000"));
+  await token.waitForDeployment();
+  console.log(`InsecureToken deployed: ${token.target}`);
 
-  const Vault2 = await hre.ethers.getContractFactory("VulnerableVault2", deployer);
-  const vault2 = await Vault2.deploy();
-  await vault2.waitForDeployment();
-  console.log(`VulnerableVault2 deployed: ${vault2.target}`);
+  const Governance = await hre.ethers.getContractFactory("VulnerableGovernance", deployer);
+  const governance = await Governance.deploy({ value: hre.ethers.parseEther("0.01") });
+  await governance.waitForDeployment();
+  console.log(`VulnerableGovernance deployed: ${governance.target}`);
 
-  const Vault3 = await hre.ethers.getContractFactory("VulnerableVault3", deployer);
-  const vault3 = await Vault3.deploy();
-  await vault3.waitForDeployment();
-  console.log(`VulnerableVault3 deployed: ${vault3.target}`);
+  const Marketplace = await hre.ethers.getContractFactory("InsecureMarketplace", deployer);
+  const marketplace = await Marketplace.deploy();
+  await marketplace.waitForDeployment();
+  console.log(`InsecureMarketplace deployed: ${marketplace.target}`);
 
   console.log(
     JSON.stringify(
       {
         testContracts: [
-          { key: "vault1", address: vault1.target, deployer: deployer.address },
-          { key: "vault2", address: vault2.target, deployer: deployer.address },
-          { key: "vault3", address: vault3.target, deployer: deployer.address },
+          { key: "insecuretoken",        address: token.target,       deployer: deployer.address },
+          { key: "vulnerablegovernance", address: governance.target,  deployer: deployer.address },
+          { key: "insecuremarketplace",  address: marketplace.target, deployer: deployer.address },
         ],
       },
       null,
@@ -36,8 +41,7 @@ async function main() {
 
 main()
   .then(() => process.exit(0))
-  .catch((err) => {
+  .catch(err => {
     console.error("Deploy test contracts failed:", err.message || err);
     process.exit(1);
   });
-

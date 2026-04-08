@@ -254,6 +254,15 @@ export class ContractClient {
     return this.auction.MIN_BID_COLLATERAL();
   }
 
+  async updateBid(
+    jobId: ChainUint,
+    newAmount: bigint,
+    newCollateral: bigint,
+    estimatedTime: bigint
+  ): Promise<ethers.ContractTransactionResponse> {
+    return this.auction.updateBid(jobId, newAmount, newCollateral, estimatedTime);
+  }
+
   async getCommodityMinStake(): Promise<bigint> {
     return this.agentRegistry.COMMODITY_MIN_STAKE();
   }

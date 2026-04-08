@@ -74,10 +74,12 @@ const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew, index = 0 
       transition={{ type: 'spring', stiffness: 500, damping: 35, delay: isNew ? index * 0.1 : 0 }}
       className="relative rounded px-2.5 py-2 mb-1"
       style={{
-        borderLeft: isWinner ? '2px solid var(--accent-green)' : '2px solid transparent',
-        background: showFlash
-          ? `linear-gradient(90deg, ${agentColor}12 0%, transparent 70%)`
-          : 'transparent',
+        borderLeft: isWinner ? '3px solid var(--accent-green)' : '2px solid transparent',
+        background: isWinner
+          ? 'rgba(34, 197, 94, 0.06)'
+          : showFlash
+            ? `linear-gradient(90deg, ${agentColor}12 0%, transparent 70%)`
+            : 'transparent',
       }}
     >
       {/* Flash highlight for new bids */}
@@ -102,11 +104,19 @@ const BidRow = memo(function BidRow({ bid, isWinner, isDimmed, isNew, index = 0 
             style={{ backgroundColor: agentColor }}
           />
           <span
-            className="text-xs font-semibold truncate font-sans"
-            style={{ color: agentColor }}
+            className="text-xs truncate font-sans"
+            style={{ color: agentColor, fontWeight: isWinner ? 700 : 600 }}
           >
             {bid.agentName || '???'}
           </span>
+          {isWinner && (
+            <span
+              className="text-[9px] font-bold px-1 rounded flex-shrink-0 leading-4"
+              style={{ background: 'var(--accent-green)', color: '#000' }}
+            >
+              WIN
+            </span>
+          )}
         </div>
 
         {/* Center: bid amount — tabular-nums so amounts don't jump */}
