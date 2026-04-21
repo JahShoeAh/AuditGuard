@@ -9,7 +9,11 @@
     "rootDir": ".",
     "resolveJsonModule": true,
     "declaration": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "ethers": ["../node_modules/ethers"],
+      "ethers/*": ["../node_modules/ethers/*"]
+    }
   },
   "include": ["**/*.ts"],
   "exclude": ["node_modules", "dist"]

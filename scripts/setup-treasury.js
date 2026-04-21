@@ -87,6 +87,20 @@ async function main() {
 
   console.log(`Treasury at ${treasuryAddr}`);
 
+  // 0. Associate Treasury with GUARD token so it can receive platform fees
+  try {
+    await sendTx("associateGuardToken", treasury.associateGuardToken());
+    console.log("  ✓ Treasury associated with GUARD token");
+  } catch (err) {
+    // HTS_TOKEN_ALREADY_ASSOCIATED (194) causes a revert on older Hedera nodes;
+    // treat "already associated" reverts as success.
+    if (err.message?.includes("already associated") || err.message?.includes("TOKEN_ALREADY_ASSOCIATED")) {
+      console.log("  ✓ Treasury already associated with GUARD token");
+    } else {
+      throw err;
+    }
+  }
+
   // 1. Authorise fee sources
   for (const [name, addr] of [
     ["PaymentSettlement", paySettleAddr],

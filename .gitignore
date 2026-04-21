@@ -22,3 +22,8 @@ packages/events-api/data/events.db
 packages/events-api/data/events.db-shm
 packages/events-api/data/events.db-wal
 /agents/data
+
+# iNFT runtime state (regenerated on startup)
+packages/inft/data/event-cursor.json
+packages/inft/data/inft-index.json
+packages/inft/data/inft-state.json
