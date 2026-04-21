@@ -23,6 +23,10 @@ const CANONICAL_CONTRACT_TYPES = new Set([
   "staking",
   "bridge",
   "vault",
+  "derivatives",
+  "oracle",
+  "governance",
+  "nft",
   "unknown",
 ]);
 let loggedReportHaikuOverride = false;

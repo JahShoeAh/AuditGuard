@@ -94,7 +94,7 @@ describe("hbar-autotopup", () => {
 
     const sendSpy = vi
       .spyOn(ethers.Wallet.prototype, "sendTransaction")
-      .mockImplementation(async function (tx: ethers.TransactionRequest) {
+      .mockImplementation(async function (this: ethers.Wallet, tx: ethers.TransactionRequest) {
         const from = this.address.toLowerCase();
         const to = String(tx.to).toLowerCase();
         const value = BigInt(tx.value ?? 0);

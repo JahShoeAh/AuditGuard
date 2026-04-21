@@ -22,6 +22,7 @@ contract SubAuction is Ownable, ReentrancyGuard, Pausable {
 
     /// @dev Hedera response code constants.
     int64 internal constant HTS_SUCCESS = 22;
+    int64 internal constant HTS_TOKEN_ALREADY_ASSOCIATED = 194;
 
     /// @notice Status of a sub-job in the nested marketplace lifecycle.
     enum SubJobStatus {
@@ -606,6 +607,17 @@ contract SubAuction is Ownable, ReentrancyGuard, Pausable {
     function setTreasury(address _treasury) external onlyOwner {
         require(_treasury != address(0), "SubAuction: treasury is zero");
         treasury = _treasury;
+    }
+
+    /// @notice Associates this contract with GUARD token through HTS precompile.
+    /// @dev No access restriction — idempotent, costs only a small HBAR fee.
+    ///      Must be called via Hedera SDK (ContractExecuteTransaction) post-deployment.
+    function associateGuardToken() external {
+        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
+        require(
+            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
+            "SubAuction: token association failed"
+        );
     }
 
     /// @notice [Frontend] Pauses state-mutating functions for emergency handling.

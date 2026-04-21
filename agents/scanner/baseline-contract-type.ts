@@ -39,6 +39,29 @@ const SELECTORS: Record<ContractType, string[]> = {
     "ba087652", // harvest
     "d0e30db0", // deposit()
   ],
+  derivatives: [
+    "0a19b14a", // trade
+    "3659cfe6", // upgradeTo (proxy pattern common in perp protocols)
+  ],
+  oracle: [
+    "50d25bcd", // latestAnswer (Chainlink)
+    "8205bf6a", // latestRound
+    "9a6fc8f5", // getRoundData
+    "feaf968c", // latestRoundData
+  ],
+  governance: [
+    "b61d27f6", // execute
+    "da95691a", // propose
+    "56781388", // castVote
+    "3bccf4fd", // queue
+  ],
+  nft: [
+    "6352211e", // ownerOf
+    "42842e0e", // safeTransferFrom
+    "c87b56dd", // tokenURI
+    "6c0360eb", // baseURI
+  ],
+  unknown: [],
 };
 
 const ERC20_SELECTOR_SET = [
@@ -77,7 +100,7 @@ function countSelectorHits(bytecodeHex: string, selectors: string[]): number {
  * Best-effort fallback contract typing when full classifier pipeline is disabled/unavailable.
  * Returns "unknown" only when no usable bytecode is available.
  */
-export function inferBaselineContractType(input: BytecodeLike): ContractType | "unknown" {
+export function inferBaselineContractType(input: BytecodeLike): ContractType {
   const bytecodeHex = normalizeBytecode(input?.bytecode);
   if (!bytecodeHex) return "unknown";
 

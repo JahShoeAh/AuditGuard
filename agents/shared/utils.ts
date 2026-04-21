@@ -84,6 +84,36 @@ const FINDING_TITLES: Record<ContractType, string[]> = {
     "Strategy migration rug vector",
     "Unauthorized strategy update",
   ],
+  derivatives: [
+    "Liquidation threshold bypass",
+    "Funding rate manipulation",
+    "Position size overflow",
+    "Unchecked oracle price staleness",
+  ],
+  oracle: [
+    "Price feed manipulation via flash loan",
+    "Missing staleness check on latestRoundData",
+    "Single point of failure in price aggregation",
+    "Integer overflow in price scaling",
+  ],
+  governance: [
+    "Governance vote manipulation via flash loan",
+    "Proposal front-running attack",
+    "Insufficient timelock on critical parameters",
+    "Missing quorum validation",
+  ],
+  nft: [
+    "Reentrancy in safeTransferFrom callback",
+    "Unchecked return value on ERC721 transfer",
+    "Royalty bypass via secondary market",
+    "Missing access control on minting",
+  ],
+  unknown: [
+    "Reentrancy vulnerability",
+    "Unchecked external call return value",
+    "Access control misconfiguration",
+    "Integer overflow/underflow",
+  ],
 };
 
 export function randomFindingTitle(contractType: ContractType): string {

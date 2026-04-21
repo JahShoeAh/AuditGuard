@@ -426,9 +426,10 @@ export async function ensureLedgerFunding(
       "ledger read"
     );
 
-    const available = BigInt(ledger?.availableBalance ?? 0n);
+    const l = ledger as any;
+    const available = BigInt(l?.availableBalance ?? 0n);
     if (available > 0n) {
-      return { availableBalance: available, totalBalance: BigInt(ledger?.totalBalance ?? 0n) };
+      return { availableBalance: available, totalBalance: BigInt(l?.totalBalance ?? 0n) };
     }
   } catch (err) {
     // Continue to deposit path; this can be first-run account setup state.
@@ -455,12 +456,13 @@ export async function ensureLedgerFunding(
       "ledger read after deposit"
     );
 
-    const available = BigInt(after?.availableBalance ?? 0n);
+    const a = after as any;
+    const available = BigInt(a?.availableBalance ?? 0n);
     if (available <= 0n) {
       throw new ZGClientError("zg_ledger_unfunded", "Ledger still has zero available balance after deposit", "ledger_postcheck");
     }
 
-    return { availableBalance: available, totalBalance: BigInt(after?.totalBalance ?? 0n) };
+    return { availableBalance: available, totalBalance: BigInt(a?.totalBalance ?? 0n) };
   } catch (err) {
     throw asZgError(err, "zg_ledger_unfunded", "ledger_funding");
   }
@@ -496,8 +498,9 @@ async function getServiceMetadata(providerAddress: string): Promise<{ endpoint: 
       "metadata",
       "provider metadata"
     );
-    const endpoint = String(meta?.endpoint ?? "").trim();
-    const model = String(meta?.model ?? "").trim();
+    const m = meta as any;
+    const endpoint = String(m?.endpoint ?? "").trim();
+    const model = String(m?.model ?? "").trim();
     if (!endpoint || !model) {
       throw new ZGClientError("zg_provider_metadata_failed", "Provider metadata missing endpoint/model", "metadata");
     }

@@ -1,20 +1,18 @@
 import { ethers } from "ethers";
-import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
-// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
-// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
-const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js");
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { CONFIG } from "./config.js";
 import { createLogger } from "./logger.js";
+import {
+  assertAddress,
+  parseRpcCandidates,
+  buildProviderWithFallback,
+} from "../../packages/sdk/hedera-provider.js";
 
 const log = createLogger("contracts");
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ABI_DIR = join(__dirname, "..", "..", "packages", "sdk", "abis");
-const DEFAULT_HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
-const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -26,81 +24,6 @@ function loadABI(name) {
   const p = join(ABI_DIR, `${name}.json`);
   const raw = JSON.parse(readFileSync(p, "utf-8"));
   return raw.abi || raw;
-}
-
-function assertAddress(value, label) {
-  if (!ethers.isAddress(value)) {
-    throw new Error(`Invalid ${label} address: ${value}`);
-  }
-  return value;
-}
-
-function parseRpcCandidates() {
-  const primary =
-    process.env.HEDERA_JSON_RPC_URL ||
-    process.env.HEDERA_RPC_URL ||
-    DEFAULT_HEDERA_TESTNET_RPC;
-  const fallbackRaw = process.env.HEDERA_JSON_RPC_FALLBACK_URLS || "";
-  const fallbacks = fallbackRaw
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return Array.from(new Set([primary, ...fallbacks]));
-}
-
-// Hedera testnet minimum gas price (~1010 gwei). The EIP-1559 fee history on
-// hashio.io returns near-zero baseFee values which cause ethers.js to submit
-// type-2 txs with maxFeePerGas≈200 wei — far below the relay minimum, causing
-// silent reverts (status=0, gasUsed=0). Override getFeeData to force type-0
-// legacy transactions with the correct network gas price.
-const HEDERA_LEGACY_GAS_PRICE = BigInt(
-  process.env.HEDERA_LEGACY_GAS_PRICE ?? "1111000000000"
-);
-
-function patchProviderFeeData(provider) {
-  provider.getFeeData = async () => ({
-    gasPrice: HEDERA_LEGACY_GAS_PRICE,
-    maxFeePerGas: null,
-    maxPriorityFeePerGas: null,
-  });
-}
-
-function buildProviderWithFallback() {
-  const rpcCandidates = parseRpcCandidates();
-  const providers = rpcCandidates.map((rpcUrl) => {
-    const provider = new ethers.JsonRpcProvider(rpcUrl, HEDERA_NETWORK, {
-      batchMaxCount: 1,
-      staticNetwork: true,
-    });
-    provider.pollingInterval = 5000;
-    // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
-    // Force eth_getLogs-based polling for all event subscriptions.
-    const _orig = provider._getSubscriber.bind(provider);
-    provider._getSubscriber = (sub) => {
-      if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
-      return _orig(sub);
-    };
-    patchProviderFeeData(provider);
-    return provider;
-  });
-
-  if (providers.length === 1) {
-    return { provider: providers[0], rpcCandidates };
-  }
-
-  const fallbackConfigs = providers.map((provider, index) => ({
-    provider,
-    priority: index + 1,
-    weight: 1,
-    stallTimeout: 2500,
-  }));
-
-  const provider = new ethers.FallbackProvider(fallbackConfigs, HEDERA_NETWORK, {
-    quorum: 1,
-    pollingInterval: 5000,
-  });
-  patchProviderFeeData(provider);
-  return { provider, rpcCandidates };
 }
 
 export class ContractClient {
@@ -242,7 +165,8 @@ export class ContractClient {
   }
 
   static fromOperatorKey(hexKey) {
-    const { provider, rpcCandidates } = buildProviderWithFallback();
+    const provider = buildProviderWithFallback();
+    const rpcCandidates = parseRpcCandidates();
 
     const pk = hexKey.startsWith("0x") ? hexKey : `0x${hexKey}`;
     const baseWallet = new ethers.Wallet(pk, provider);

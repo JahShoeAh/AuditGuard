@@ -50,6 +50,7 @@ const log = createAgentLogger(AGENT_ID, "fuzzer");
 const pendingJobs = new Map<string, {
   jobId: string;
   contractAddress: string;
+  deployerAddress: string;
   contractType: ContractType;
   loc: number;
 }>();
@@ -812,7 +813,7 @@ async function main() {
               // Each auction gets a different ordering — no agent always bids first.
               // AuditAuction only allows one bid per agent, so this is our one shot.
               {
-                const snap = await getBidWindowSnapshot(contracts, jobKey, deadlineHintSec);
+                const snap = await getBidWindowSnapshot(contracts, jobKey, deadlineHint);
                 if (snap.reasonCode !== "ok") return;
                 const maxScoutMs = Math.max(
                   0,
@@ -1003,7 +1004,7 @@ async function main() {
         const guardBalance = Number(
           ethers.formatUnits(await contracts.getGuardBalance(wallet.evmAddress), GUARD_DECIMALS)
         );
-        const hbarBalance = ethers.formatEther(await contracts.wallet.provider.getBalance(wallet.evmAddress));
+        const hbarBalance = ethers.formatEther(await contracts.wallet.provider!.getBalance(wallet.evmAddress));
         const payerFundingFailure =
           reasonCode === "insufficient_payer_hbar" || reasonCode === "insufficient_payer_hbar_after_topup";
         log.warn(`On-chain bid failed: ${error}`);

@@ -8,15 +8,14 @@
  */
 
 import { ethers } from "ethers";
-import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
-// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
-// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
-const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js") as { PollingEventSubscriber: new (provider: any, filter: any) => any };
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { CONFIG } from "./config.js";
+import { buildProviderWithFallback, assertAddress } from "../../packages/sdk/hedera-provider.js";
+
+// Re-export so callers that previously imported assertAddress from this module still work.
+export { assertAddress } from "../../packages/sdk/hedera-provider.js";
 
 // ─── ABI Loader ────────────────────────────────────────────────────────────
 
@@ -80,7 +79,7 @@ export interface PaymentItem {
   basePayment: bigint;
   bonus: bigint;
   reportFee: bigint;
-  paymentType: number;   // PaymentType enum: 0=AUDIT, 1=REPORT, 2=SUBAUTION, 3=BOUNTY
+  paymentType: number;   // PaymentType enum: 0=MAIN_AUDIT, 1=SUB_CONTRACT, 2=DATA_PURCHASE, 3=BONUS_SPEED, 4=BONUS_UNIQUE_FINDING, 5=MONITORING_PAYMENT, 6=REPORT_FEE, 7=PLATFORM_FEE, 8=BOUNTY_PAYOUT, 9=REFUND
   description: string;
 }
 
@@ -104,16 +103,6 @@ export const ListingType = {
 } as const;
 
 // ─── Contract Client ───────────────────────────────────────────────────────
-
-const DEFAULT_HEDERA_TESTNET_RPC = "https://testnet.hashio.io/api";
-const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
-
-function assertAddress(value: string, label: string): string {
-  if (!ethers.isAddress(value)) {
-    throw new Error(`Invalid ${label} address: ${value}`);
-  }
-  return value;
-}
 
 export class ContractClient {
   public readonly auction: ethers.Contract;
@@ -180,54 +169,10 @@ export class ContractClient {
    * Create a ContractClient from a raw private key hex string.
    */
   static fromPrivateKey(privateKey: string): ContractClient {
-    const provider = ContractClient.buildProviderWithFallback();
+    const provider = buildProviderWithFallback();
     const key = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(key, provider);
     return new ContractClient(wallet);
-  }
-
-  private static parseRpcCandidates(): string[] {
-    const primary =
-      process.env.HEDERA_JSON_RPC_URL ||
-      process.env.HEDERA_RPC_URL ||
-      DEFAULT_HEDERA_TESTNET_RPC;
-    const fallbackRaw = process.env.HEDERA_JSON_RPC_FALLBACK_URLS || "";
-    const fallbacks = fallbackRaw
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    return Array.from(new Set([primary, ...fallbacks]));
-  }
-
-  private static buildProviderWithFallback(): ethers.AbstractProvider {
-    const candidates = ContractClient.parseRpcCandidates();
-    const providers = candidates.map((rpcUrl) => {
-      const provider = new ethers.JsonRpcProvider(rpcUrl, HEDERA_NETWORK, {
-        batchMaxCount: 1,
-        staticNetwork: true,
-      });
-      provider.pollingInterval = 5000;
-      // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
-      // Force eth_getLogs-based polling for all event subscriptions.
-      const _orig = (provider as any)._getSubscriber.bind(provider);
-      (provider as any)._getSubscriber = (sub: any) => {
-        if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
-        return _orig(sub);
-      };
-      return provider;
-    });
-    if (providers.length === 1) return providers[0];
-
-    return new ethers.FallbackProvider(
-      providers.map((provider, index) => ({
-        provider,
-        priority: index + 1,
-        weight: 1,
-        stallTimeout: 2500,
-      })),
-      HEDERA_NETWORK,
-      { quorum: 1, pollingInterval: 5000 }
-    );
   }
 
   getAddress(): string {
@@ -276,7 +221,7 @@ export class ContractClient {
   }
 
   getAuctionAddress(): string {
-    return this.auction.target;
+    return this.auction.target as string;
   }
 
   /**
@@ -528,7 +473,7 @@ export class ContractClient {
     // Hedera HTS ERC-20 precompile frequently rejects MaxUint256 approvals.
     // Use a bounded approval target that still leaves headroom for multiple bids.
     const INT64_MAX = (1n << 63n) - 1n;
-    const minNonZero = minRequired > 0n ? minRequired : ethers.parseUnits("1", CONFIG.guardToken.decimals);
+    const minNonZero = minRequired > 0n ? minRequired : ethers.parseUnits("1", 8); // GUARD token: 8 decimals
     const desired = minNonZero * 100n;
     const capped = desired > INT64_MAX ? INT64_MAX : desired;
 

@@ -31,7 +31,7 @@ const CONFIG_PATH = path.join(SDK_DIR, "config.json");
 const ABI_DIR = path.join(SDK_DIR, "abis");
 
 const GAS_LIMIT = 5_000_000;
-const NEW_AUCTION_ADDRESS = "0xbCe2fde4cf1F6d9fde62ed33Cc3E4B1e7C1F4F87";
+const NEW_AUCTION_ADDRESS = "0x9e47bBa152F1506F80Ad1168F37A47C66DEE0F5d";
 
 async function resolveHederaId(evmAddress) {
   for (let i = 0; i < 6; i++) {

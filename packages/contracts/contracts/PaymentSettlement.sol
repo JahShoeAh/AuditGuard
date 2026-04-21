@@ -30,6 +30,7 @@ contract PaymentSettlement is Ownable, ReentrancyGuard, Pausable {
 
     IHederaTokenService internal constant HTS = IHederaTokenService(address(0x167));
     int64 internal constant HTS_SUCCESS = 22;
+    int64 internal constant HTS_TOKEN_ALREADY_ASSOCIATED = 194;
 
     // ─────────────────────────────────────────────────────────────────────
     // Enums
@@ -561,6 +562,17 @@ contract PaymentSettlement is Ownable, ReentrancyGuard, Pausable {
         reportFeeBase = _base;
         reportFeeDiscounted = _discounted;
         reportFeeDiscountThreshold = _threshold;
+    }
+
+    /// @notice Associates this contract with GUARD token through HTS precompile.
+    /// @dev No access restriction — idempotent, costs only a small HBAR fee.
+    ///      Must be called via Hedera SDK (ContractExecuteTransaction) post-deployment.
+    function associateGuardToken() external {
+        int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
+        require(
+            responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,
+            "PaymentSettlement: token association failed"
+        );
     }
 
     /// @notice Pauses all settlement operations. Emergency stop.

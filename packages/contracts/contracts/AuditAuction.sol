@@ -750,8 +750,11 @@ contract AuditAuction is ReentrancyGuard, Pausable, Ownable {
     }
 
     /// @notice Associates this contract with GUARD token through HTS precompile.
-    /// @dev Call post-deployment on Hedera JSON-RPC flows where constructor precompile calls can revert.
-    function associateGuardToken() external onlyOwner nonReentrant {
+    /// @dev No access restriction — association is idempotent and costs only a small HBAR fee.
+    ///      onlyOwner is intentionally omitted so this can be called via Hedera SDK
+    ///      (ContractExecuteTransaction), where msg.sender is the Hedera-native address rather
+    ///      than the ECDSA-derived owner address.
+    function associateGuardToken() external {
         int64 responseCode = HTS.tokenAssociate(address(this), guardToken);
         require(
             responseCode == HTS_SUCCESS || responseCode == HTS_TOKEN_ALREADY_ASSOCIATED,

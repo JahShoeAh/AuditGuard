@@ -16,20 +16,20 @@
       "evmAddress": "0x97Bb8ac0f6075496b85068bd7C4e7549aab95899"
     },
     "auctionContract": {
-      "id": "0.0.8547739",
-      "evmAddress": "0xbCe2fde4cf1F6d9fde62ed33Cc3E4B1e7C1F4F87"
+      "id": "0.0.8549733",
+      "evmAddress": "0x9e47bBa152F1506F80Ad1168F37A47C66DEE0F5d"
     },
     "subAuction": {
-      "id": "0.0.8547793",
-      "evmAddress": "0xc17775beF3784055080d1d2a5b7e13dDa56176f0"
+      "id": "0.0.8549742",
+      "evmAddress": "0xd44D56e5e0870deC8def40EfAD0646dC0Ca75387"
     },
     "dataMarketplace": {
       "id": "0.0.8000928",
       "evmAddress": "0xeB85dCAD49cee215EDF9244A4006439DAdEF8e7e"
     },
     "paymentSettlement": {
-      "id": "0.0.8547795",
-      "evmAddress": "0x026C5C7403fe1d379BF83DFabeD8F304fa7eE91b"
+      "id": "0.0.8549743",
+      "evmAddress": "0x63F5d457fd20De96b98d33158F747D9fCb62d203"
     },
     "vaultFactory": {
       "id": "0.0.7977489",

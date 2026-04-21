@@ -27,9 +27,9 @@ describe("inferBaselineContractType", () => {
     expect(inferBaselineContractType({ bytecode })).toBe("lending");
   });
 
-  it("maps NFT-like selector set to vault fallback", () => {
+  it("maps NFT-like selector set to nft type", () => {
     const bytecode = "0x6352211e42842e0ec87b56dd";
-    expect(inferBaselineContractType({ bytecode })).toBe("vault");
+    expect(inferBaselineContractType({ bytecode })).toBe("nft");
   });
 
   it("uses lending as deterministic fallback when no hints match", () => {

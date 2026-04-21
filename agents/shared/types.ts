@@ -39,7 +39,7 @@ export interface ContractDiscoveryEvent extends HCSMessage {
   };
 }
 
-export type ContractType = "lending" | "dex" | "staking" | "bridge" | "vault";
+export type ContractType = "lending" | "dex" | "staking" | "bridge" | "vault" | "derivatives" | "oracle" | "governance" | "nft" | "unknown";
 
 // ============================================================
 // AgentComms Topic Messages

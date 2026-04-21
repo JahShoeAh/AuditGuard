@@ -236,7 +236,7 @@ beforeAll(async () => {
   state.agentRanAudit  = rawFindings.length > 0;
 
   // POST findings to relay (the real path agents take)
-  await postFindingsToStore(JOB_ID, winnerId, rawFindings, { warn: () => {} });
+  await postFindingsToStore(JOB_ID, winnerId, rawFindings, { warn: () => {}, info: () => {} });
 
   // Verify relay received them (peek at in-memory map before fetching)
   const relayEntries         = findingsRelay.get(JOB_ID) ?? [];

@@ -38,7 +38,8 @@
       "Bash(RUN_CLASSIFIER_RISK_TESTS=true npx vitest:*)",
       "Bash(docker:*)",
       "Bash(docker compose:*)",
-      "Bash(npm:*)"
+      "Bash(npm:*)",
+      "Bash(curl:*)"
     ]
   }
 }

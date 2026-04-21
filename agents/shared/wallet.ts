@@ -11,23 +11,18 @@
  */
 
 import { ethers } from "ethers";
-import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
-// PollingEventSubscriber is not in ethers' package exports map — require the CJS build directly.
-// This forces eth_getLogs polling instead of eth_newFilter on Hedera JSON-RPC relays.
-const { PollingEventSubscriber } = _require("../../node_modules/ethers/lib.commonjs/providers/subscriber-polling.js") as { PollingEventSubscriber: new (provider: any, filter: any) => any };
 import {
     AccountId,
     PrivateKey,
     Client,
 } from "@hashgraph/sdk";
 import { getAgentEnv } from "./config.js";
-
-const HEDERA_TESTNET_RPC =
-    process.env.HEDERA_JSON_RPC_URL ||
-    process.env.HEDERA_RPC_URL ||
-    "https://testnet.hashio.io/api";
-const HEDERA_NETWORK = { name: "hedera_testnet", chainId: 296 };
+import {
+    DEFAULT_HEDERA_TESTNET_RPC,
+    HEDERA_NETWORK,
+    applyPollingSubscriber,
+    patchProviderFeeData,
+} from "../../packages/sdk/hedera-provider.js";
 
 export interface AgentWallet {
     /** ethers.js Wallet connected to Hedera JSON-RPC (for EVM contract calls) */
@@ -82,17 +77,13 @@ export function createAgentWallet(agentName: string): AgentWallet {
     // ethers.js Wallet for EVM contract calls
     // We need the raw hex key for ethers — extract from the Hedera key
     const hexKey = hederaKey.toStringRaw();
-    const provider = new ethers.JsonRpcProvider(HEDERA_TESTNET_RPC, HEDERA_NETWORK, {
+    const provider = new ethers.JsonRpcProvider(DEFAULT_HEDERA_TESTNET_RPC, HEDERA_NETWORK, {
         batchMaxCount: 1,
         staticNetwork: true,
     });
-    // Hedera JSON-RPC relays don't support eth_newFilter / eth_getFilterChanges.
-    // Force eth_getLogs-based polling for all event subscriptions.
-    const _orig = (provider as any)._getSubscriber.bind(provider);
-    (provider as any)._getSubscriber = (sub: any) => {
-        if (sub.type === "event") return new PollingEventSubscriber(provider, sub.filter);
-        return _orig(sub);
-    };
+    provider.pollingInterval = 5000;
+    applyPollingSubscriber(provider);
+    patchProviderFeeData(provider);
     const evmWallet = new ethers.Wallet(hexKey, provider);
 
     return {

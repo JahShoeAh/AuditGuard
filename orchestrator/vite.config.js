@@ -10,6 +10,7 @@ export default defineConfig({
     rollupOptions: {
       external: [
         "@hashgraph/sdk",
+        "@aws-sdk/client-s3",
         "dotenv",
         "ethers",
         "winston",
