@@ -18,6 +18,7 @@ import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
 import { inferBaselineContractType } from "./baseline-contract-type.js";
 import { fetchRuntimeBytecode } from "./source-retriever.js";
+import { resolveDeployerAddress } from "../../packages/sdk/address-utils.js";
 
 // ---- Config ----
 const AGENT_ID = "scanner-001";
@@ -537,7 +538,10 @@ async function fetchDeployerAddress(contractId: string): Promise<string> {
     if (!res.ok) return ZERO_ADDRESS;
     const body = await res.json() as { results?: Array<{ from?: string }> };
     const from = body?.results?.[0]?.from;
-    return from ? from.toLowerCase() : ZERO_ADDRESS;
+    if (!from) return ZERO_ADDRESS;
+    // Resolve Hedera EVM-mapped address → ECDSA alias so stored deployer matches
+    // what MetaMask/HashPack wallets report. For other chains, returns as-is.
+    return resolveDeployerAddress("hedera-testnet", from, { mirrorNodeBase: MIRROR_NODE });
   } catch {
     return ZERO_ADDRESS;
   }
@@ -946,61 +950,8 @@ async function main() {
 
   async function scanCycle() {
     payerBalanceExhausted = false;
-    if (TEST_MODE) {
-      const discovery = generateDiscovery();
-      const { contractAddress, contractType, riskScore, estimatedLOC } = discovery.payload;
 
-      try {
-        validateDiscoveryPayload(discovery.payload);
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        log.error(`Mock discovery payload rejected: ${reason}`);
-        await publishAuditLogSafe({
-          type: "DISCOVERY_REJECTED",
-          agentId: AGENT_ID,
-          timestamp: Date.now(),
-          payload: {
-            reason,
-            strictLive: STRICT_LIVE,
-            contractAddress,
-          },
-        });
-        return;
-      }
-
-      const publishedDiscovery = await publishDiscoverySafe(discovery);
-      if (!publishedDiscovery) {
-        if (payerBalanceExhausted) {
-          await attemptScannerPayerRecovery("mock discovery publish");
-          log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for HCS publishes");
-        }
-        return;
-      }
-      const auctionLogPublished = await publishAuditLogSafe({
-        type: "AUCTION_CREATED",
-        agentId: AGENT_ID,
-        timestamp: Date.now(),
-        payload: {
-          contractAddress,
-          contractType,
-          riskScore,
-          estimatedLOC,
-        },
-      });
-      if (!auctionLogPublished && payerBalanceExhausted) {
-        await attemptScannerPayerRecovery("mock audit log publish");
-        log.warn("Stopping scan cycle early: scanner payer has insufficient HBAR for auditLog publishes");
-        return;
-      }
-      log.info(
-        `Published mock discovery: ${contractAddress.slice(0, 12)}... ` +
-        `type=${contractType} risk=${riskScore} loc=${estimatedLOC}`
-      );
-      log.info(`Next scan in ${SCAN_INTERVAL_MS / 1000}s...`);
-      return;
-    }
-
-    if (!DEMO_MODE && !TEST_MODE) {
+    if (!DEMO_MODE) {
       const topUpConfig = getHbarTopUpConfig();
       const payerReady = await ensureScannerPayerOperational(
         topUpConfig.minRequiredWei,

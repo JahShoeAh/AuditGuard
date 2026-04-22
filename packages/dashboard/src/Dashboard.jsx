@@ -21,6 +21,7 @@ import CompetitionHeatmap from './components/CompetitionHeatmap';
 import AuditSchedules from './components/AuditSchedules';
 import VaultPanel from './components/VaultPanel';
 import ExchangeWidget from './components/ExchangeWidget';
+import UserReportList from './components/reports/UserReportList';
 
 function ErrorBanner({ message }) {
   return (
@@ -65,6 +66,7 @@ const TABS = [
   { key: 'liveFeed', label: 'LIVE FEED', icon: '◉' },
   { key: 'agents', label: 'AGENTS', icon: '👤' },
   { key: 'contracts', label: 'CONTRACTS', icon: '🛡' },
+  { key: 'reports', label: 'REPORTS', icon: '📄' },
   { key: 'analytics', label: 'ANALYTICS', icon: '📊' },
   { key: 'schedules', label: 'SCHEDULES', icon: '⏱' },
 ];
@@ -170,10 +172,26 @@ function ContractsTab() {
   );
 }
 
+function ReportsTab() {
+  return (
+    <div className="h-full overflow-auto p-4">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-4">
+          <h2 className="text-sm font-bold font-mono uppercase tracking-widest text-gray-100">📄 My Audit Reports</h2>
+          <p className="text-xs font-mono text-gray-500 mt-1">
+            Reports generated for contracts deployed by your connected wallet.
+          </p>
+        </div>
+        <UserReportList />
+      </div>
+    </div>
+  );
+}
+
 const SCHEDULES_SUB_TABS = [
   { key: 'schedules', label: 'Schedules', icon: '⏱' },
-  { key: 'vaults',    label: 'Vaults',    icon: '🏦' },
-  { key: 'exchange',  label: 'Exchange',  icon: '⚡' },
+  { key: 'vaults', label: 'Vaults', icon: '🏦' },
+  { key: 'exchange', label: 'Exchange', icon: '⚡' },
 ];
 
 function SchedulesTab() {
@@ -204,8 +222,8 @@ function SchedulesTab() {
 
       <div className="flex-1 min-h-0 overflow-auto">
         {subTab === 'schedules' && <AuditSchedules />}
-        {subTab === 'vaults'    && <VaultPanel />}
-        {subTab === 'exchange'  && <ExchangeWidget />}
+        {subTab === 'vaults' && <VaultPanel />}
+        {subTab === 'exchange' && <ExchangeWidget />}
       </div>
     </div>
   );
@@ -332,6 +350,11 @@ export default function Dashboard() {
           {activeTab === 'contracts' && (
             <TabContent key="contracts">
               <ContractsTab />
+            </TabContent>
+          )}
+          {activeTab === 'reports' && (
+            <TabContent key="reports">
+              <ReportsTab />
             </TabContent>
           )}
           {activeTab === 'analytics' && (

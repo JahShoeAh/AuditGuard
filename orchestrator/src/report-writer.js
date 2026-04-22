@@ -5,6 +5,7 @@ import {
   EMPTY_FINDINGS,
 } from "../../packages/sdk/db/report-types.js";
 import { saveReport, reportExists } from "../../packages/sdk/db/report-db.js";
+import { resolveDeployerAddress } from "../../packages/sdk/address-utils.js";
 
 const REPORT_CLAUDE_ENRICHMENT_ENABLED =
   (process.env.REPORT_CLAUDE_ENRICHMENT_ENABLED ?? "false") === "true";
@@ -254,9 +255,20 @@ async function fetchJson(url) {
 }
 
 async function hydrateDeployerFromMirror(metadata) {
-  if (!isMissing(metadata.deployerAddress)) return metadata.deployerAddress;
+  const chain = normalizeText(metadata.contractChain) || "hedera-testnet";
+
+  // If we already have a non-missing deployer, still run it through resolveDeployerAddress
+  // to convert any Hedera EVM-mapped addresses to their ECDSA alias.
+  if (!isMissing(metadata.deployerAddress)) {
+    const resolved = await resolveDeployerAddress(chain, metadata.deployerAddress, {
+      mirrorNodeBase: MIRROR_NODE_BASE,
+    });
+    return isMissing(resolved) ? metadata.deployerAddress : resolved;
+  }
+
+  // No deployer yet — fetch from mirror node for Hedera contracts.
+  if (!chain.includes("hedera")) return metadata.deployerAddress;
   if (isMissing(metadata.contractAddress)) return metadata.deployerAddress;
-  if (!String(metadata.contractChain).toLowerCase().includes("hedera")) return metadata.deployerAddress;
 
   const address = metadata.contractAddress.toLowerCase();
   const contractDetail = await fetchJson(`${MIRROR_NODE_BASE}/api/v1/contracts/${address}`);
@@ -268,7 +280,8 @@ async function hydrateDeployerFromMirror(metadata) {
   );
   const from = normalizeDeployer(executionDetail?.results?.[0]?.from ?? "");
   if (isMissing(from)) return metadata.deployerAddress;
-  return from;
+
+  return resolveDeployerAddress(chain, from, { mirrorNodeBase: MIRROR_NODE_BASE });
 }
 
 function buildClaudeReportPrompt(jobId, metadata, findings, severity, total, tags) {

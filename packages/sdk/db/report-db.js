@@ -3,23 +3,29 @@ import { reportId, normalizeDeployer, EMPTY_FINDINGS } from "./report-types.js";
 
 const require = createRequire(import.meta.url);
 
-function buildPgPool() {
-  if (!process.env.DATABASE_URL) return null;
+// Lazy pool — created on first use so DATABASE_URL is always read at query-time,
+// not at module-parse time (which would silently return null when the events-api
+// imports this module before the environment is fully populated).
+let _pool = undefined;
+
+function getPool() {
+  if (_pool !== undefined) return _pool;
+  if (!process.env.DATABASE_URL) {
+    console.warn("[report-db] DATABASE_URL not set — report DB operations are no-ops.");
+    _pool = null;
+    return null;
+  }
   try {
     const pg = require("pg");
-    return new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    _pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    return _pool;
   } catch (err) {
     console.warn(
       `[report-db] pg dependency unavailable; report DB disabled: ${err instanceof Error ? err.message : String(err)}`
     );
+    _pool = null;
     return null;
   }
-}
-
-const pool = buildPgPool();
-
-if (!pool) {
-  console.warn("[report-db] DATABASE_URL not set — report DB operations are no-ops.");
 }
 
 const BUCKET = (process.env.AWS_S3_BUCKET ?? "").trim();
@@ -47,6 +53,7 @@ function normalizeFindingsBySeverity(value) {
 }
 
 async function ensureMdContentColumn() {
+  const pool = getPool();
   if (migrated || !pool) return;
   try {
     await pool.query(`
@@ -147,6 +154,7 @@ function toReport(row) {
  */
 export async function saveReport(report) {
   const id = reportId(report.jobId);
+  const pool = getPool();
   if (!pool) return id;
 
   await ensureMdContentColumn();
@@ -220,6 +228,7 @@ export async function saveReport(report) {
  * @returns {Promise<import("./report-types.js").StoredAuditReport[]>}
  */
 export async function getReportsByDeployer(addr) {
+  const pool = getPool();
   if (!pool) return [];
   await ensureMdContentColumn();
 
@@ -237,6 +246,7 @@ export async function getReportsByDeployer(addr) {
  * @returns {Promise<(import("./report-types.js").StoredAuditReport & { mdContent: string }) | null>}
  */
 export async function getReportById(jobId) {
+  const pool = getPool();
   if (!pool) return null;
   await ensureMdContentColumn();
 
@@ -258,6 +268,7 @@ export async function getReportById(jobId) {
  * @returns {Promise<boolean>}
  */
 export async function reportExists(jobId) {
+  const pool = getPool();
   if (!pool) return false;
   const { rows } = await pool.query(
     "SELECT 1 FROM audit_reports WHERE job_id = $1",

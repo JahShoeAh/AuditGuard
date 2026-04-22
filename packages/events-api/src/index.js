@@ -1,3 +1,18 @@
+// Load .env before any other module so DATABASE_URL is available to report-db.js
+// and any other SDK module that reads process.env at import time.
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const _require = createRequire(import.meta.url);
+const _dirname = dirname(fileURLToPath(import.meta.url));
+try {
+  const dotenv = _require("dotenv");
+  dotenv.config({ path: resolve(_dirname, "../../../.env") });
+} catch {
+  // dotenv is optional; env vars may already be set by the shell
+}
+
 import express from "express";
 import { configureCors } from "./middleware/cors.js";
 import { eventsRouter } from "./routes/events.js";

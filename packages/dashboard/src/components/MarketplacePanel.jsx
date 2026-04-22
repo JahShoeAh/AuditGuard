@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
 import useStore from '../store';
 import { useMarketplaceData } from '../hooks/useMarketplaceData';
 import MarketplaceListingRow from './MarketplaceListingRow';
@@ -9,13 +8,13 @@ import { useAutoScroll } from '../hooks/useAutoScroll';
 // ── Category filter tabs ──────────────────────────────────────
 
 const TABS = [
-  { key: 'ALL',                label: 'ALL',      icon: '◈' },
-  { key: 'SCAN_REPORT',        label: 'SCAN',     icon: '📄' },
-  { key: 'DEPENDENCY_ANALYSIS',label: 'DEP',      icon: '🌳' },
-  { key: 'EXPLOIT_DATABASE',   label: 'EXPLOIT',  icon: '🛡' },
-  { key: 'HOT_LEAD',           label: 'HOT LEAD', icon: '📡' },
-  { key: 'FUZZING_SEEDS',      label: 'FUZZ',     icon: '🐛' },
-  { key: 'THREAT_INTEL',       label: 'INTEL',    icon: '⚠' },
+  { key: 'ALL', label: 'ALL', icon: '◈' },
+  { key: 'SCAN_REPORT', label: 'SCAN', icon: '📄' },
+  { key: 'DEPENDENCY_ANALYSIS', label: 'DEP', icon: '🌳' },
+  { key: 'EXPLOIT_DATABASE', label: 'EXPLOIT', icon: '🛡' },
+  { key: 'HOT_LEAD', label: 'HOT LEAD', icon: '📡' },
+  { key: 'FUZZING_SEEDS', label: 'FUZZ', icon: '🐛' },
+  { key: 'THREAT_INTEL', label: 'INTEL', icon: '⚠' },
 ];
 
 const DATA_CATEGORIES = [
@@ -68,12 +67,12 @@ function EmptyMarketplace() {
 // ── Main panel ───────────────────────────────────────────────
 
 export default function MarketplacePanel() {
-  const [activeTab, setActiveTab]   = useState('ALL');
-  const [toasts, setToasts]         = useState([]);
-  const [newIds, setNewIds]         = useState(new Set());
+  const [activeTab, setActiveTab] = useState('ALL');
+  const [toasts, setToasts] = useState([]);
+  const [newIds, setNewIds] = useState(new Set());
 
   const dataPurchases = useStore((s) => s.dataPurchases);
-  const dataListings  = useStore((s) => s.dataListings);
+  const dataListings = useStore((s) => s.dataListings);
 
   // Derive category filter index
   const categoryFilter = activeTab === 'ALL'
@@ -139,12 +138,13 @@ export default function MarketplacePanel() {
                 +{missedCount} missed
               </span>
             )}
-            <Link
-              to="/dashboard/reports"
+            <button
+              type="button"
+              onClick={() => useStore.getState().setActiveTab('reports')}
               className="text-[9px] font-mono text-cyan-500 hover:text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded hover:border-cyan-500/60 transition-colors whitespace-nowrap"
             >
-              Buy reports →
-            </Link>
+              My reports →
+            </button>
           </div>
         </div>
       </div>

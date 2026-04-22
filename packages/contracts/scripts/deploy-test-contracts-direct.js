@@ -7,8 +7,8 @@
  * Usage:
  *   PERSONAL_PRIV=<hex-or-DER-key> node packages/contracts/scripts/deploy-test-contracts-direct.js
  *
- * PERSONAL_PRIV can be a raw 64-char hex key or a Hedera DER-encoded ECDSA key.
- * Falls back to HEDERA_PRIVATE_KEY from .env if PERSONAL_PRIV is not set.
+ * PERSONAL_PRIV must be a raw 64-char hex key or a Hedera DER-encoded ECDSA key.
+ * No fallback — only PERSONAL_PRIV is accepted.
  */
 require("dotenv").config({ path: require("path").resolve(__dirname, "../../../.env") });
 const { ethers } = require("ethers");
@@ -17,11 +17,11 @@ const fs = require("fs");
 const path = require("path");
 
 const RPC_URL = process.env.HEDERA_JSON_RPC_URL || "https://testnet.hashio.io/api";
-const RAW_KEY = process.env.PERSONAL_PRIV || process.env.HEDERA_PRIVATE_KEY || "";
+const RAW_KEY = process.env.PERSONAL_PRIV || "";
 
 function normalizeKey(raw) {
   const value = String(raw || "").trim().replace(/^['"]|['"]$/g, "");
-  if (!value) throw new Error("No private key found. Set PERSONAL_PRIV or HEDERA_PRIVATE_KEY in .env");
+  if (!value) throw new Error("PERSONAL_PRIV is required. Set it in .env or pass it inline: PERSONAL_PRIV=<key> node ...");
   const noPrefix = value.startsWith("0x") ? value.slice(2) : value;
   if (/^[0-9a-fA-F]{64}$/.test(noPrefix)) return `0x${noPrefix}`;
   const parsed = PrivateKey.fromString(value);

@@ -67,7 +67,7 @@
     "dev:test-scripts": "node packages/contracts/scripts/deploy-test-contracts-direct.js",
     "setup:treasury": "node scripts/setup-treasury.js",
     "wire:delegated-staking": "node scripts/wire-delegated-staking.js",
-    "db:reset-events": "node -e \"require('dotenv').config(); const { execSync } = require('child_process'); execSync('psql \"' + process.env.DATABASE_URL + '\" -c \"TRUNCATE audit_events, bid_skips, audit_jobs, registered_agents, audit_schedules, audit_vaults RESTART IDENTITY CASCADE;\"', { stdio: 'inherit' });\""
+    "db:reset-events": "node scripts/db-reset-events.js"
   },
   "repository": {
     "type": "git",

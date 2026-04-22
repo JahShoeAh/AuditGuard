@@ -2848,8 +2848,12 @@ export class OrchestratorAgent {
       } catch (preCheckErr) {
         this.log.warn(
           `[Orchestrator] selectWinners status pre-check failed for job ${key}: ` +
-          `${preCheckErr instanceof Error ? preCheckErr.message : String(preCheckErr)}`
+          `${preCheckErr instanceof Error ? preCheckErr.message : String(preCheckErr)}` +
+          ` — skipping this attempt to avoid calling selectWinners on an unknown/settled job`
         );
+        // Cannot confirm on-chain status — bail out. The reconciler will retry
+        // on the next cycle. This prevents wasting HBAR on txs guaranteed to revert.
+        return;
       }
 
       const eligibleInvitedCount = Number(job.eligibleInvitedCount ?? 0);
