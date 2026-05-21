@@ -2,8 +2,8 @@
 FROM node:24-alpine AS builder
 WORKDIR /app
 
-ARG VITE_EVENTS_API_URL=http://localhost:3001
-ENV VITE_EVENTS_API_URL=$VITE_EVENTS_API_URL
+ARG VITE_EVENTS_API_BASE_URL=http://localhost:4000
+ENV VITE_EVENTS_API_BASE_URL=$VITE_EVENTS_API_BASE_URL
 
 COPY package.json package-lock.json ./
 COPY packages/dashboard/package.json ./packages/dashboard/

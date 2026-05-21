@@ -34,17 +34,17 @@ services:
       dockerfile: Dockerfile
     command: node packages/events-api/src/index.js
     ports:
-      - "3001:3001"
+      - "4000:4000"
     env_file: .env
     environment:
-      - PORT=3001
+      - EVENTS_API_PORT=4000
       - NODE_ENV=production
       - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,7 +60,7 @@ services:
     env_file: .env
     environment:
       - ALLOW_SHARED_PAYER=true
-      - EVENTS_API_URL=http://events-api:3001
+      - EVENTS_API_URL=http://events-api:4000
       - NODE_ENV=production
       - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
     depends_on:
@@ -73,11 +73,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: node -e "require('./agents/run-all.ts')"
+    command: npx tsx agents/run-all.ts
     env_file: .env
     environment:
       - ALLOW_SHARED_PAYER=true
-      - EVENTS_API_URL=http://events-api:3001
+      - EVENTS_API_URL=http://events-api:4000
       - NODE_ENV=production
       - DATABASE_URL=postgresql://auditguard:${POSTGRES_PASSWORD:-dev}@postgres:5432/auditguard
     depends_on:
@@ -91,7 +91,7 @@ services:
       context: .
       dockerfile: packages/dashboard/Dockerfile
       args:
-        VITE_EVENTS_API_URL: ${VITE_EVENTS_API_URL:-http://localhost:3001}
+        VITE_EVENTS_API_URL: ${VITE_EVENTS_API_BASE_URL:-http://localhost:4000}
     ports:
       - "5173:80"
     networks:
