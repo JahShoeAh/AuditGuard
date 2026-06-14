@@ -1,1 +1,22 @@
-{ "type": "module" }
+{
+  "name": "@auditguard/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared SDK configuration and ABIs for AuditGuard",
+  "exports": {
+    "./config.json": "./config.json",
+    "./abis/*": "./abis/*",
+    "./address-utils.js": "./address-utils.js",
+    "./hedera-provider.js": "./hedera-provider.js"
+  },
+  "files": [
+    "config.json",
+    "abis/",
+    "address-utils.js",
+    "address-utils.d.ts",
+    "hedera-provider.js",
+    "hedera-provider.d.ts",
+    "db/"
+  ]
+}

@@ -19,8 +19,8 @@ jobs:
           node-version: "20.19.0"
           cache: npm
 
-      - name: Install dashboard dependencies only
-        run: npm ci -w packages/dashboard --include-workspace-root
+      - name: Install dashboard and SDK dependencies
+        run: npm ci -w packages/dashboard -w packages/sdk --include-workspace-root
 
       - name: Fix rollup platform binary
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
