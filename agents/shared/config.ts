@@ -132,7 +132,7 @@ export const CONFIG = {
   zgInference: {
     rpcUrl: process.env.ZG_RPC_URL ?? "https://evmrpc-testnet.0g.ai",
     providerAddress: process.env.ZG_PROVIDER_ADDRESS ?? "",
-    model: process.env.ZG_MODEL ?? "qwen/qwen-2.5-7b-instruct",
+    model: process.env.ZG_MODEL ?? "qwen/qwen2.5-omni-7b",
     timeoutMs: Number(process.env.ZG_TIMEOUT_MS ?? "30000"),
     requestTimeoutMs: Number(process.env.ZG_REQUEST_TIMEOUT_MS ?? process.env.ZG_TIMEOUT_MS ?? "30000"),
     healthcheckTimeoutMs: Number(process.env.ZG_HEALTHCHECK_TIMEOUT_MS ?? "15000"),

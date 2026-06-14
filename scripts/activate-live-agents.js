@@ -763,18 +763,20 @@ function formatStageError(stage, err) {
 }
 
 async function transferGuardResilient({
-  guardTokenContract,
+  guardTokenEvm,
   targetEvmAddress,
   targetAccountId,
   tokenId,
-  operatorId,
-  operatorKey,
-  hederaClient,
+  donorId,
+  donorKey,
+  donorEvmWallet,
   amountWei,
   label,
 }) {
   if (amountWei <= 0n) return { path: "noop" };
 
+  const guardTokenContract = new ethers.Contract(guardTokenEvm, GUARD_ABI, donorEvmWallet);
+  const hederaClient = createHederaClient(donorId, donorKey);
   const initialBalance = await guardTokenContract.balanceOf(targetEvmAddress);
   const expectedMinBalance = initialBalance + amountWei;
   let lastFailure = null;
@@ -838,7 +840,7 @@ async function transferGuardResilient({
     let tx;
     try {
       tx = await new TransferTransaction()
-        .addTokenTransfer(tokenId, operatorId, -transferAmount)
+        .addTokenTransfer(tokenId, donorId, -transferAmount)
         .addTokenTransfer(tokenId, targetAccountId, transferAmount)
         .freezeWith(hederaClient);
     } catch (err) {
@@ -847,7 +849,7 @@ async function transferGuardResilient({
 
     let signed;
     try {
-      signed = await tx.sign(operatorKey);
+      signed = await tx.sign(donorKey);
     } catch (err) {
       throw new Error(formatStageError("sign_hapi_transfer", err));
     }
@@ -883,6 +885,8 @@ async function transferGuardResilient({
     const fallbackReason = err instanceof Error ? err.message : String(err);
     const prior = lastFailure ? `${lastFailure.code}:${lastFailure.reason}` : "unknown";
     throw new Error(`guard_transfer_hapi_fallback_failed:${fallbackReason}; prior=${prior}`);
+  } finally {
+    hederaClient.close();
   }
 }
 
@@ -1024,6 +1028,80 @@ async function maybeTopupOperatorHbar(operatorId, minimumHbar) {
       donorClient.close();
     }
   }
+}
+
+function buildGuardDonorProfiles() {
+  const profiles = [];
+  const seen = new Set();
+
+  function addProfile(label, accountIdRaw, privateKeyRaw, keyTypeHint = "", reserveWei = 0n) {
+    if (!accountIdRaw || !privateKeyRaw) return;
+    const accountIdText = String(accountIdRaw);
+    if (seen.has(accountIdText)) return;
+    seen.add(accountIdText);
+    profiles.push({ label, accountId: accountIdText, privateKey: privateKeyRaw, keyTypeHint, reserveWei });
+  }
+
+  const primaryId = process.env.HEDERA_ACCOUNT_ID || process.env.OPERATOR_ACCOUNT_ID;
+  const primaryKey = process.env.HEDERA_PRIVATE_KEY || process.env.OPERATOR_PRIVATE_KEY;
+  addProfile(
+    "primary_operator",
+    primaryId,
+    primaryKey,
+    process.env.HEDERA_PRIVATE_KEY_TYPE || process.env.OPERATOR_PRIVATE_KEY_TYPE
+  );
+
+  if (process.env.OPERATOR_ACCOUNT_ID && process.env.OPERATOR_ACCOUNT_ID !== primaryId) {
+    addProfile(
+      "operator",
+      process.env.OPERATOR_ACCOUNT_ID,
+      process.env.OPERATOR_PRIVATE_KEY,
+      process.env.OPERATOR_PRIVATE_KEY_TYPE
+    );
+  }
+
+  for (const item of getOwnerCredentialCandidates()) {
+    addProfile(item.label, item.accountId, item.privateKey);
+  }
+
+  for (const spec of AGENTS) {
+    const creds = getAgentCredentials(spec);
+    if (!creds) continue;
+    addProfile(
+      spec.agentId,
+      creds.accountId,
+      creds.privateKey,
+      getAgentKeyTypeHint(spec),
+      toTokenUnits(spec.stakeGuard + spec.minLiquidGuard)
+    );
+  }
+
+  return profiles;
+}
+
+async function findGuardDonorForTopup({ provider, guardTokenEvm, amountWei, excludeAccountIds = [] }) {
+  const exclude = new Set(excludeAccountIds.map(String));
+  const profiles = buildGuardDonorProfiles();
+  const candidates = [];
+
+  for (const profile of profiles) {
+    if (exclude.has(profile.accountId)) continue;
+    try {
+      const wallet = new ethers.Wallet(normalizeEvmPrivateKey(profile.privateKey), provider);
+      const guard = new ethers.Contract(guardTokenEvm, GUARD_ABI, wallet);
+      const balanceWei = await guard.balanceOf(wallet.address);
+      const availableWei = balanceWei > profile.reserveWei ? balanceWei - profile.reserveWei : 0n;
+      if (availableWei >= amountWei) {
+        candidates.push({ ...profile, wallet, availableWei, balanceWei });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`    ⚠ GUARD donor probe skipped for ${profile.label}: ${msg}`);
+    }
+  }
+
+  candidates.sort((a, b) => (a.availableWei > b.availableWei ? -1 : a.availableWei < b.availableWei ? 1 : 0));
+  return candidates[0] || null;
 }
 
 async function main() {
@@ -1505,21 +1583,32 @@ async function main() {
               `${fromTokenUnits(minTotalWei).toFixed(4)} GUARD), but account equals operator so top-up is skipped`
             );
           } else {
-            const operatorGuardBalanceWei = await guardToken.balanceOf(operatorEvmWallet.address);
-            if (operatorGuardBalanceWei < topup) {
+            const donor = await findGuardDonorForTopup({
+              provider,
+              guardTokenEvm,
+              amountWei: topup,
+              excludeAccountIds: [agentAccountId.toString()],
+            });
+            if (!donor) {
+              const operatorGuardBalanceWei = await guardToken.balanceOf(operatorEvmWallet.address);
               throw new Error(
                 `operator_guard_insufficient: need=${fromTokenUnits(topup).toFixed(4)} ` +
-                `have=${fromTokenUnits(operatorGuardBalanceWei).toFixed(4)}`
+                `have=${fromTokenUnits(operatorGuardBalanceWei).toFixed(4)} ` +
+                `(no alternate donor with sufficient GUARD)`
               );
             }
+            console.log(
+              `    • ${spec.agentId}: topping up ${fromTokenUnits(topup).toFixed(4)} GUARD ` +
+              `from ${donor.label} (${donor.accountId})`
+            );
             await transferGuardResilient({
-              guardTokenContract: guardToken,
+              guardTokenEvm,
               targetEvmAddress: agentEvmWallet.address,
               targetAccountId: agentAccountId,
               tokenId,
-              operatorId,
-              operatorKey,
-              hederaClient,
+              donorId: AccountId.fromString(donor.accountId),
+              donorKey: parsePrivateKey(donor.privateKey, donor.keyTypeHint),
+              donorEvmWallet: donor.wallet,
               amountWei: topup,
               label: spec.agentId,
             });

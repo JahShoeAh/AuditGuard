@@ -492,7 +492,7 @@ async function checkZgModelConsistency(strictLiveZgRequired) {
 
   if (providerMode === "pinned" && !requestedModelRaw) {
     fail("strict runtime uses ZG_PROVIDER_MODE=pinned but ZG_MODEL is empty", [
-      "Set ZG_MODEL to provider's supported model (for this provider: qwen/qwen-2.5-7b-instruct)",
+      "Set ZG_MODEL to provider's supported model (for this provider: qwen/qwen2.5-omni-7b)",
       "or set ZG_PROVIDER_MODE=hybrid/auto",
     ]);
   }

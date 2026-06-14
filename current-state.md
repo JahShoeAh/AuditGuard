@@ -27,6 +27,8 @@ npm run dev:all           # above + dashboard (runs preflight checks first)
 npm run dev:all:unsafe    # above but skip preflight (faster for dev)
 ```
 
+**0g preflight:** `npm run dev` runs `preflight:runtime`, which validates live 0g inference config before startup. With `ZG_PROVIDER_MODE=pinned` (default), `ZG_MODEL` must match the model advertised by `ZG_PROVIDER_ADDRESS`. The testnet provider (`0xa48f01287233509FD694a22Bf840225062E67836`) currently serves `qwen/qwen2.5-omni-7b`.
+
 ### Individual services
 ```bash
 npm run orchestrator                          # orchestrator only
@@ -86,6 +88,8 @@ npm run preflight:live        # check runtime readiness + activate/verify live a
 | 12 | **P3** | `orchestrator/` | Orchestrator has a `vite build` script that compiles to `dist/index.js` (SSR bundle). However all production run scripts (`start:backend`, `Dockerfile.devall`) execute `node orchestrator/src/index.js` directly — the built artifact is never used. This is confusing but not a blocker: the build succeeds and the SSR output is harmless. | DEFERRED | Low risk; would need to either wire up dist or remove the dead build step |
 | 13 | **P3** | `AgentRegistry` | `setOrchestratorAndAuction()` has a `require(orchestrator == address(0))` guard — one-time-only; the new AuditAuction v3 is not registered with AgentRegistry. `recordJobCompletion` and `slashAgent` silently fail with `RegistryCallFailed` event. Payment and audit flow are unaffected. | DEFERRED | Requires AgentRegistry redeploy with `setAuctionContract()` |
 | 14 | **P3** | `agents/shared/types.ts.bak` | A `.bak` file left in the shared directory. Not imported anywhere but adds noise. | DEFERRED | Safe to delete manually |
+| 15 | **P1** | `.env` / 0g preflight | `ZG_MODEL` was set to `qwen-2.5-7b-instruct` while the live 0g testnet provider advertises `qwen/qwen2.5-omni-7b`. With default `ZG_PROVIDER_MODE=pinned`, `preflight:runtime` failed and blocked `npm run dev`. | **FIXED** | Set `ZG_MODEL=qwen/qwen2.5-omni-7b` in `.env`, `.env.example`, `agents/.env.example`, and `agents/shared/config.ts` default |
+| 16 | **P1** | `scripts/activate-live-agents.js` | Unfunded agents (`static-analysis-047`, `fuzzer-012`) could not be topped up because the primary operator account (`HEDERA_ACCOUNT_ID`) had 0 GUARD. Activation failed with `operator_guard_insufficient` and blocked `npm run dev`. | **FIXED** | Added multi-donor GUARD top-up: activation now searches owner credentials and funded agent accounts (keeping stake+liquid reserve) before failing |
 
 ---
 
