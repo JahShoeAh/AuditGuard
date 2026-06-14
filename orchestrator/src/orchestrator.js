@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import crypto from "crypto";
 import { CONFIG, getOperatorKeys } from "./config.js";
 import { HCSClient } from "./hcs-client.js";
 import { ContractClient } from "./contract-client.js";
@@ -10,6 +11,18 @@ import { MessageType, now } from "../../agents/shared/types.js";
 import { parseUnits } from "ethers";
 import { normalizeDeployer } from "../../packages/sdk/db/report-types.js";
 import { generateAndStoreReport } from "./report-writer.js";
+import { OrchestratorStateStore } from "./state-store.js";
+import {
+  auctionsCreated,
+  winnersSelected,
+  settlementsCompleted,
+  activeJobs as activeJobsGauge,
+  activeAgents as activeAgentsGauge,
+  hcsMessagesProcessed,
+  hcsMessageLatency,
+  contractCallDuration,
+  contractCallErrors,
+} from "./metrics.js";
 
 function parsePositiveIntEnv(raw, fallback) {
   const parsed = Number(raw);
@@ -32,6 +45,7 @@ export class OrchestratorAgent {
     this.strictLive = opts.strictLive ?? CONFIG.strictLive;
     this.orchestratorAddress = this.contracts.getAddress?.() ?? "";
     this.roster = opts.roster ?? new Roster(this.log);
+    this.stateStore = opts.stateStore ?? new OrchestratorStateStore();
     this.inft = opts.inft ?? new InftBridge();
     this.jobs = new Map(); // jobId(string) -> state
     this.contractHealthNFTMinted = new Set(); // contractAddress(lowercase) — prevents duplicate mints
@@ -114,6 +128,7 @@ export class OrchestratorAgent {
     this.scheduledEnrichmentQueue = new Map();
     this.scheduledEnrichmentTimer = null;
     this.scheduledEnrichmentInFlight = false;
+    this.pendingPings = new Map(); // nonce -> { timestamp, expiresAt }
     this.log.info(
       `[Orchestrator] winner path config: fast=${this.fastWinnerPathEnabled}, ` +
       `rehydrate_missing_job=${this.rehydrateMissingJobForSelection}, ` +
@@ -779,6 +794,64 @@ export class OrchestratorAgent {
     }
   }
 
+  /**
+   * Load persisted roster and event cache from database.
+   * Called before start() to restore state from previous session.
+   */
+  async loadPersistedState() {
+    if (!this.stateStore) return;
+
+    try {
+      const persistedRoster = await this.stateStore.loadRoster();
+      if (persistedRoster && persistedRoster.size > 0) {
+        this.roster.agents = persistedRoster;
+        this.log.info(`Restored ${persistedRoster.size} agents from persistent storage`);
+      }
+    } catch (err) {
+      this.log.error(
+        `Failed to load persisted roster: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    try {
+      const persistedCache = await this.stateStore.loadEventCache();
+      if (persistedCache && persistedCache.size > 0) {
+        this.recentDiscovery = persistedCache;
+        this.log.info(`Restored ${persistedCache.size} event cache entries from persistent storage`);
+      }
+    } catch (err) {
+      this.log.error(
+        `Failed to load persisted event cache: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Save current roster and event cache to database.
+   * Called periodically and on shutdown.
+   */
+  async savePersistedState() {
+    if (!this.stateStore) return;
+
+    try {
+      await this.stateStore.saveRoster(this.roster.agents);
+      this.log.debug(`Saved ${this.roster.agents.size} agents to persistent storage`);
+    } catch (err) {
+      this.log.error(
+        `Failed to save roster: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    try {
+      await this.stateStore.saveEventCache(this.recentDiscovery);
+      this.log.debug(`Saved ${this.recentDiscovery.size} event cache entries to persistent storage`);
+    } catch (err) {
+      this.log.error(
+        `Failed to save event cache: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   start() {
     this.ensureOrchestratorOperationalHbar("startup", { force: true }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1267,27 +1340,72 @@ export class OrchestratorAgent {
   subscribeDiscovery() {
     this.hcs.subscribeDiscovery(async (msg) => {
       if (msg.type !== MessageType.CONTRACT_DISCOVERED) return;
-      await this.handleDiscovery(msg);
+      const start = Date.now();
+      try {
+        await this.handleDiscovery(msg);
+        hcsMessagesProcessed.inc({ message_type: 'CONTRACT_DISCOVERED', topic: 'discovery' });
+      } finally {
+        hcsMessageLatency.observe({ message_type: 'CONTRACT_DISCOVERED' }, Date.now() - start);
+      }
     });
     this.log.info(`Listening on discovery topic ${CONFIG.hcsTopics.discovery}`);
   }
 
   subscribeAgentComms() {
     this.hcs.subscribeAgentComms(async (msg) => {
-      if (msg.type === MessageType.PONG) this.roster.recordPong(msg.agentId);
-      if (msg.type === MessageType.FINDINGS_SUBMITTED) await this.handleFindings(msg);
-      if (msg.type === "REPORT_PUBLISHED") await this.handleReportPublished(msg);
-      if (msg.type === MessageType.DATA_LISTING_CREATED) await this.handleDataListing(msg);
-      if (msg.type === MessageType.SUB_AUCTION_POSTED) await this.handleSubAuctionRequest(msg);
-      if (msg.type === MessageType.SUB_RESULT_DELIVERED) await this.handleSubResult(msg);
+      const start = Date.now();
+      try {
+        if (msg.type === MessageType.PONG) {
+          const verified = await this.verifyPongSignature(msg);
+          if (verified) {
+            this.roster.recordPong(msg.agentId);
+            activeAgentsGauge.set(this.roster.getActiveCount());
+          }
+          hcsMessagesProcessed.inc({ message_type: 'PONG', topic: 'agent_comms' });
+        }
+        if (msg.type === MessageType.FINDINGS_SUBMITTED) {
+          await this.handleFindings(msg);
+          hcsMessagesProcessed.inc({ message_type: 'FINDINGS_SUBMITTED', topic: 'agent_comms' });
+        }
+        if (msg.type === "REPORT_PUBLISHED") {
+          await this.handleReportPublished(msg);
+          hcsMessagesProcessed.inc({ message_type: 'REPORT_PUBLISHED', topic: 'agent_comms' });
+        }
+        if (msg.type === MessageType.DATA_LISTING_CREATED) {
+          await this.handleDataListing(msg);
+          hcsMessagesProcessed.inc({ message_type: 'DATA_LISTING_CREATED', topic: 'agent_comms' });
+        }
+        if (msg.type === MessageType.SUB_AUCTION_POSTED) {
+          await this.handleSubAuctionRequest(msg);
+          hcsMessagesProcessed.inc({ message_type: 'SUB_AUCTION_POSTED', topic: 'agent_comms' });
+        }
+        if (msg.type === MessageType.SUB_RESULT_DELIVERED) {
+          await this.handleSubResult(msg);
+          hcsMessagesProcessed.inc({ message_type: 'SUB_RESULT_DELIVERED', topic: 'agent_comms' });
+        }
+      } finally {
+        if (msg.type) {
+          hcsMessageLatency.observe({ message_type: msg.type }, Date.now() - start);
+        }
+      }
     });
     this.log.info(`Listening on agentComms topic ${CONFIG.hcsTopics.agentComms}`);
   }
 
   subscribeAuditLog() {
     this.hcs.subscribeAuditLog((msg) => {
-      if (msg.type === MessageType.AGENT_REGISTERED) this.handleAgentRegistered(msg);
-      if (msg.type === "BID_SUBMITTED") this.handleBidSubmitted(msg);
+      const start = Date.now();
+      if (msg.type === MessageType.AGENT_REGISTERED) {
+        this.handleAgentRegistered(msg);
+        hcsMessagesProcessed.inc({ message_type: 'AGENT_REGISTERED', topic: 'audit_log' });
+      }
+      if (msg.type === "BID_SUBMITTED") {
+        this.handleBidSubmitted(msg);
+        hcsMessagesProcessed.inc({ message_type: 'BID_SUBMITTED', topic: 'audit_log' });
+      }
+      if (msg.type) {
+        hcsMessageLatency.observe({ message_type: msg.type }, Date.now() - start);
+      }
     });
     this.log.info(`Listening on auditLog topic ${CONFIG.hcsTopics.auditLog}`);
   }
@@ -1592,6 +1710,8 @@ export class OrchestratorAgent {
             this.log.info(
               `Auction opened on-chain for job ${jobId} (tx: ${tx.hash}, deadlineSec=${auctionDeadlineSec})`
             );
+            auctionsCreated.inc();
+            activeJobsGauge.inc();
             return;
           } catch (err) {
             lastCreateError = err;
@@ -2296,11 +2416,13 @@ export class OrchestratorAgent {
       // then deposit the exact settlement amount into the contract.
       await this.contracts.ensureGuardAllowance(CONFIG.contracts.paymentSettlement, totalDisbursed);
       await this.contracts.depositSettlementFunds(totalDisbursed);
+      const settleStart = Date.now();
       await this.contracts.settleJob(
         this.toChainJobId(jobId),
         payments,
         reportAgent
       );
+      contractCallDuration.observe({ method: 'settleJob' }, Date.now() - settleStart);
       job.settled = true;
       this.setJobByKey(jobId, job);
       await this.hcs.publishAuditLog({
@@ -2315,6 +2437,7 @@ export class OrchestratorAgent {
         },
       });
       this.log.info(`Settled job ${jobId} to ${payments.length} recipients`);
+      settlementsCompleted.inc();
     } catch (err) {
       this.log.warn(`Settlement failed for job ${jobId}: ${err}`);
     }
@@ -3055,11 +3178,14 @@ export class OrchestratorAgent {
         try {
           await this.ensureOrchestratorOperationalHbar("select_winners", { force: true });
           lastTxSentAt = Date.now();
+          const contractCallStart = Date.now();
           const receipt = await this.contracts.selectWinners(Number(key), winningBidIndices, {
             priority: priorityUsed,
           });
+          contractCallDuration.observe({ method: 'selectWinners' }, Date.now() - contractCallStart);
           const receiptAt = Date.now();
           this.log.info(`[Orchestrator] On-chain selectWinners succeeded for job ${key}, tx: ${receipt.hash}`);
+          winnersSelected.inc();
           await this.publishWinnerSelectedAuditLog(key, winnerAddresses, {
             txHash: receipt?.hash ?? null,
           });
@@ -3661,18 +3787,92 @@ export class OrchestratorAgent {
     }
   }
 
+  async verifyPongSignature(pong) {
+    const payload = pong.payload || {};
+    const { nonce, signature, message } = payload;
+
+    if (!nonce || !signature || !message) {
+      this.log.warn(`PONG from ${pong.agentId} missing required fields (nonce/signature/message)`);
+      return false;
+    }
+
+    const ping = this.pendingPings.get(nonce);
+    if (!ping) {
+      this.log.warn(`Invalid or expired nonce in PONG from ${pong.agentId}`);
+      return false;
+    }
+
+    if (now() > ping.expiresAt) {
+      this.log.warn(`Expired nonce in PONG from ${pong.agentId}`);
+      this.pendingPings.delete(nonce);
+      return false;
+    }
+
+    try {
+      const recovered = ethers.verifyMessage(message, signature);
+
+      const getAgent =
+        this.contracts.getAgent?.bind(this.contracts) ??
+        this.contracts.agentRegistry?.getAgent?.bind(this.contracts.agentRegistry);
+
+      if (typeof getAgent !== "function") {
+        this.log.warn(`Cannot verify PONG signature for ${pong.agentId}: getAgent not available`);
+        return false;
+      }
+
+      const agentProfile = await getAgent(recovered);
+      if (!agentProfile || !agentProfile.agentAddress) {
+        this.log.warn(`Agent ${pong.agentId} not found in registry or no address`);
+        return false;
+      }
+
+      if (recovered.toLowerCase() !== agentProfile.agentAddress.toLowerCase()) {
+        this.log.warn(
+          `PONG signature mismatch for ${pong.agentId}: expected ${agentProfile.agentAddress}, got ${recovered}`
+        );
+        return false;
+      }
+
+      this.pendingPings.delete(nonce);
+      return true;
+    } catch (err) {
+      this.log.error(
+        `PONG signature verification failed for ${pong.agentId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  }
+
+  cleanupExpiredPings() {
+    const currentTime = now();
+    for (const [nonce, ping] of this.pendingPings.entries()) {
+      if (currentTime > ping.expiresAt) {
+        this.pendingPings.delete(nonce);
+      }
+    }
+  }
+
   startPingLoop() {
     const sendPing = () => {
+      const nonce = crypto.randomBytes(32).toString("hex");
+      const timestamp = now();
+
       this.hcs.publishAgentComms({
         type: MessageType.PING,
         agentId: "orchestrator",
-        timestamp: now(),
-        payload: {},
+        timestamp,
+        payload: { nonce, timestamp },
       }).catch(() => {});
+
+      this.pendingPings.set(nonce, { timestamp, expiresAt: timestamp + 30000 });
+
       const pingTimer = setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
       pingTimer.unref?.();
     };
     const firstPingTimer = setTimeout(sendPing, CONFIG.timeouts.pingIntervalMs);
     firstPingTimer.unref?.();
+
+    const cleanupTimer = setInterval(() => this.cleanupExpiredPings(), 60000);
+    cleanupTimer.unref?.();
   }
 }

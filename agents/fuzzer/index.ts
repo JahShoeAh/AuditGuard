@@ -20,7 +20,23 @@ import {
   hashOf,
   sleep,
   postFindingsToStore,
+  createPrometheusMetrics,
+  startPrometheusServer,
+  startHealthServer,
 } from "../shared/index.js";
+import { JobLockManager } from "../shared/job-lock.js";
+import {
+  BidDeadlineExpiredError,
+  InsufficientCollateralError,
+  ContractCallError,
+  ValidationError,
+} from "../shared/errors.js";
+import {
+  parseAuctionInvite,
+  parseBidSubmitted,
+  parseDataListingCreated,
+  parsePing,
+} from "../shared/message-validators.js";
 import type {
   ContractDiscoveryEvent,
   ContractType,
@@ -89,6 +105,7 @@ type EnqueuedBidQueueTask = BidQueueTask & {
 
 const bidQueue: EnqueuedBidQueueTask[] = [];
 let bidQueueInFlight = false;
+const jobLocks = new JobLockManager();
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -375,6 +392,22 @@ async function main() {
   const wallet = createAgentWallet("FUZZER");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
+
+  // Initialize Prometheus metrics
+  const METRICS_PORT = parseInt(process.env.FUZZER_METRICS_PORT || '9093', 10);
+  const prometheusMetrics = createPrometheusMetrics(AGENT_ID);
+  await startPrometheusServer(prometheusMetrics, METRICS_PORT, log);
+
+  // Initialize health check server
+  const HEALTH_PORT = parseInt(process.env.FUZZER_HEALTH_PORT || '8093', 10);
+  startHealthServer({
+    agentId: AGENT_ID,
+    port: HEALTH_PORT,
+    hcs,
+    contracts,
+    getPendingJobsCount: () => pendingJobs.size,
+  });
+
   let minBidCollateralWei = ethers.parseUnits(
     CONFIG.bidPolicy.minCollateralGuard.toFixed(2),
     GUARD_DECIMALS
@@ -539,14 +572,45 @@ async function main() {
   }>();
 
   // Listen for data listings + AUCTION_INVITE from other agents / orchestrator
-  hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+  hcs.subscribeAgentComms((msg: HCSMessage) => {
+    handleAgentCommsMessage(msg, hcs, contracts, wallet)
+      .catch((err) => {
+        log.error(`Fatal error handling ${msg.type} for job ${msg.payload?.jobId}: ${err instanceof Error ? err.stack : String(err)}`);
+
+        // Clean up state on error
+        const jobKey = String(msg.payload?.jobId ?? '');
+        if (jobKey) {
+          bidInFlightJobs.delete(jobKey);
+          pendingJobs.delete(jobKey);
+        }
+      });
+  });
+
+  async function handleAgentCommsMessage(
+    msg: HCSMessage,
+    hcs: HCSClient,
+    contracts: ContractClient,
+    wallet: { evmAddress: string; evmWallet: ethers.Wallet }
+  ): Promise<void> {
     if (msg.type === "PING") {
       try {
+        const pingPayload = parsePing(msg);
+        if (!pingPayload) {
+          log.warn("Invalid PING message");
+          return;
+        }
+
+        const nonce = pingPayload.nonce ?? "";
+        const pongTimestamp = Date.now();
+        const message = `PONG:${nonce}:${AGENT_ID}:${pongTimestamp}`;
+
+        const signature = await wallet.evmWallet.signMessage(message);
+
         await hcs.publishAgentComms({
           type: "PONG",
           agentId: AGENT_ID,
-          timestamp: Date.now(),
-          payload: {},
+          timestamp: pongTimestamp,
+          payload: { nonce, signature, message },
         });
       } catch (err) {
         log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -555,24 +619,35 @@ async function main() {
     }
 
     if (msg.type === "DATA_LISTING_CREATED" && msg.agentId !== AGENT_ID) {
-      const { listingId, price, description, jobId, category } = msg.payload as any;
-      const listingIdKey = String(listingId ?? "");
+      const listing = parseDataListingCreated(msg);
+      if (!listing) {
+        log.warn(`Invalid DATA_LISTING_CREATED message: ${JSON.stringify(msg).slice(0, 200)}`);
+        return;
+      }
+
+      const { listingId, price, category, jobId } = listing.payload;
       if (
         category === "SCAN_REPORT" &&
         price <= MAX_DATA_PURCHASE_PRICE &&
-        /^\d+$/.test(listingIdKey)
+        /^\d+$/.test(listingId)
       ) {
         log.info(`Scan report available from ${msg.agentId}: ${price} GUARD`);
-        availableReports.set(String(jobId), {
-          listingId: listingIdKey,
+        availableReports.set(jobId, {
+          listingId,
           price,
           seller: msg.agentId,
-          jobId: String(jobId),
+          jobId,
         });
       }
     }
 
     if (msg.type === "AUCTION_INVITE") {
+      const invite = parseAuctionInvite(msg);
+      if (!invite) {
+        log.warn(`Invalid AUCTION_INVITE message: ${JSON.stringify(msg).slice(0, 200)}`);
+        return;
+      }
+
       const {
         jobId,
         contractAddress,
@@ -585,11 +660,10 @@ async function main() {
         auctionDeadlineSec,
         eligibleAgentIds,
         eligibleEvmAddresses,
-      } = (msg as any).payload;
-      const targetedIds = Array.isArray(eligibleAgentIds) ? eligibleAgentIds.map((v: unknown) => String(v)) : [];
-      const targetedAddresses = Array.isArray(eligibleEvmAddresses)
-        ? eligibleEvmAddresses.map((v: unknown) => String(v).toLowerCase())
-        : [];
+        minBidCollateralGuard,
+      } = invite;
+      const targetedIds = eligibleAgentIds?.map((v) => String(v)) ?? [];
+      const targetedAddresses = eligibleEvmAddresses?.map((v) => String(v).toLowerCase()) ?? [];
       if (targetedIds.length > 0 || targetedAddresses.length > 0) {
         const myAddress = wallet.evmAddress.toLowerCase();
         if (!targetedIds.includes(AGENT_ID) && !targetedAddresses.includes(myAddress)) {
@@ -597,14 +671,17 @@ async function main() {
         }
       }
       const jobKey = String(jobId);
-      if (bidSubmittedJobs.has(jobKey) || pendingJobs.has(jobKey)) {
-        log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (already bid)`);
-        return;
-      }
-      if (bidInFlightJobs.has(jobKey)) {
-        log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (bid submission in flight)`);
-        return;
-      }
+
+      // Use lock manager to prevent race conditions
+      await jobLocks.withLock(jobKey, async () => {
+        if (bidSubmittedJobs.has(jobKey) || pendingJobs.has(jobKey)) {
+          log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (already bid)`);
+          return;
+        }
+        if (bidInFlightJobs.has(jobKey)) {
+          log.info(`Skipping duplicate AUCTION_INVITE for job #${jobKey} (bid submission in flight)`);
+          return;
+        }
       const queued = discoveryQueue.get(contractAddress);
       if (queued) discoveryQueue.delete(contractAddress);
 
@@ -617,7 +694,7 @@ async function main() {
 
       const computed = computeLiveBid(bid, budget, {
         ...CONFIG.bidPolicy,
-        minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard),
+        minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard ?? CONFIG.bidPolicy.minCollateralGuard),
       });
       if (computed.skip || !computed.bid) {
         await hcs.publishAuditLog({
@@ -830,7 +907,7 @@ async function main() {
               const lowestCompetitorBid = competitorBids.get(jobKey) ?? null;
               const scoutedResult = computeScoutedBid(bid, budget, lowestCompetitorBid, {
                 ...CONFIG.bidPolicy,
-                minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard),
+                minCollateralGuard: Math.max(CONFIG.bidPolicy.minCollateralGuard, minBidCollateralGuard ?? CONFIG.bidPolicy.minCollateralGuard),
                 maxBidFractionOfBudget: MAX_BID_FRACTION_OF_BUDGET,
               });
               if (scoutedResult.bid) {
@@ -1033,11 +1110,10 @@ async function main() {
       } finally {
         bidInFlightJobs.delete(jobKey);
       }
-
+      }); // end withLock
       return;
     }
-
-  });
+  } // end handleAgentCommsMessage
 
   // Listen for winner selection events on-chain
   contracts.onWinnerSelected((jobId, winners, totalEscrowed, platformFee) => {
@@ -1089,8 +1165,15 @@ async function main() {
   // BID_SUBMITTED events from OTHER agents are published to the auditLog topic.
   hcs.subscribeAuditLog((msg: HCSMessage) => {
     if (msg.type !== "BID_SUBMITTED" || msg.agentId === AGENT_ID) return;
-    const { jobId, bidAmount } = (msg as any).payload ?? {};
-    const jobKey = String(jobId ?? "");
+
+    const bidMsg = parseBidSubmitted(msg);
+    if (!bidMsg) {
+      log.warn(`Invalid BID_SUBMITTED message: ${JSON.stringify(msg).slice(0, 200)}`);
+      return;
+    }
+
+    const { jobId, bidAmount } = bidMsg;
+    const jobKey = String(jobId);
     // Only track jobs where we're in the scouting window or already bid
     if (!bidInFlightJobs.has(jobKey) && !bidSubmittedJobs.has(jobKey)) return;
     const amount = Number(bidAmount);

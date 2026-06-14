@@ -14,6 +14,7 @@ try {
 }
 
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { configureCors } from "./middleware/cors.js";
 import { eventsRouter } from "./routes/events.js";
 import { bidSkipsRouter } from "./routes/bid-skips.js";
@@ -28,8 +29,20 @@ const PORT = parseInt(process.env.EVENTS_API_PORT || "4000", 10);
 
 const app = express();
 
+// Rate limiter: 1000 requests per 15 minutes per IP
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit each IP to 1000 requests per windowMs
+  message: "Too many requests from this IP, please try again later.",
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
 app.use(express.json());
 app.use(configureCors());
+
+// Apply rate limiting to all /api routes
+app.use("/api", apiLimiter);
 
 app.use("/api", healthRouter);
 app.use("/api", eventsRouter);

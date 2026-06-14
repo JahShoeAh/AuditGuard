@@ -13,7 +13,17 @@ import {
   randomHex,
   hashOf,
   sleep,
+  createPrometheusMetrics,
+  startPrometheusServer,
+  startHealthServer,
 } from "../shared/index.js";
+import {
+  validateEVMAddress,
+  validateRiskScore,
+  validateLOC,
+  validateTxHash,
+  validateBytecode,
+} from "../shared/validation-utils.js";
 import type { ContractType } from "../shared/types.js";
 import { ethers } from "ethers";
 import { inferBaselineContractType } from "./baseline-contract-type.js";
@@ -548,42 +558,67 @@ async function fetchDeployerAddress(contractId: string): Promise<string> {
 }
 
 async function createDiscoveryFromMirror(contract: MirrorContract) {
-  const contractAddress = (contract.evm_address || '').toLowerCase();
-  const createdTs = extractCreatedTimestamp(contract) || String(Date.now());
-  const txHash = contract.transaction_hash || hashOf({
-    contractAddress,
-    createdTs,
-    source: 'hedera-mirror',
-  });
-
-  const hydratedContract = await hydrateRuntimeBytecode(contractAddress, contract);
-  const classification = await resolveDiscoveryClassification(contractAddress, hydratedContract);
-  log.info(
-    `Classified ${contractAddress.slice(0, 12)}.. type=${classification.contractType} ` +
-    `risk=${classification.riskScore}` +
-    (SCANNER_CLASSIFIER_PIPELINE ? " (classifier pipeline)" : " (baseline)")
-  );
-
-  const deployerAddress = contract.contract_id
-    ? await fetchDeployerAddress(contract.contract_id)
-    : ZERO_ADDRESS;
-
-  return {
-    type: 'CONTRACT_DISCOVERED' as const,
-    agentId: AGENT_ID,
-    timestamp: Date.now(),
-    payload: {
+  try {
+    // VALIDATE raw mirror node data FIRST before any processing
+    const contractAddress = validateEVMAddress(contract.evm_address, "contractAddress");
+    const createdTs = extractCreatedTimestamp(contract) || String(Date.now());
+    const txHashRaw = contract.transaction_hash || hashOf({
       contractAddress,
-      chain: 'hedera-testnet',
-      deployerAddress,
-      estimatedLOC: estimateLoc(hydratedContract),
-      contractType: classification.contractType,
-      riskScore: classification.riskScore,
-      budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
-      txHash,
-      ...(classification.enrichedPayload || {}),
-    },
-  };
+      createdTs,
+      source: 'hedera-mirror',
+    });
+    const txHash = validateTxHash(txHashRaw);
+
+    const hydratedContract = await hydrateRuntimeBytecode(contractAddress, contract);
+
+    // Validate bytecode if present
+    if (hydratedContract.bytecode) {
+      try {
+        validateBytecode(hydratedContract.bytecode);
+      } catch (err) {
+        log.warn(`Invalid bytecode for ${contractAddress}: ${err instanceof Error ? err.message : String(err)}`);
+        // Continue with empty bytecode rather than failing the entire discovery
+        hydratedContract.bytecode = "0x";
+      }
+    }
+
+    const classification = await resolveDiscoveryClassification(contractAddress, hydratedContract);
+
+    // Validate classification outputs
+    const riskScore = validateRiskScore(classification.riskScore);
+    const estimatedLOC = validateLOC(estimateLoc(hydratedContract));
+
+    log.info(
+      `Classified ${contractAddress.slice(0, 12)}.. type=${classification.contractType} ` +
+      `risk=${riskScore}` +
+      (SCANNER_CLASSIFIER_PIPELINE ? " (classifier pipeline)" : " (baseline)")
+    );
+
+    const deployerAddressRaw = contract.contract_id
+      ? await fetchDeployerAddress(contract.contract_id)
+      : ZERO_ADDRESS;
+    const deployerAddress = validateEVMAddress(deployerAddressRaw, "deployerAddress");
+
+    return {
+      type: 'CONTRACT_DISCOVERED' as const,
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+      payload: {
+        contractAddress,
+        chain: 'hedera-testnet',
+        deployerAddress,
+        estimatedLOC,
+        contractType: classification.contractType,
+        riskScore,
+        budget: DEFAULT_DISCOVERY_BUDGET_GUARD,
+        txHash,
+        ...(classification.enrichedPayload || {}),
+      },
+    };
+  } catch (err) {
+    log.error(`Failed to create valid discovery for ${contract.evm_address}: ${err instanceof Error ? err.message : String(err)}`);
+    throw err; // Propagate to caller
+  }
 }
 
 
@@ -664,6 +699,22 @@ async function main() {
   const wallet = createAgentWallet("SCANNER");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
+
+  // Initialize Prometheus metrics
+  const METRICS_PORT = parseInt(process.env.SCANNER_METRICS_PORT || '9091', 10);
+  const prometheusMetrics = createPrometheusMetrics(AGENT_ID);
+  await startPrometheusServer(prometheusMetrics, METRICS_PORT, log);
+
+  // Initialize health check server
+  const HEALTH_PORT = parseInt(process.env.SCANNER_HEALTH_PORT || '8091', 10);
+  const discoveredContracts = new Set<string>();
+  startHealthServer({
+    agentId: AGENT_ID,
+    port: HEALTH_PORT,
+    hcs,
+    contracts,
+    getPendingJobsCount: () => discoveredContracts.size,
+  });
 
   if (SCANNER_CLASSIFIER_PIPELINE) {
     try {

@@ -9,7 +9,14 @@ import {
   randomInt,
   hashOf,
   sleep,
+  createPrometheusMetrics,
+  startPrometheusServer,
+  startHealthServer,
 } from "../shared/index.js";
+import {
+  parseSubAuctionPosted,
+  parsePing,
+} from "../shared/message-validators.js";
 import type { HCSMessage, SubAuctionPostedEvent } from "../shared/types.js";
 import { ethers } from "ethers";
 
@@ -77,6 +84,21 @@ async function main() {
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
 
+  // Initialize Prometheus metrics
+  const METRICS_PORT = parseInt(process.env.DEPENDENCY_METRICS_PORT || '9095', 10);
+  const prometheusMetrics = createPrometheusMetrics(AGENT_ID);
+  await startPrometheusServer(prometheusMetrics, METRICS_PORT, log);
+
+  // Initialize health check server
+  const HEALTH_PORT = parseInt(process.env.DEPENDENCY_HEALTH_PORT || '8095', 10);
+  startHealthServer({
+    agentId: AGENT_ID,
+    port: HEALTH_PORT,
+    hcs,
+    contracts,
+    getPendingJobsCount: () => 0, // Dependency agent works on-demand
+  });
+
   log.info(`Wallet: ${wallet.evmAddress}`);
 
   if (!DEMO_MODE) {
@@ -103,14 +125,38 @@ async function main() {
   }
 
   // Listen for sub-auction postings
-  hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+  hcs.subscribeAgentComms((msg: HCSMessage) => {
+    handleAgentCommsMessage(msg, hcs, contracts, wallet)
+      .catch((err) => {
+        log.error(`Fatal error handling ${msg.type}: ${err instanceof Error ? err.stack : String(err)}`);
+      });
+  });
+
+  async function handleAgentCommsMessage(
+    msg: HCSMessage,
+    hcs: HCSClient,
+    contracts: ContractClient,
+    wallet: { evmAddress: string; evmWallet: ethers.Wallet }
+  ): Promise<void> {
     if (msg.type === "PING") {
       try {
+        const pingPayload = parsePing(msg);
+        if (!pingPayload) {
+          log.warn("Invalid PING message");
+          return;
+        }
+
+        const nonce = pingPayload.nonce ?? "";
+        const pongTimestamp = Date.now();
+        const message = `PONG:${nonce}:${AGENT_ID}:${pongTimestamp}`;
+
+        const signature = await wallet.evmWallet.signMessage(message);
+
         await hcs.publishAgentComms({
           type: "PONG",
           agentId: AGENT_ID,
-          timestamp: Date.now(),
-          payload: {},
+          timestamp: pongTimestamp,
+          payload: { nonce, signature, message },
         });
       } catch (err) {
         log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -119,7 +165,11 @@ async function main() {
     }
 
     if (msg.type === "WINNERS_SELECTED_FALLBACK") {
-      const { jobId, selectionEpoch } = (msg as any).payload ?? {};
+      // Note: WINNERS_SELECTED_FALLBACK is not in the validators module yet.
+      // This is a fallback context message and doesn't need strict validation.
+      const payload = msg.payload as Record<string, unknown> | undefined;
+      const jobId = payload?.jobId;
+      const selectionEpoch = payload?.selectionEpoch;
       const dedupKey = `${String(jobId)}:${selectionEpoch ?? "0"}`;
       if (startedJobs.has(dedupKey)) {
         log.info(`Already processing job ${String(jobId)}, skipping`);
@@ -132,7 +182,12 @@ async function main() {
 
     if (msg.type !== "SUB_AUCTION_POSTED") return;
 
-    const subAuction = msg as SubAuctionPostedEvent;
+    const subAuction = parseSubAuctionPosted(msg);
+    if (!subAuction) {
+      log.warn(`Invalid SUB_AUCTION_POSTED message: ${JSON.stringify(msg).slice(0, 200)}`);
+      return;
+    }
+
     const { subAuctionId, taskType, paymentAmount, slaDurationSec, parentJobId } = subAuction.payload;
 
     if (taskType !== "dependency_analysis") {
@@ -334,7 +389,7 @@ async function main() {
         currentBacklog = Math.max(0, currentBacklog - 1);
       }
     }, DEMO_MODE ? 5000 : 10000); // start analysis after brief delay
-  });
+  } // end handleAgentCommsMessage
 
   log.info("Subscribed to agent comms. Waiting for sub-auctions...");
 }

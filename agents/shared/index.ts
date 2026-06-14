@@ -45,8 +45,25 @@ export {
   formatMetricsSummary,
   startPeriodicDump,
   stopPeriodicDump,
+  createPrometheusMetrics,
+  startPrometheusServer,
 } from "./metrics.js";
-export type { InfraMetrics, AggregateMetrics } from "./metrics.js";
+export type { InfraMetrics, AggregateMetrics, PrometheusMetrics } from "./metrics.js";
 
 export { postFindingsToStore, getFindingsFromStore, deleteFindingsFromStore } from "./findings-store-client.js";
 export type { StoredFinding } from "./findings-store-client.js";
+
+export {
+  validateEVMAddress,
+  validateRiskScore,
+  validateLOC,
+  validateAccountBalance,
+  validateTxHash,
+  validateBytecode,
+  validateTimestamp,
+  validateNonEmptyString,
+  validateBudget,
+} from "./validation-utils.js";
+
+export { checkAgentHealth, startHealthServer } from "./health.js";
+export type { AgentHealthConfig } from "./health.js";

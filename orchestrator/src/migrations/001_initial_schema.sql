@@ -1,34 +1,7 @@
--- orchestrator/src/schema.sql
---
--- DEPRECATED: This file is kept for reference only.
---
--- The orchestrator now uses Knex.js migrations for database schema management.
--- Schema changes should be made via versioned migration files in src/migrations/
---
--- To apply migrations: npm run migrate
--- To create new migration: npm run migrate:make <name>
---
--- See MIGRATION_GUIDE.md for full documentation.
---
--- ============================================================================
--- LEGACY SCHEMA DEFINITION (replaced by src/migrations/*.sql)
--- ============================================================================
---
--- PRE-BRANCH SHARED ARTIFACT — run once before any task branch is opened.
---
--- Creates the PostgreSQL table and indexes that all four task branches depend on.
--- Run with:
---   psql "$DATABASE_URL" -f orchestrator/src/schema.sql
---
--- DATABASE_URL examples:
---   Local dev:   postgresql://postgres:postgres@localhost:5432/auditguard
---   Production:  postgresql://user:pass@rds-host:5432/auditguard  (set in ECS env)
---
--- Idempotent: safe to run more than once (uses IF NOT EXISTS).
---
--- SCHEMA FREEZE: once all four branches are open, changes to this file
--- require a comment on every open branch PR before merging.
+-- Migration 001: Initial schema
+-- Base tables for audit reports, events, bid skips, findings, jobs, agents, schedules, and vaults
 
+-- ── Audit reports table ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_reports (
   -- Primary key
   id                   TEXT        NOT NULL,
@@ -65,15 +38,8 @@ CREATE TABLE IF NOT EXISTS audit_reports (
   PRIMARY KEY (id)
 );
 
--- Indexes for the access patterns described in report-types.js
-CREATE INDEX IF NOT EXISTS idx_ar_deployer_address  ON audit_reports (deployer_address);
-CREATE INDEX IF NOT EXISTS idx_ar_contract_address  ON audit_reports (contract_address);
-CREATE INDEX IF NOT EXISTS idx_ar_job_id            ON audit_reports (job_id);
-CREATE INDEX IF NOT EXISTS idx_ar_timestamp         ON audit_reports (timestamp DESC);
-
--- ── events-api: HCS event log ────────────────────────────────────────────────
+-- ── Audit events table ──────────────────────────────────────────────────────
 -- Replaces the SQLite audit_events table from packages/events-api/src/db.js
-
 CREATE TABLE IF NOT EXISTS audit_events (
   id                TEXT        PRIMARY KEY,
   source            TEXT        NOT NULL,
@@ -85,13 +51,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   raw_json          TEXT        NOT NULL,
   received_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_ae_received_at   ON audit_events (received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ae_message_type  ON audit_events (message_type);
-CREATE INDEX IF NOT EXISTS idx_ae_agent_id      ON audit_events (agent_id);
 
--- ── events-api: bid skip log ─────────────────────────────────────────────────
+-- ── Bid skips table ─────────────────────────────────────────────────────────
 -- Replaces the SQLite bid_skips table from packages/events-api/src/db.js
-
 CREATE TABLE IF NOT EXISTS bid_skips (
   id            TEXT        PRIMARY KEY,
   event_id      TEXT        NOT NULL REFERENCES audit_events(id),
@@ -103,13 +65,9 @@ CREATE TABLE IF NOT EXISTS bid_skips (
   bid_amount    REAL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_bs_created_at  ON bid_skips (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_bs_reason_code ON bid_skips (reason_code);
-CREATE INDEX IF NOT EXISTS idx_bs_agent_id    ON bid_skips (agent_id);
 
--- ── static-analysis-service: findings store ──────────────────────────────────
+-- ── Pending findings table ──────────────────────────────────────────────────
 -- Replaces the in-memory findingsStore Map in packages/static-analysis-service/src/index.js
-
 CREATE TABLE IF NOT EXISTS pending_findings (
   id         SERIAL      PRIMARY KEY,
   job_id     TEXT        NOT NULL,
@@ -118,12 +76,10 @@ CREATE TABLE IF NOT EXISTS pending_findings (
   stored_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (job_id, agent_id)
 );
-CREATE INDEX IF NOT EXISTS idx_pf_job_id ON pending_findings (job_id);
 
--- ── events-api: audit job lifecycle cache ────────────────────────────────────
+-- ── Audit jobs table ────────────────────────────────────────────────────────
 -- Mirrors on-chain AuditAuction job state for fast dashboard queries without
 -- RPC round-trips.  Hedera contracts are the source of truth; this is a cache.
-
 CREATE TABLE IF NOT EXISTS audit_jobs (
   job_id           TEXT        PRIMARY KEY,          -- chain job ID (string of uint256)
   contract_address TEXT        NOT NULL,
@@ -136,13 +92,9 @@ CREATE TABLE IF NOT EXISTS audit_jobs (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_aj_status          ON audit_jobs (status);
-CREATE INDEX IF NOT EXISTS idx_aj_contract_address ON audit_jobs (contract_address);
-CREATE INDEX IF NOT EXISTS idx_aj_updated_at      ON audit_jobs (updated_at DESC);
 
--- ── events-api: registered agents cache ──────────────────────────────────────
+-- ── Registered agents table ─────────────────────────────────────────────────
 -- Mirrors AgentRegistry on-chain state for dashboard agent roster.
-
 CREATE TABLE IF NOT EXISTS registered_agents (
   evm_address      TEXT        PRIMARY KEY,
   agent_id         TEXT        NOT NULL DEFAULT '',
@@ -154,12 +106,9 @@ CREATE TABLE IF NOT EXISTS registered_agents (
   last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   registered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_ra_status    ON registered_agents (status);
-CREATE INDEX IF NOT EXISTS idx_ra_agent_id  ON registered_agents (agent_id);
 
--- ── events-api: AuditScheduler schedule cache ────────────────────────────────
+-- ── Audit schedules table ───────────────────────────────────────────────────
 -- Mirrors AuditScheduler on-chain state. Source of truth is the contract.
-
 CREATE TABLE IF NOT EXISTS audit_schedules (
   contract_address  TEXT        PRIMARY KEY,
   owner_address     TEXT        NOT NULL DEFAULT '',
@@ -172,11 +121,9 @@ CREATE TABLE IF NOT EXISTS audit_schedules (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_as_active ON audit_schedules (active);
 
--- ── events-api: VaultFactory vault registry cache ────────────────────────────
+-- ── Audit vaults table ──────────────────────────────────────────────────────
 -- Mirrors VaultFactory on-chain vault registry.
-
 CREATE TABLE IF NOT EXISTS audit_vaults (
   contract_address  TEXT        PRIMARY KEY,
   vault_address     TEXT        NOT NULL,
@@ -186,16 +133,3 @@ CREATE TABLE IF NOT EXISTS audit_vaults (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_av_vault_address ON audit_vaults (vault_address);
-
--- ── orchestrator: persistent runtime state ───────────────────────────────────
--- Stores orchestrator roster and event cache for recovery across restarts.
-
-CREATE TABLE IF NOT EXISTS orchestrator_state (
-  key        TEXT        PRIMARY KEY,
-  value      JSONB       NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_orchestrator_state_updated
-  ON orchestrator_state(updated_at DESC);

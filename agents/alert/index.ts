@@ -5,6 +5,9 @@ import {
   getHbarTopUpConfig,
   createAgentLogger,
   createAgentWallet,
+  createPrometheusMetrics,
+  startPrometheusServer,
+  startHealthServer,
 } from "../shared/index.js";
 import type { HCSMessage } from "../shared/types.js";
 import { ethers } from "ethers";
@@ -24,6 +27,21 @@ async function main() {
   const wallet = createAgentWallet("ALERT");
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
+
+  // Initialize Prometheus metrics
+  const METRICS_PORT = parseInt(process.env.ALERT_METRICS_PORT || '9097', 10);
+  const prometheusMetrics = createPrometheusMetrics(AGENT_ID);
+  await startPrometheusServer(prometheusMetrics, METRICS_PORT, log);
+
+  // Initialize health check server
+  const HEALTH_PORT = parseInt(process.env.ALERT_HEALTH_PORT || '8097', 10);
+  startHealthServer({
+    agentId: AGENT_ID,
+    port: HEALTH_PORT,
+    hcs,
+    contracts,
+    getPendingJobsCount: () => 0, // Alert agent monitors all jobs
+  });
 
   log.info(`Wallet: ${wallet.evmAddress}`);
   if (!DEMO_MODE) {
@@ -50,7 +68,19 @@ async function main() {
   }
 
   // Subscribe to audit log for report publications
-  hcs.subscribeAuditLog(async (msg: HCSMessage) => {
+  hcs.subscribeAuditLog((msg: HCSMessage) => {
+    handleAuditLogMessage(msg, hcs, contracts, wallet)
+      .catch((err) => {
+        log.error(`Fatal error handling ${msg.type}: ${err instanceof Error ? err.stack : String(err)}`);
+      });
+  });
+
+  async function handleAuditLogMessage(
+    msg: HCSMessage,
+    hcs: HCSClient,
+    contracts: ContractClient,
+    wallet: { evmAddress: string }
+  ): Promise<void> {
     if (msg.type !== "REPORT_PUBLISHED") return;
 
     const { jobId, criticalCount, totalFindings, reportHash } = msg.payload as any;
@@ -129,7 +159,7 @@ async function main() {
         },
       });
     }
-  });
+  } // end handleAuditLogMessage
 
   log.info("Subscribed to audit log. Watching for critical findings...");
 }

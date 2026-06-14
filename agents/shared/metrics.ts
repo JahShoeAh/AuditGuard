@@ -1,10 +1,13 @@
 /**
  * AuditGuard metrics module.
  *
- * Two APIs:
+ * Three APIs:
  *   1. AgentMetrics class — per-agent domain metrics (bids, audits, settlements)
  *   2. Functional infra API — process-level health monitoring (cycles, errors, heartbeats)
+ *   3. PrometheusMetrics — Prometheus exporter for operational visibility
  */
+
+import promClient from 'prom-client';
 
 export interface MetricsSummary {
   agentId: string;
@@ -237,5 +240,126 @@ export function stopPeriodicDump(): void {
   if (_dumpInterval) {
     clearInterval(_dumpInterval);
     _dumpInterval = null;
+  }
+}
+
+// ── Prometheus Metrics Export ────────────────────────────────────────────────
+
+export interface PrometheusMetrics {
+  register: promClient.Registry;
+  bidsSubmitted: promClient.Counter<'agent_id'>;
+  bidsWon: promClient.Counter<'agent_id'>;
+  jobsCompleted: promClient.Counter<'agent_id'>;
+  findingsSubmitted: promClient.Counter<'agent_id' | 'severity'>;
+  messagesReceived: promClient.Counter<'agent_id' | 'message_type'>;
+  messageProcessingLatency: promClient.Histogram<'agent_id' | 'message_type'>;
+  pendingJobsGauge: promClient.Gauge<'agent_id'>;
+  getMetrics: () => Promise<string>;
+}
+
+export function createPrometheusMetrics(agentId: string): PrometheusMetrics {
+  const register = new promClient.Registry();
+
+  // Add default metrics (CPU, memory, event loop lag)
+  promClient.collectDefaultMetrics({ register });
+
+  // Agent-specific metrics
+  const bidsSubmitted = new promClient.Counter({
+    name: 'auditguard_agent_bids_submitted_total',
+    help: 'Total bids submitted by agent',
+    labelNames: ['agent_id'],
+    registers: [register],
+  });
+
+  const bidsWon = new promClient.Counter({
+    name: 'auditguard_agent_bids_won_total',
+    help: 'Total bids won by agent',
+    labelNames: ['agent_id'],
+    registers: [register],
+  });
+
+  const jobsCompleted = new promClient.Counter({
+    name: 'auditguard_agent_jobs_completed_total',
+    help: 'Total jobs completed by agent',
+    labelNames: ['agent_id'],
+    registers: [register],
+  });
+
+  const findingsSubmitted = new promClient.Counter({
+    name: 'auditguard_agent_findings_submitted_total',
+    help: 'Total findings submitted',
+    labelNames: ['agent_id', 'severity'],
+    registers: [register],
+  });
+
+  const messagesReceived = new promClient.Counter({
+    name: 'auditguard_agent_messages_received_total',
+    help: 'Total HCS messages received',
+    labelNames: ['agent_id', 'message_type'],
+    registers: [register],
+  });
+
+  const messageProcessingLatency = new promClient.Histogram({
+    name: 'auditguard_agent_message_processing_ms',
+    help: 'Message processing latency',
+    labelNames: ['agent_id', 'message_type'],
+    buckets: [10, 50, 100, 500, 1000, 5000],
+    registers: [register],
+  });
+
+  const pendingJobsGauge = new promClient.Gauge({
+    name: 'auditguard_agent_pending_jobs',
+    help: 'Number of pending jobs',
+    labelNames: ['agent_id'],
+    registers: [register],
+  });
+
+  return {
+    register,
+    bidsSubmitted,
+    bidsWon,
+    jobsCompleted,
+    findingsSubmitted,
+    messagesReceived,
+    messageProcessingLatency,
+    pendingJobsGauge,
+    getMetrics: () => register.metrics(),
+  };
+}
+
+/**
+ * Start a Prometheus metrics HTTP server for an agent.
+ * Returns the server instance for graceful shutdown.
+ */
+export async function startPrometheusServer(
+  metrics: PrometheusMetrics,
+  port: number,
+  logger: { info: (msg: string) => void; error: (msg: string) => void }
+): Promise<any> {
+  try {
+    // Dynamic import to avoid bundling issues
+    const express = await import('express');
+    const app = express.default();
+
+    app.get('/metrics', async (req, res) => {
+      try {
+        res.set('Content-Type', 'text/plain; version=0.0.4');
+        res.end(await metrics.getMetrics());
+      } catch (err) {
+        logger.error(`Metrics endpoint error: ${err instanceof Error ? err.message : String(err)}`);
+        res.status(500).send('Internal Server Error');
+      }
+    });
+
+    return new Promise((resolve, reject) => {
+      const server = app.listen(port, () => {
+        logger.info(`Prometheus metrics available at http://localhost:${port}/metrics`);
+        resolve(server);
+      });
+      server.on('error', reject);
+    });
+  } catch (err) {
+    logger.error(`Failed to start metrics server: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
   }
 }

@@ -10,7 +10,11 @@ import {
   hashOf,
   getFindingsFromStore,
   deleteFindingsFromStore,
+  createPrometheusMetrics,
+  startPrometheusServer,
+  startHealthServer,
 } from "../shared/index.js";
+import { parsePing } from "../shared/message-validators.js";
 import type { PaymentItem } from "../shared/contract-client.js";
 import type { HCSMessage, FindingsSubmittedEvent } from "../shared/types.js";
 import { ethers } from "ethers";
@@ -136,6 +140,21 @@ async function main() {
   const hcs = new HCSClient(wallet.hederaClient);
   const contracts = new ContractClient(wallet.evmWallet);
 
+  // Initialize Prometheus metrics
+  const METRICS_PORT = parseInt(process.env.REPORT_METRICS_PORT || '9096', 10);
+  const prometheusMetrics = createPrometheusMetrics(AGENT_ID);
+  await startPrometheusServer(prometheusMetrics, METRICS_PORT, log);
+
+  // Initialize health check server
+  const HEALTH_PORT = parseInt(process.env.REPORT_HEALTH_PORT || '8096', 10);
+  startHealthServer({
+    agentId: AGENT_ID,
+    port: HEALTH_PORT,
+    hcs,
+    contracts,
+    getPendingJobsCount: () => 0, // Report agent works on-demand
+  });
+
   log.info(`Wallet: ${wallet.evmAddress}`);
   if (!DEMO_MODE) {
     try {
@@ -162,14 +181,38 @@ async function main() {
   await ensureReportAgentCanList(contracts, wallet.evmAddress);
 
   // Listen for findings from auditor agents
-  hcs.subscribeAgentComms(async (msg: HCSMessage) => {
+  hcs.subscribeAgentComms((msg: HCSMessage) => {
+    handleAgentCommsMessage(msg, hcs, contracts, wallet)
+      .catch((err) => {
+        log.error(`Fatal error handling ${msg.type} for job ${msg.payload?.jobId}: ${err instanceof Error ? err.stack : String(err)}`);
+      });
+  });
+
+  async function handleAgentCommsMessage(
+    msg: HCSMessage,
+    hcs: HCSClient,
+    contracts: ContractClient,
+    wallet: { evmAddress: string; evmWallet: ethers.Wallet }
+  ): Promise<void> {
     if (msg.type === "PING") {
       try {
+        const pingPayload = parsePing(msg);
+        if (!pingPayload) {
+          log.warn("Invalid PING message");
+          return;
+        }
+
+        const nonce = pingPayload.nonce ?? "";
+        const pongTimestamp = Date.now();
+        const message = `PONG:${nonce}:${AGENT_ID}:${pongTimestamp}`;
+
+        const signature = await wallet.evmWallet.signMessage(message);
+
         await hcs.publishAgentComms({
           type: "PONG",
           agentId: AGENT_ID,
-          timestamp: Date.now(),
-          payload: {},
+          timestamp: pongTimestamp,
+          payload: { nonce, signature, message },
         });
       } catch (err) {
         log.warn(`PONG publish failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -224,7 +267,7 @@ async function main() {
         });
       }, AGGREGATION_WINDOW_MS);
     }
-  });
+  } // end handleAgentCommsMessage
 
   log.info("Subscribed to agent comms. Waiting for findings...");
 }

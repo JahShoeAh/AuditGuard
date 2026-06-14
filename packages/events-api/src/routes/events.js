@@ -60,11 +60,15 @@ const mapAuditEventRow = (row) => ({
 // ── POST /api/events ─────────────────────────────────────────────────
 
 eventsRouter.post("/events", requireAuth, async (req, res) => {
-  const parsed = parseEventIngestRequest(req.body);
-  if (!parsed) {
+  let parsed;
+
+  try {
+    parsed = parseEventIngestRequest(req.body);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.warn(`[VALIDATION] Rejected invalid event: ${errorMessage}`);
     return res.status(400).json({
-      error:
-        "Invalid payload. Expected { source, topicId, message: { type, agentId, timestamp, payload } }.",
+      error: errorMessage,
     });
   }
 
@@ -118,7 +122,7 @@ eventsRouter.post("/events", requireAuth, async (req, res) => {
 
 // ── GET /api/events ──────────────────────────────────────────────────
 
-eventsRouter.get("/events", async (req, res) => {
+eventsRouter.get("/events", requireAuth, async (req, res) => {
   const limit = parseLimit(req.query.limit, 100, 1000);
   const messageType = req.query.type?.trim() || undefined;
   const agentId = req.query.agentId?.trim() || undefined;

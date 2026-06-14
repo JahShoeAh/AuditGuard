@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { ContractClient } from "./contract-client.js";
+import { validateAccountBalance } from "./validation-utils.js";
 
 type LoggerLike = {
   info?: (message: string) => void;
@@ -129,7 +130,8 @@ export async function ensureOperationalHbar(
 
   const required = requiredWei > 0n ? requiredWei : MIN_REQUIRED_WEI;
   const target = TARGET_BALANCE_WEI > required ? TARGET_BALANCE_WEI : required;
-  const initialBalance = await provider.getBalance(recipientAddress);
+  const rawBalance = await provider.getBalance(recipientAddress);
+  const initialBalance = validateAccountBalance(rawBalance);
   if (initialBalance >= required) {
     return {
       ok: true,
@@ -184,7 +186,8 @@ export async function ensureOperationalHbar(
 
     let donorBalance = 0n;
     try {
-      donorBalance = await provider.getBalance(donorAddress);
+      const rawDonorBalance = await provider.getBalance(donorAddress);
+      donorBalance = validateAccountBalance(rawDonorBalance);
     } catch {
       continue;
     }
@@ -217,7 +220,8 @@ export async function ensureOperationalHbar(
       });
       await tx.wait();
       toppedUpWei += transferAmount;
-      currentBalance = await provider.getBalance(recipientAddress);
+      const rawCurrentBalance = await provider.getBalance(recipientAddress);
+      currentBalance = validateAccountBalance(rawCurrentBalance);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       logger?.warn?.(`[HBAR TopUp] Transfer failed from ${donorAddress.slice(0, 10)}...: ${error}`);

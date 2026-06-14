@@ -13,6 +13,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { CONFIG } from "./config.js";
 import { buildProviderWithFallback, assertAddress } from "../../packages/sdk/hedera-provider.js";
+import { validateAccountBalance } from "./validation-utils.js";
 
 // Re-export so callers that previously imported assertAddress from this module still work.
 export { assertAddress } from "../../packages/sdk/hedera-provider.js";
@@ -177,6 +178,22 @@ export class ContractClient {
 
   getAddress(): string {
     return this.wallet.address;
+  }
+
+  get provider(): ethers.Provider {
+    if (!this.wallet.provider) {
+      throw new Error('Wallet provider not initialized');
+    }
+    return this.wallet.provider;
+  }
+
+  async getHbarBalance(): Promise<bigint> {
+    if (!this.wallet.provider) {
+      throw new Error('Wallet provider not initialized');
+    }
+    const balance = await this.wallet.provider.getBalance(this.wallet.address);
+    validateAccountBalance(balance);
+    return balance;
   }
 
   // ─── Auction Convenience Methods ───────────────────────────────────────
@@ -445,11 +462,13 @@ export class ContractClient {
   }
 
   async getGuardBalance(owner: string): Promise<bigint> {
-    return this.guardToken.balanceOf(owner);
+    const rawBalance = await this.guardToken.balanceOf(owner);
+    return validateAccountBalance(rawBalance);
   }
 
   async getGuardAllowance(owner: string, spender: string): Promise<bigint> {
-    return this.guardToken.allowance(owner, spender);
+    const rawAllowance = await this.guardToken.allowance(owner, spender);
+    return validateAccountBalance(rawAllowance);
   }
 
   async ensureGuardAllowance(
