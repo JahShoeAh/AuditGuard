@@ -1,0 +1,16 @@
+# Ignore source files - only deploy prebuilt output
+src/
+public/
+node_modules/
+*.ts
+*.tsx
+vite.config.js
+tsconfig.json
+package.json
+package-lock.json
+
+# Ignore everything except .vercel/output
+*
+!.vercel/
+.vercel/*
+!.vercel/output/

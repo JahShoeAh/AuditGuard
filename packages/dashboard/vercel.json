@@ -1,6 +1,5 @@
 {
-  "outputDirectory": "dist",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
+  "buildCommand": null,
+  "devCommand": null,
+  "installCommand": null
 }
