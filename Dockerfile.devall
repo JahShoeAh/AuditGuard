@@ -22,13 +22,16 @@ RUN apt-get update \
 #   solc-select       — installs the solc binary that slither needs
 #   mythril           — symbolic execution fuzzer (used by fuzzer-service via `myth` CLI)
 #                       Pinned z3-solver is shared and compatible with both slither and mythril.
-RUN python3 -m venv /opt/analysis-tools \
-  && /opt/analysis-tools/bin/pip install --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m venv /opt/analysis-tools \
+  && /opt/analysis-tools/bin/pip install \
        slither-analyzer==0.11.3 \
-       solc-select \
-       semgrep \
-       "z3-solver>=4.12.1,<4.13.0" \
-       mythril \
+       solc-select==1.0.0b1 \
+       semgrep==1.90.0 \
+       z3-solver==4.12.6.0 \
+       mythril==0.24.8 \
+       eth-account==0.13.0 \
+       eth-utils==5.1.0 \
   && /opt/analysis-tools/bin/solc-select install 0.8.24 \
   && /opt/analysis-tools/bin/solc-select use 0.8.24
 
